@@ -25,11 +25,31 @@ jobs:
             suffix: ""
             build_args: ""
             dockerfile: "Dockerfile.go_build"
+            platforms: "linux/amd64,linux/arm64,linux/arm"
           # Large disk container
           - variant: "large_disk"
             suffix: "_large_disk"
             build_args: "TAGS=5BytesOffset"
             dockerfile: "Dockerfile.go_build"
+            platforms: "linux/amd64,linux/arm64,linux/arm"
+          # RocksDB with large disk support
+          - variant: "rocksdb_large"
+            suffix: "_large_disk_rocksdb"
+            build_args: ""
+            dockerfile: "Dockerfile.rocksdb_large"
+            platforms: "linux/amd64"
+          # Full features container
+          - variant: "full"
+            suffix: "_full"
+            build_args: "TAGS=elastic,gocdk,rclone,sqlite,tarantool,tikv,ydb"
+            dockerfile: "Dockerfile.go_build"
+            platforms: "linux/amd64"
+          # Full features with large disk support
+          - variant: "full_large"
+            suffix: "_large_disk_full"
+            build_args: "TAGS=5BytesOffset,elastic,gocdk,rclone,sqlite,tarantool,tikv,ydb"
+            dockerfile: "Dockerfile.go_build"
+            platforms: "linux/amd64"
 
     steps:
       # Checkout the current artifactory repo
@@ -87,7 +107,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           file: ./seaweedfs-enterprise-source/docker/${{ matrix.dockerfile }}
           build-args: ${{ matrix.build_args }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms }}
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}
           cache-from: type=gha
