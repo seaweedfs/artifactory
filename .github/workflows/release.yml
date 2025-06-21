@@ -43,62 +43,31 @@ jobs:
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
-      # Setup Go
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      # Build and Release Normal Volume Size Binary (Enterprise)
+      - name: Go Release Binaries Normal Volume Size
+        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.22
         with:
-          go-version: '1.21'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          overwrite: true
+          pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
+          ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
+          project_path: seaweedfs-enterprise-source/weed
+          binary_name: weed-enterprise
+          asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}"
 
-      # Build Normal Volume Size Binary (Enterprise)
-      - name: Build Normal Volume Size Binary (Enterprise)
-        env:
-          CGO_ENABLED: 0
-          GODEBUG: http2client=0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          cd seaweedfs-enterprise-source/weed
-          go build -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }} .
-
-      # Build Large Disk Binary (Enterprise)
-      - name: Build Large Disk Binary (Enterprise)
-        env:
-          CGO_ENABLED: 0
-          GODEBUG: http2client=0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          cd seaweedfs-enterprise-source/weed
-          go build -tags 5BytesOffset -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk .
-
-      # Create archives for release
-      - name: Create release archives
-        run: |
-          cd seaweedfs-enterprise-source
-          
-          # Handle Windows executables (.exe extension)
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            mv weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }} weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.exe
-            mv weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
-            
-            # Create zip archives for Windows
-            zip -j weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.zip weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.exe
-            zip -j weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.zip weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
-          else
-            # Create tar.gz archives for Unix-like systems
-            tar -czf weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}
-            tar -czf weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.tar.gz weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk
-          fi
-
-      # Upload release assets
-      - name: Upload Release Assets
-        uses: softprops/action-gh-release@v1
+      # Build and Release Large Disk Binary (Enterprise)
+      - name: Go Release Large Disk Binaries
+        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.22
         with:
-          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          files: |
-            seaweedfs-enterprise-source/*.tar.gz
-            seaweedfs-enterprise-source/*.zip
-          token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: false
-          generate_release_notes: true
-          fail_on_unmatched_files: false 
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          overwrite: true
+          pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
+          build_flags: -tags 5BytesOffset
+          ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
+          project_path: seaweedfs-enterprise-source/weed
+          binary_name: weed-enterprise
+          asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}_large_disk" 
