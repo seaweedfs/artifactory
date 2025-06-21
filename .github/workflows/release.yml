@@ -54,7 +54,7 @@ jobs:
           pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
           ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
           project_path: seaweedfs-enterprise-source/weed
-          binary_name: weed-enterprise
+          binary_name: weed
           asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}"
 
       # Build and Release Large Disk Binary (Enterprise)
@@ -69,5 +69,5 @@ jobs:
           build_flags: -tags 5BytesOffset
           ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
           project_path: seaweedfs-enterprise-source/weed
-          binary_name: weed-enterprise
+          binary_name: weed
           asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}_large_disk" 
