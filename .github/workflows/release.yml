@@ -52,6 +52,7 @@ jobs:
           goarch: ${{ matrix.goarch }}
           overwrite: true
           pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
+          build_flags: -buildvcs=false
           ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
           project_path: seaweedfs-enterprise-source/weed
           binary_name: weed
@@ -66,7 +67,7 @@ jobs:
           goarch: ${{ matrix.goarch }}
           overwrite: true
           pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
-          build_flags: -tags 5BytesOffset
+          build_flags: -buildvcs=false -tags 5BytesOffset
           ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
           project_path: seaweedfs-enterprise-source/weed
           binary_name: weed
