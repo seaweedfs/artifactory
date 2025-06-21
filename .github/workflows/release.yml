@@ -58,7 +58,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           cd seaweedfs-enterprise-source/weed
-          go build -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weedx-${{ matrix.goos }}-${{ matrix.goarch }} .
+          go build -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       # Build Large Disk Binary (Enterprise)
       - name: Build Large Disk Binary (Enterprise)
@@ -69,7 +69,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           cd seaweedfs-enterprise-source/weed
-          go build -tags 5BytesOffset -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk .
+          go build -tags 5BytesOffset -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk .
 
       # Create archives for release
       - name: Create release archives
@@ -78,16 +78,16 @@ jobs:
           
           # Handle Windows executables (.exe extension)
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            mv weedx-${{ matrix.goos }}-${{ matrix.goarch }} weedx-${{ matrix.goos }}-${{ matrix.goarch }}.exe
-            mv weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
+            mv weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }} weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.exe
+            mv weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
             
             # Create zip archives for Windows
-            zip -j weedx-${{ matrix.goos }}-${{ matrix.goarch }}.zip weedx-${{ matrix.goos }}-${{ matrix.goarch }}.exe
-            zip -j weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.zip weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
+            zip -j weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.zip weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.exe
+            zip -j weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.zip weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
           else
             # Create tar.gz archives for Unix-like systems
-            tar -czf weedx-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz weedx-${{ matrix.goos }}-${{ matrix.goarch }}
-            tar -czf weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.tar.gz weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk
+            tar -czf weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}
+            tar -czf weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.tar.gz weed-enterprise-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk
           fi
 
       # Upload release assets
