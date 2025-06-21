@@ -1,0 +1,102 @@
+name: "Build and Release SeaweedFS Enterprise Binaries"
+
+on:
+  push:
+    tags:
+      - '*'
+  
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          # Windows on ARM64 is not commonly used
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      # Checkout the current artifactory repo (just to have the workflow)
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v4
+
+      # Clone the private GitLab repository (SeaweedFS Enterprise)
+      - name: Clone private GitLab repo (SeaweedFS Enterprise)
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git clone https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          cd seaweedfs-enterprise-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      # Setup Go
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      # Build Normal Volume Size Binary (Enterprise)
+      - name: Build Normal Volume Size Binary (Enterprise)
+        env:
+          CGO_ENABLED: 0
+          GODEBUG: http2client=0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          cd seaweedfs-enterprise-source/weed
+          go build -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weedx-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      # Build Large Disk Binary (Enterprise)
+      - name: Build Large Disk Binary (Enterprise)
+        env:
+          CGO_ENABLED: 0
+          GODEBUG: http2client=0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          cd seaweedfs-enterprise-source/weed
+          go build -tags 5BytesOffset -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" -o ../weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk .
+
+      # Create archives for release
+      - name: Create release archives
+        run: |
+          cd seaweedfs-enterprise-source
+          
+          # Handle Windows executables (.exe extension)
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            mv weedx-${{ matrix.goos }}-${{ matrix.goarch }} weedx-${{ matrix.goos }}-${{ matrix.goarch }}.exe
+            mv weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
+            
+            # Create zip archives for Windows
+            zip -j weedx-${{ matrix.goos }}-${{ matrix.goarch }}.zip weedx-${{ matrix.goos }}-${{ matrix.goarch }}.exe
+            zip -j weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.zip weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.exe
+          else
+            # Create tar.gz archives for Unix-like systems
+            tar -czf weedx-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz weedx-${{ matrix.goos }}-${{ matrix.goarch }}
+            tar -czf weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk.tar.gz weedx-${{ matrix.goos }}-${{ matrix.goarch }}-large-disk
+          fi
+
+      # Upload release assets
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          files: |
+            seaweedfs-enterprise-source/weedx-${{ matrix.goos }}-${{ matrix.goarch }}*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: false
+          generate_release_notes: true 
