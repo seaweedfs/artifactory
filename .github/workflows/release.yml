@@ -21,12 +21,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
+        goos: [linux, darwin, windows, freebsd, openbsd]
+        goarch: [amd64, arm, arm64]
         exclude:
           # Windows on ARM64 is not commonly used
           - goos: windows
             goarch: arm64
+          # Windows on ARM is not commonly used
+          - goos: windows
+            goarch: arm
+          # Darwin on ARM is not supported
+          - goos: darwin
+            goarch: arm
 
     steps:
       # Checkout the current artifactory repo (just to have the workflow)
