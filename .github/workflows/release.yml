@@ -96,7 +96,9 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           files: |
-            seaweedfs-enterprise-source/weedx-${{ matrix.goos }}-${{ matrix.goarch }}*
+            seaweedfs-enterprise-source/*.tar.gz
+            seaweedfs-enterprise-source/*.zip
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: false
-          generate_release_notes: true 
+          generate_release_notes: true
+          fail_on_unmatched_files: false 
