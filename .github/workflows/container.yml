@@ -1,4 +1,4 @@
-name: "Build and Publish SeaweedFS Enterprise Docker Containers"
+name: "Containers: Build and Publish SeaweedFS Enterprise Docker"
 
 on:
   push:

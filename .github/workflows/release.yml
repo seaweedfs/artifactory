@@ -1,4 +1,4 @@
-name: "Build and Release SeaweedFS Enterprise Binaries"
+name: "Binaries: Build and Release SeaweedFS Enterprise"
 
 on:
   push:
