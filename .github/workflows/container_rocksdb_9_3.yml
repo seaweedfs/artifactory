@@ -1,4 +1,4 @@
-name: "Containers: Build and Publish SeaweedFS Enterprise Docker (RocksDB 9/3)"
+name: "Containers: RocksDB 9/3"
 
 on:
   push:
