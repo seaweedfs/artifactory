@@ -48,14 +48,29 @@ jobs:
           
           # Extract information from webhook payload
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            # Get branch from payload (GitLab sends 'ref' like 'refs/heads/enterprise')
-            GITLAB_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
-            GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
+            # Check if GitLab template variables were replaced properly
+            RAW_REF="${{ github.event.client_payload.ref }}"
+            RAW_USER="${{ github.event.client_payload.user_name }}"
             
-            # Get commit info
-            GITLAB_COMMIT="${{ github.event.client_payload.after || github.event.client_payload.checkout_sha || '' }}"
-            GITLAB_COMMIT_MSG="${{ github.event.client_payload.commits[0].message || 'Webhook trigger' }}"
-            GITLAB_USER="${{ github.event.client_payload.user_name || github.event.client_payload.user_username || 'unknown' }}"
+            echo "Raw ref from payload: '$RAW_REF'"
+            echo "Raw user from payload: '$RAW_USER'"
+            
+            # If template variables weren't replaced (still contain %), use defaults
+            if [[ "$RAW_REF" == *"%{"* ]] || [ -z "$RAW_REF" ]; then
+              echo "⚠️  GitLab template variables not replaced, using defaults"
+              GITLAB_REF="refs/heads/enterprise"
+              GITLAB_BRANCH="enterprise"
+              GITLAB_USER="GitLab User"
+              GITLAB_COMMIT=""
+              GITLAB_COMMIT_MSG="GitLab webhook trigger (template variables not replaced)"
+            else
+              echo "✅ GitLab template variables replaced successfully"
+              GITLAB_REF="${{ github.event.client_payload.ref }}"
+              GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
+              GITLAB_USER="${{ github.event.client_payload.user_name }}"
+              GITLAB_COMMIT="${{ github.event.client_payload.after }}"
+              GITLAB_COMMIT_MSG="Push to $GITLAB_BRANCH by $GITLAB_USER"
+            fi
             
             echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
             echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
