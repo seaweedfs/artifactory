@@ -60,10 +60,45 @@ jobs:
           go-version-file: 'seaweedfs-source/go.mod'
         id: go
 
-      - name: Install SeaweedFS
+      - name: Build SeaweedFS
         working-directory: seaweedfs-source/weed
         run: |
           go install -buildvcs=false
+          echo "SeaweedFS binary installed to: $(which weed)"
+
+      - name: Start SeaweedFS Components
+        timeout-minutes: 10
+        run: |
+          set -x
+          # Create clean data directory for this test run
+          export WEED_DATA_DIR="/tmp/seaweedfs-s3versioning-$(date +%s)"
+          export WEED_BINARY="$(which weed)"
+          
+          echo "Starting SeaweedFS components for S3 versioning tests..."
+          echo "Data directory: $WEED_DATA_DIR"
+          echo "Weed binary: $WEED_BINARY"
+          
+          # Make startup script executable and run it
+          chmod +x $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh
+          $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh \
+            --data-dir "$WEED_DATA_DIR" \
+            --binary "$WEED_BINARY" \
+            --verbose 1 \
+            --master-port 9333 \
+            --volume-port 8080 \
+            --filer-port 8888 \
+            --volume-max 100 \
+            --volume-size-limit 100 \
+            --filer-max-mb 64 &
+          
+          # Store environment variables for later steps
+          echo "WEED_DATA_DIR=$WEED_DATA_DIR" >> $GITHUB_ENV
+          echo "WEED_BINARY=$WEED_BINARY" >> $GITHUB_ENV
+          
+          # Wait for startup script to complete component initialization
+          wait
+          
+          echo "All SeaweedFS components started successfully!"
 
       - name: Run S3 Versioning Tests - ${{ matrix.test-type }}
         timeout-minutes: 25
@@ -75,6 +110,9 @@ jobs:
           free -h
           df -h
           echo "=== Starting Tests ==="
+          
+          # Set the weed binary path for tests
+          export PATH="$(dirname $WEED_BINARY):$PATH"
           
           # Run tests with automatic server management
           # The test-with-server target handles server startup/shutdown automatically
@@ -101,6 +139,19 @@ jobs:
           echo "=== Test Environment ==="
           ps aux | grep -E "(weed|test)" || true
           netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Cleanup SeaweedFS Components
+        if: always()
+        run: |
+          echo "Stopping SeaweedFS components..."
+          if [ -n "$WEED_DATA_DIR" ] && [ -d "$WEED_DATA_DIR" ]; then
+            $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh --stop --data-dir "$WEED_DATA_DIR" || true
+            # Clean up data directory
+            rm -rf "$WEED_DATA_DIR" || true
+          fi
+          
+          # Additional cleanup - kill any remaining weed processes
+          pkill -f "weed.*master\|weed.*volume\|weed.*filer" 2>/dev/null || true
 
       - name: Upload test logs on failure
         if: failure()

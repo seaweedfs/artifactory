@@ -80,66 +80,60 @@ jobs:
         env:
           S3_TESTS_PATH: s3-tests
 
+      - name: Build SeaweedFS
+        working-directory: seaweedfs-source/weed
+        run: |
+          go install -buildvcs=false
+          echo "SeaweedFS binary installed to: $(which weed)"
+
+      - name: Start SeaweedFS Components
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -x
+          # Create clean data directory for this test run
+          export WEED_DATA_DIR="/tmp/seaweedfs-s3tests-$(date +%s)"
+          export WEED_BINARY="$(which weed)"
+          export S3_CONFIG_FILE="$GITHUB_WORKSPACE/seaweedfs-source/docker/compose/s3.json"
+          
+          echo "Starting SeaweedFS components individually..."
+          echo "Data directory: $WEED_DATA_DIR"
+          echo "Weed binary: $WEED_BINARY"
+          echo "S3 config: $S3_CONFIG_FILE"
+          
+          # Make startup script executable and run it
+          chmod +x $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh
+          $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh \
+            --data-dir "$WEED_DATA_DIR" \
+            --binary "$WEED_BINARY" \
+            --verbose 0 \
+            --master-port 9333 \
+            --volume-port 8080 \
+            --filer-port 8888 \
+            --s3-port 8000 \
+            --with-s3 \
+            --s3-config "$S3_CONFIG_FILE" \
+            --volume-max 100 \
+            --volume-size-limit 100 \
+            --filer-max-mb 64 &
+          
+          # Store the startup script PID so we can manage it
+          STARTUP_PID=$!
+          echo "STARTUP_PID=$STARTUP_PID" >> $GITHUB_ENV
+          echo "WEED_DATA_DIR=$WEED_DATA_DIR" >> $GITHUB_ENV
+          
+          # Wait for startup script to complete component initialization
+          wait $STARTUP_PID
+          
+          echo "All SeaweedFS components started successfully!"
+
       - name: Run Basic S3 tests
         timeout-minutes: 15
         env:
           S3TEST_CONF: ../seaweedfs-source/docker/compose/s3tests.conf
         shell: bash
         run: |
-          cd seaweedfs-source/weed
-          go install -buildvcs=false
-          set -x
-          # Create clean data directory for this test run
-          export WEED_DATA_DIR="/tmp/seaweedfs-s3tests-$(date +%s)"
-          mkdir -p "$WEED_DATA_DIR"
-          weed -v 0 server -filer -filer.maxMB=64 -s3 -ip.bind 0.0.0.0 \
-            -dir="$WEED_DATA_DIR" \
-            -master.raftHashicorp -master.electionTimeout 1s -master.volumeSizeLimitMB=100 \
-            -volume.max=100 -volume.preStopSeconds=1 \
-            -master.port=9333 -volume.port=8080 -filer.port=8888 -s3.port=8000 -metricsPort=9324 \
-            -s3.allowEmptyFolder=false -s3.allowDeleteBucketNotEmpty=true -s3.config="$GITHUB_WORKSPACE/seaweedfs-source/docker/compose/s3.json" &
-          pid=$!
-          
-          # Wait for all SeaweedFS components to be ready
-          echo "Waiting for SeaweedFS components to start..."
-          for i in {1..30}; do
-            if curl -s http://localhost:9333/cluster/status > /dev/null 2>&1; then
-              echo "Master server is ready"
-              break
-            fi
-            echo "Waiting for master server... ($i/30)"
-            sleep 2
-          done
-          
-          for i in {1..30}; do
-            if curl -s http://localhost:8080/status > /dev/null 2>&1; then
-              echo "Volume server is ready"
-              break
-            fi
-            echo "Waiting for volume server... ($i/30)"
-            sleep 2
-          done
-          
-          for i in {1..30}; do
-            if curl -s http://localhost:8888/ > /dev/null 2>&1; then
-              echo "Filer is ready"
-              break
-            fi
-            echo "Waiting for filer... ($i/30)"
-            sleep 2
-          done
-          
-          for i in {1..30}; do
-            if curl -s http://localhost:8000/ > /dev/null 2>&1; then
-              echo "S3 server is ready"
-              break
-            fi
-            echo "Waiting for S3 server... ($i/30)"
-            sleep 2
-          done
-          
-          echo "All SeaweedFS components are ready!"
-          cd ../../s3-tests
+          cd s3-tests
           sed -i "s/assert prefixes == \['foo%2B1\/', 'foo\/', 'quux%20ab\/'\]/assert prefixes == \['foo\/', 'foo%2B1\/', 'quux%20ab\/'\]/" s3tests/functional/test_s3.py
           
           # Debug: Show the config file contents
@@ -342,9 +336,19 @@ jobs:
           s3tests/functional/test_s3.py::test_lifecycle_set \
           s3tests/functional/test_s3.py::test_lifecycle_get \
           s3tests/functional/test_s3.py::test_lifecycle_set_filter
-          kill -9 $pid || true
-          # Clean up data directory
-          rm -rf "$WEED_DATA_DIR" || true
+
+      - name: Cleanup SeaweedFS Components
+        if: always()
+        run: |
+          echo "Stopping SeaweedFS components..."
+          if [ -n "$WEED_DATA_DIR" ] && [ -d "$WEED_DATA_DIR" ]; then
+            $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh --stop --data-dir "$WEED_DATA_DIR" || true
+            # Clean up data directory
+            rm -rf "$WEED_DATA_DIR" || true
+          fi
+          
+          # Additional cleanup - kill any remaining weed processes
+          pkill -f "weed.*master\|weed.*volume\|weed.*filer\|weed.*s3" 2>/dev/null || true
 
       - name: Upload test logs
         if: always()
