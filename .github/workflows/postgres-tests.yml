@@ -1,0 +1,123 @@
+name: "PostgreSQL Gateway Tests (GitLab)"
+
+on:
+  # Triggered by GitLab webhook
+  repository_dispatch:
+    types: 
+      - gitlab-push
+      - gitlab-merge-request
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'GitLab branch to test'
+        required: false
+        default: 'enterprise'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/postgres-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-basic-tests:
+    name: PostgreSQL Basic Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v5
+
+    - name: Clone private GitLab repository
+      env:
+        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+      run: |
+        # Determine branch from webhook or manual input
+        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+          BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+        else
+          BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+        fi
+        
+        echo "Cloning branch: $BRANCH"
+        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/go.mod'
+      id: go
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Cache Docker layers
+      uses: actions/cache@v4
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-postgres-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-postgres-
+
+    - name: Start PostgreSQL Gateway Services
+      working-directory: seaweedfs-source/test/postgres
+      run: |
+        make dev-start
+        sleep 10
+
+    - name: Run Basic Connectivity Test
+      working-directory: seaweedfs-source/test/postgres
+      run: |
+        make test-basic
+
+    - name: Run PostgreSQL Client Tests
+      working-directory: seaweedfs-source/test/postgres
+      run: |
+        make test-client
+
+    - name: Save logs
+      if: always()
+      working-directory: seaweedfs-source/test/postgres
+      run: |
+        docker compose logs > postgres-output.log || true
+
+    - name: Archive logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: postgres-logs-${{ env.COMMIT_SHA }}
+        path: seaweedfs-source/test/postgres/postgres-output.log
+
+    - name: PostgreSQL Test Summary
+      if: always()
+      run: |
+        echo "## 🐘 PostgreSQL Gateway Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### GitLab Source" >> $GITHUB_STEP_SUMMARY
+        echo "- **Repository**: https://gitlab.com/chrislusf/seaweedfs" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Test Components" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔌 **Basic Connectivity**: PostgreSQL protocol compatibility" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 **Client Tests**: Standard PostgreSQL client operations" >> $GITHUB_STEP_SUMMARY
+        echo "- 🐳 **Docker Integration**: Containerized test environment" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### PostgreSQL Gateway Features" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Protocol Compatibility**: Standard PostgreSQL wire protocol" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **SQL Query Support**: Basic SQL operations over SeaweedFS" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Client Library Support**: Works with standard PostgreSQL clients" >> $GITHUB_STEP_SUMMARY
+
+    - name: Cleanup
+      if: always()
+      working-directory: seaweedfs-source/test/postgres
+      run: |
+        make clean || true

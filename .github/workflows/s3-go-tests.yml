@@ -1,0 +1,391 @@
+name: "S3 Go Tests (GitLab)"
+
+on:
+  # Triggered by GitLab webhook
+  repository_dispatch:
+    types: 
+      - gitlab-push
+      - gitlab-merge-request
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'GitLab branch to test'
+        required: false
+        default: 'enterprise'
+  
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/s3-go-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s3-versioning-tests:
+    name: S3 Versioning Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-type: ["quick", "comprehensive"]
+    
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v5
+
+      - name: Clone private GitLab repository
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          else
+            BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          fi
+          
+          echo "Cloning branch: $BRANCH"
+          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/go.mod'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Versioning Tests - ${{ matrix.test-type }}
+        timeout-minutes: 25
+        working-directory: seaweedfs-source/test/s3/versioning
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+          
+          # Run tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          if [ "${{ matrix.test-type }}" = "quick" ]; then
+            # Override TEST_PATTERN for quick tests only
+            make test-with-server TEST_PATTERN="TestBucketListReturnDataVersioning|TestVersioningBasicWorkflow|TestVersioningDeleteMarkers"
+          else
+            # Run all versioning tests
+            make test-with-server
+          fi
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/test/s3/versioning
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+          
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-versioning-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/test/s3/versioning/weed-test*.log
+          retention-days: 3
+
+  s3-retention-tests:
+    name: S3 Retention Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-type: ["quick", "comprehensive"]
+    
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v5
+
+      - name: Clone private GitLab repository
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          else
+            BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          fi
+          
+          echo "Cloning branch: $BRANCH"
+          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/go.mod'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Retention Tests - ${{ matrix.test-type }}
+        timeout-minutes: 25
+        working-directory: seaweedfs-source/test/s3/retention
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+          
+          # Run tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          if [ "${{ matrix.test-type }}" = "quick" ]; then
+            # Override TEST_PATTERN for quick tests only
+            make test-with-server TEST_PATTERN="TestBasicRetentionWorkflow|TestRetentionModeCompliance|TestLegalHoldWorkflow"
+          else
+            # Run all retention tests
+            make test-with-server
+          fi
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/test/s3/retention
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+          
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-retention-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/test/s3/retention/weed-test*.log
+          retention-days: 3
+
+  s3-cors-tests:
+    name: S3 CORS Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-type: ["quick", "comprehensive"]
+    
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v5
+
+      - name: Clone private GitLab repository
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          else
+            BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          fi
+          
+          echo "Cloning branch: $BRANCH"
+          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/go.mod'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 CORS Tests - ${{ matrix.test-type }}
+        timeout-minutes: 25
+        working-directory: seaweedfs-source/test/s3/cors
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+          
+          # Run tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          if [ "${{ matrix.test-type }}" = "quick" ]; then
+            # Override TEST_PATTERN for quick tests only
+            make test-with-server TEST_PATTERN="TestCORSConfigurationManagement|TestServiceLevelCORS|TestCORSBasicWorkflow"
+          else
+            # Run all CORS tests
+            make test-with-server
+          fi
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/test/s3/cors
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+          
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-cors-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/test/s3/cors/weed-test*.log
+          retention-days: 3
+
+  s3-retention-worm:
+    name: S3 Retention WORM Integration Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v5
+
+      - name: Clone private GitLab repository
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          else
+            BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          fi
+          
+          echo "Cloning branch: $BRANCH"
+          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/go.mod'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run WORM Integration Tests
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/test/s3/retention
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          
+          # Run the WORM integration tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          make test-with-server TEST_PATTERN="TestWORM|TestRetentionExtendedAttributes|TestRetentionConcurrentOperations" || {
+            echo "❌ WORM integration test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -100 weed-test.log
+            fi
+            echo "=== Process information ==="
+            ps aux | grep -E "(weed|test)" || true
+            exit 1
+          }
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-retention-worm-logs-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/test/s3/retention/weed-test*.log
+          retention-days: 3
+
+  s3-test-summary:
+    name: S3 Test Summary
+    runs-on: ubuntu-22.04
+    needs: [s3-versioning-tests, s3-retention-tests, s3-cors-tests, s3-retention-worm]
+    if: always()
+    steps:
+      - name: Generate Test Summary
+        run: |
+          echo "## 🧪 S3 Go Tests Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### GitLab Source" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: https://gitlab.com/chrislusf/seaweedfs" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Versioning**: ${{ needs.s3-versioning-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Retention**: ${{ needs.s3-retention-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 CORS**: ${{ needs.s3-cors-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 WORM**: ${{ needs.s3-retention-worm.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Count successful tests
+          SUCCESS_COUNT=0
+          [ "${{ needs.s3-versioning-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-retention-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-cors-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-retention-worm.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **$SUCCESS_COUNT/4** test suites passed" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $SUCCESS_COUNT -eq 4 ]; then
+            echo "🎉 **All S3 tests passed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some tests failed. Check individual job logs for details.**" >> $GITHUB_STEP_SUMMARY
+          fi

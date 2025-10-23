@@ -1,0 +1,117 @@
+name: "go: build binary (GitLab)"
+
+on:
+  # Triggered by GitLab webhook
+  repository_dispatch:
+    types: 
+      - gitlab-push
+      - gitlab-merge-request
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'GitLab branch to test'
+        required: false
+        default: 'enterprise'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/go
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v5
+
+    - name: Clone private GitLab repository
+      env:
+        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+      run: |
+        # Determine branch from webhook or manual input
+        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+          BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+        else
+          BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+        fi
+        
+        echo "Cloning branch: $BRANCH"
+        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/go.mod'
+        cache-dependency-path: 'seaweedfs-source/go.sum'
+      id: go
+
+    - name: Get dependencies
+      working-directory: seaweedfs-source/weed
+      run: |
+        go get -v -t -d ./...
+
+    - name: Build
+      working-directory: seaweedfs-source/weed
+      run: |
+        echo "Building SeaweedFS with all tags..."
+        go build -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v .
+        
+        # Verify binary
+        echo "Verifying built binary..."
+        ./weed version
+        ls -lh weed
+
+    - name: Test
+      working-directory: seaweedfs-source/weed
+      run: |
+        echo "Running Go tests..."
+        go test -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v ./...
+
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: weed-binary-${{ env.COMMIT_SHA }}
+        path: seaweedfs-source/weed/weed
+        retention-days: 7
+
+    - name: Go Build Summary
+      if: always()
+      run: |
+        echo "## 🔨 Go Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### GitLab Source" >> $GITHUB_STEP_SUMMARY
+        echo "- **Repository**: https://gitlab.com/chrislusf/seaweedfs" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "- **Go Version**: $(go version | cut -d' ' -f3)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Tags**: elastic, gocdk, sqlite, ydb, tarantool, tikv, rclone" >> $GITHUB_STEP_SUMMARY
+        echo "- **Target**: SeaweedFS Enterprise Edition" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Features Included" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔍 **Elasticsearch**: Full-text search integration" >> $GITHUB_STEP_SUMMARY
+        echo "- ☁️ **Cloud SDK**: Multi-cloud storage support" >> $GITHUB_STEP_SUMMARY
+        echo "- 🗄️ **SQLite**: Embedded database support" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 **YDB**: Yandex Database integration" >> $GITHUB_STEP_SUMMARY
+        echo "- 🚀 **Tarantool**: In-memory database support" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔑 **TiKV**: Distributed key-value store" >> $GITHUB_STEP_SUMMARY
+        echo "- 📁 **Rclone**: Remote storage sync" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f seaweedfs-source/weed/weed ]; then
+          echo "✅ **Binary built successfully and available as artifact**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Binary build failed**" >> $GITHUB_STEP_SUMMARY
+        fi
