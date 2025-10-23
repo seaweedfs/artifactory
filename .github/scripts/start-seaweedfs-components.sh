@@ -113,11 +113,19 @@ start_master() {
     echo $! > "$DATA_DIR/master.pid"
     
     # Wait for master to be ready
-    wait_for_service "Master" "127.0.0.1" "$MASTER_PORT" 30 "http"
+    if ! wait_for_service "Master" "127.0.0.1" "$MASTER_PORT" 30 "http"; then
+        log_error "Master failed to start. Showing last 50 lines of log:"
+        tail -50 "$DATA_DIR/master.log" || echo "Could not read master log"
+        return 1
+    fi
     
     # Also wait for gRPC port (master port + 10000)
     local grpc_port=$((MASTER_PORT + 10000))
-    wait_for_service "Master gRPC" "127.0.0.1" "$grpc_port" 30 "tcp"
+    if ! wait_for_service "Master gRPC" "127.0.0.1" "$grpc_port" 30 "tcp"; then
+        log_error "Master gRPC failed to start. Showing last 50 lines of log:"
+        tail -50 "$DATA_DIR/master.log" || echo "Could not read master log"
+        return 1
+    fi
 }
 
 # Function to start volume server
@@ -139,7 +147,11 @@ start_volume() {
     echo $! > "$DATA_DIR/volume.pid"
     
     # Wait for volume server to be ready
-    wait_for_service "Volume Server" "127.0.0.1" "$VOLUME_PORT" 30 "http"
+    if ! wait_for_service "Volume Server" "127.0.0.1" "$VOLUME_PORT" 30 "http"; then
+        log_error "Volume Server failed to start. Showing last 50 lines of log:"
+        tail -50 "$DATA_DIR/volume.log" || echo "Could not read volume log"
+        return 1
+    fi
 }
 
 # Function to start filer
@@ -160,7 +172,11 @@ start_filer() {
     echo $! > "$DATA_DIR/filer.pid"
     
     # Wait for filer to be ready
-    wait_for_service "Filer" "127.0.0.1" "$FILER_PORT" 30 "http"
+    if ! wait_for_service "Filer" "127.0.0.1" "$FILER_PORT" 30 "http"; then
+        log_error "Filer failed to start. Showing last 50 lines of log:"
+        tail -50 "$DATA_DIR/filer.log" || echo "Could not read filer log"
+        return 1
+    fi
 }
 
 # Function to start S3 gateway
@@ -186,7 +202,11 @@ start_s3() {
     echo $! > "$DATA_DIR/s3.pid"
     
     # Wait for S3 gateway to be ready
-    wait_for_service "S3 Gateway" "127.0.0.1" "$S3_PORT" 30 "http"
+    if ! wait_for_service "S3 Gateway" "127.0.0.1" "$S3_PORT" 30 "http"; then
+        log_error "S3 Gateway failed to start. Showing last 50 lines of log:"
+        tail -50 "$DATA_DIR/s3.log" || echo "Could not read s3 log"
+        return 1
+    fi
 }
 
 # Function to start MQ broker
