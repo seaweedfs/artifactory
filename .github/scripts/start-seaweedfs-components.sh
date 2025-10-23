@@ -97,10 +97,10 @@ start_master() {
     
     local raft_flag=""
     if [ "$USE_RAFT" = "true" ]; then
-        raft_flag="-master.raftHashicorp"
+        raft_flag="-raftHashicorp"
     fi
     
-    nohup $WEED_BINARY -v $VERBOSE master \
+    nohup $WEED_BINARY -v=$VERBOSE master \
         -port=$MASTER_PORT \
         -mdir="$DATA_DIR/master" \
         $raft_flag \
@@ -134,7 +134,7 @@ start_volume() {
     
     mkdir -p "$DATA_DIR/volume"
     
-    nohup $WEED_BINARY -v $VERBOSE volume \
+    nohup $WEED_BINARY -v=$VERBOSE volume \
         -port=$VOLUME_PORT \
         -dir="$DATA_DIR/volume" \
         -max=$VOLUME_MAX \
@@ -160,7 +160,7 @@ start_filer() {
     
     mkdir -p "$DATA_DIR/filer"
     
-    nohup $WEED_BINARY -v $VERBOSE filer \
+    nohup $WEED_BINARY -v=$VERBOSE filer \
         -port=$FILER_PORT \
         -dir="$DATA_DIR/filer" \
         -master="127.0.0.1:$MASTER_PORT" \
@@ -188,7 +188,7 @@ start_s3() {
         s3_config="-s3.config=$S3_CONFIG_FILE"
     fi
     
-    nohup $WEED_BINARY -v $VERBOSE s3 \
+    nohup $WEED_BINARY -v=$VERBOSE s3 \
         -port=$S3_PORT \
         -filer="127.0.0.1:$FILER_PORT" \
         -filer.dir="/buckets" \
@@ -213,7 +213,7 @@ start_s3() {
 start_mq() {
     log_step "Starting SeaweedFS MQ Broker..."
     
-    nohup $WEED_BINARY -v $VERBOSE mq.broker \
+    nohup $WEED_BINARY -v=$VERBOSE mq.broker \
         -port=$MQ_PORT \
         -master="127.0.0.1:$MASTER_PORT" \
         -ip="127.0.0.1" \
