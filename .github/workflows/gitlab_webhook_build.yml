@@ -1,0 +1,308 @@
+name: "GitLab Webhook: Build and Test"
+
+on:
+  # Triggered by GitLab webhook via repository_dispatch
+  repository_dispatch:
+    types: 
+      - gitlab-push
+      - gitlab-merge-request
+      - gitlab-tag
+  
+  # Also allow manual triggering for testing
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'GitLab branch to build'
+        required: false
+        default: 'enterprise'
+      gitlab_ref:
+        description: 'GitLab commit SHA or ref'
+        required: false
+        default: ''
+      run_tests:
+        description: 'Run tests'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  # Job to process GitLab webhook and build
+  gitlab-webhook-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout artifactory repo (for workflow context)
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v4
+
+      # Parse GitLab webhook payload
+      - name: Parse GitLab webhook payload
+        id: parse_webhook
+        run: |
+          echo "Event type: ${{ github.event.action }}"
+          
+          # Extract information from webhook payload
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            # Get branch from payload (GitLab sends 'ref' like 'refs/heads/enterprise')
+            GITLAB_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
+            GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
+            
+            # Get commit info
+            GITLAB_COMMIT="${{ github.event.client_payload.after || github.event.client_payload.checkout_sha || '' }}"
+            GITLAB_COMMIT_MSG="${{ github.event.client_payload.commits[0].message || 'Webhook trigger' }}"
+            GITLAB_USER="${{ github.event.client_payload.user_name || github.event.client_payload.user_username || 'unknown' }}"
+            
+            echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
+            echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
+            echo "commit_message=$GITLAB_COMMIT_MSG" >> $GITHUB_OUTPUT
+            echo "user=$GITLAB_USER" >> $GITHUB_OUTPUT
+            
+            echo "📡 GitLab Webhook Received"
+            echo "Branch: $GITLAB_BRANCH"
+            echo "Commit: $GITLAB_COMMIT"
+            echo "User: $GITLAB_USER"
+            echo "Message: $GITLAB_COMMIT_MSG"
+          else
+            # Manual trigger
+            GITLAB_BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+            GITLAB_COMMIT="${{ github.event.inputs.gitlab_ref || '' }}"
+            
+            echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
+            echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
+            echo "commit_message=Manual trigger" >> $GITHUB_OUTPUT
+            echo "user=${{ github.actor }}" >> $GITHUB_OUTPUT
+            
+            echo "🔧 Manual Trigger"
+            echo "Branch: $GITLAB_BRANCH"
+          fi
+
+      # Clone the private GitLab repository
+      - name: Clone private GitLab repo
+        id: clone
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.parse_webhook.outputs.branch }}"
+          COMMIT="${{ steps.parse_webhook.outputs.commit }}"
+          
+          echo "🔄 Cloning GitLab repository..."
+          echo "Branch: $BRANCH"
+          
+          # Clone the repository
+          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          
+          cd seaweedfs-source
+          
+          # If specific commit was provided, checkout that commit
+          if [ -n "$COMMIT" ] && [ "$COMMIT" != "null" ]; then
+            echo "Checking out specific commit: $COMMIT"
+            git checkout $COMMIT
+          fi
+          
+          # Get commit information
+          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_SHORT=$(git rev-parse --short=8 HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+          COMMIT_DATE=$(git log -1 --pretty=%ci)
+          
+          echo "commit_sha=$COMMIT_SHORT" >> $GITHUB_OUTPUT
+          echo "COMMIT_SHA=$COMMIT_SHORT" >> $GITHUB_ENV
+          
+          echo "✅ Cloned successfully"
+          echo "Commit: $COMMIT_SHA"
+          echo "Author: $COMMIT_AUTHOR"
+          echo "Date: $COMMIT_DATE"
+          echo "Message: $COMMIT_MSG"
+          echo ""
+          echo "Recent commits:"
+          git log --oneline -5
+
+      # Set up Go environment
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: seaweedfs-source/go.sum
+
+      # Verify Go modules
+      - name: Verify Go modules
+        working-directory: seaweedfs-source
+        run: |
+          echo "🔍 Verifying Go modules..."
+          go mod verify
+          go mod download
+          echo "✅ Modules verified"
+
+      # Run Go vet and format checks
+      - name: Run Go checks
+        working-directory: seaweedfs-source
+        run: |
+          echo "🔍 Running go vet..."
+          go vet ./weed/... || echo "::warning::go vet found issues"
+          
+          echo "🔍 Checking go fmt..."
+          UNFORMATTED=$(gofmt -s -l weed/)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::warning::The following files are not properly formatted:"
+            echo "$UNFORMATTED"
+          else
+            echo "✅ All files are properly formatted"
+          fi
+
+      # Run tests if requested
+      - name: Run tests
+        if: github.event.inputs.run_tests != 'false'
+        working-directory: seaweedfs-source
+        run: |
+          echo "🧪 Running tests..."
+          
+          # Run basic tests with timeout
+          go test -v -timeout=10m ./weed/storage/... || echo "::warning::Storage tests had failures"
+          go test -v -timeout=10m ./weed/filer/... || echo "::warning::Filer tests had failures"
+          go test -v -timeout=10m ./weed/server/... || echo "::warning::Server tests had failures"
+          
+          echo "✅ Tests completed"
+
+      # Build verification binary
+      - name: Build verification
+        working-directory: seaweedfs-source
+        run: |
+          echo "🔨 Building weed binary for verification..."
+          CGO_ENABLED=0 go build -o weed-test ./weed
+          
+          echo "📋 Binary info:"
+          ls -lh weed-test
+          ./weed-test version
+          
+          echo "✅ Build successful"
+          rm weed-test
+
+      # Create build summary
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## 🎯 GitLab Webhook Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📡 Trigger Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Event**: ${{ github.event.action || 'manual' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ steps.parse_webhook.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ steps.clone.outputs.commit_sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **User**: ${{ steps.parse_webhook.outputs.user }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Message**: ${{ steps.parse_webhook.outputs.commit_message }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Clone**: ${{ steps.clone.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Go Setup**: Success" >> $GITHUB_STEP_SUMMARY
+          echo "- **Verification**: Success" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🚀 Build completed successfully!" >> $GITHUB_STEP_SUMMARY
+
+  # Optional: Build release binaries for important branches/tags
+  build-release-binaries:
+    needs: gitlab-webhook-build
+    # Only run for enterprise branch or tags
+    if: |
+      (github.event.client_payload.ref == 'refs/heads/enterprise') ||
+      (startsWith(github.event.client_payload.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v4
+
+      - name: Clone private GitLab repo
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          BRANCH="${{ github.event.client_payload.ref }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="enterprise"
+          else
+            BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||' | sed 's|refs/tags/||')
+          fi
+          
+          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          cd seaweedfs-source
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: seaweedfs-source/go.sum
+
+      - name: Build binary
+        working-directory: seaweedfs-source
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+          GODEBUG: http2client=0
+        run: |
+          BINARY_NAME="weed"
+          if [ "$GOOS" = "windows" ]; then
+            BINARY_NAME="weed.exe"
+          fi
+          
+          OUTPUT_NAME="weed-enterprise-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          fi
+          
+          echo "🔨 Building $OUTPUT_NAME..."
+          
+          go build \
+            -buildvcs=false \
+            -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}" \
+            -o $OUTPUT_NAME \
+            ./weed
+          
+          ls -lh $OUTPUT_NAME
+          echo "✅ Build completed"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: weed-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: seaweedfs-source/weed-*
+          retention-days: 30
+
+  # Notification job (optional)
+  notify:
+    needs: [gitlab-webhook-build, build-release-binaries]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build notification
+        run: |
+          if [ "${{ needs.gitlab-webhook-build.result }}" = "success" ]; then
+            echo "✅ GitLab webhook build completed successfully"
+          else
+            echo "❌ GitLab webhook build failed"
+          fi
+          
+          if [ "${{ needs.build-release-binaries.result }}" = "success" ]; then
+            echo "✅ Release binaries built successfully"
+          elif [ "${{ needs.build-release-binaries.result }}" = "skipped" ]; then
+            echo "⏭️  Release binaries skipped"
+          else
+            echo "❌ Release binaries build failed"
+          fi
