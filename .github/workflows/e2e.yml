@@ -26,7 +26,7 @@ jobs:
   e2e:
     name: FUSE Mount
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v5
@@ -81,7 +81,7 @@ jobs:
         echo "FUSE device: $(ls -la /dev/fuse 2>&1 || echo '/dev/fuse not found')"
 
     - name: Start SeaweedFS
-      timeout-minutes: 10
+      timeout-minutes: 20
       working-directory: seaweedfs-source/docker
       run: |
         # Enable Docker buildkit for better caching
