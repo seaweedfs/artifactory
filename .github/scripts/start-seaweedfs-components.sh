@@ -185,17 +185,15 @@ start_s3() {
     
     local s3_config=""
     if [ -n "$S3_CONFIG_FILE" ] && [ -f "$S3_CONFIG_FILE" ]; then
-        s3_config="-s3.config=$S3_CONFIG_FILE"
+        s3_config="-config=$S3_CONFIG_FILE"
     fi
     
     nohup $WEED_BINARY -v $VERBOSE s3 \
         -port=$S3_PORT \
         -filer="127.0.0.1:$FILER_PORT" \
-        -filer.dir="/buckets" \
         -allowEmptyFolder=false \
         -allowDeleteBucketNotEmpty=true \
         $s3_config \
-        -ip="127.0.0.1" \
         -ip.bind="0.0.0.0" \
         > "$DATA_DIR/s3.log" 2>&1 &
     
