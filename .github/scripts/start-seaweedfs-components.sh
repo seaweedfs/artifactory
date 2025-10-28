@@ -162,9 +162,9 @@ start_filer() {
     
     nohup $WEED_BINARY -v $VERBOSE filer \
         -port=$FILER_PORT \
-        -dir="$DATA_DIR/filer" \
+        -defaultStoreDir="$DATA_DIR/filer" \
         -master="127.0.0.1:$MASTER_PORT" \
-        -filer.maxMB=$FILER_MAX_MB \
+        -maxMB=$FILER_MAX_MB \
         -ip="127.0.0.1" \
         -ip.bind="0.0.0.0" \
         > "$DATA_DIR/filer.log" 2>&1 &
