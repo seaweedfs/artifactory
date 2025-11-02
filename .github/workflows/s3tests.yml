@@ -115,15 +115,10 @@ jobs:
             --s3-config "$S3_CONFIG_FILE" \
             --volume-max 100 \
             --volume-size-limit 100 \
-            --filer-max-mb 64 &
+            --filer-max-mb 64 \
+            --no-cleanup-trap
           
-          # Store the startup script PID so we can manage it
-          STARTUP_PID=$!
-          echo "STARTUP_PID=$STARTUP_PID" >> $GITHUB_ENV
           echo "WEED_DATA_DIR=$WEED_DATA_DIR" >> $GITHUB_ENV
-          
-          # Wait for startup script to complete component initialization
-          wait $STARTUP_PID
           
           echo "All SeaweedFS components started successfully!"
 

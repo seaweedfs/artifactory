@@ -36,6 +36,7 @@ VOLUME_MAX=${VOLUME_MAX:-100}
 VOLUME_SIZE_LIMIT=${VOLUME_SIZE_LIMIT:-100}
 FILER_MAX_MB=${FILER_MAX_MB:-64}
 USE_RAFT=${USE_RAFT:-true}
+CLEANUP_ON_EXIT=${CLEANUP_ON_EXIT:-true}
 
 # Colors for output
 RED='\033[0;31m'
@@ -314,6 +315,7 @@ OPTIONS:
     
     --stop                  Stop all components and exit
     --status                Show cluster status
+    --no-cleanup-trap       Don't install EXIT trap (for CI use)
     
 EXAMPLES:
     # Start basic cluster (master + volume + filer)
@@ -421,6 +423,10 @@ while [[ $# -gt 0 ]]; do
             USE_RAFT=false
             shift
             ;;
+        --no-cleanup-trap)
+            CLEANUP_ON_EXIT=false
+            shift
+            ;;
         --stop)
             stop_all
             exit 0
@@ -447,8 +453,10 @@ main() {
     # Create data directory
     mkdir -p "$DATA_DIR"
     
-    # Set trap to cleanup on exit
-    trap 'stop_all' EXIT INT TERM
+    # Set trap to cleanup on exit (unless disabled for CI)
+    if [ "$CLEANUP_ON_EXIT" = "true" ]; then
+        trap 'stop_all' EXIT INT TERM
+    fi
     
     # Start components in order
     if [ "$START_MASTER" = "true" ]; then
