@@ -56,7 +56,7 @@ jobs:
             echo "Raw user from payload: '$RAW_USER'"
             
             # If template variables weren't replaced (still contain %), use defaults
-            if [[ "$RAW_REF" == *"%{"* ]] || [ -z "$RAW_REF" ]; then
+            if [[ "$RAW_REF" == *"%{"* ]] || [ -z "$RAW_REF" ] || [ "$RAW_REF" = "null" ]; then
               echo "⚠️  GitLab template variables not replaced, using defaults"
               GITLAB_REF="refs/heads/enterprise"
               GITLAB_BRANCH="enterprise"
@@ -67,6 +67,10 @@ jobs:
               echo "✅ GitLab template variables replaced successfully"
               GITLAB_REF="${{ github.event.client_payload.ref }}"
               GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
+              if [ "$GITLAB_BRANCH" = "null" ]; then
+                GITLAB_BRANCH="enterprise"
+                GITLAB_REF="refs/heads/enterprise"
+              fi
               GITLAB_USER="${{ github.event.client_payload.user_name }}"
               GITLAB_COMMIT="${{ github.event.client_payload.after }}"
               GITLAB_COMMIT_MSG="Push to $GITLAB_BRANCH by $GITLAB_USER"
