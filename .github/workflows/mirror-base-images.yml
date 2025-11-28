@@ -17,15 +17,15 @@ jobs:
       matrix:
         include:
           - source: docker.io/library/golang:1.24-alpine
-            target: ghcr.io/chrislusf/golang:1.24-alpine
+            target: ghcr.io/seaweedfs/golang:1.24-alpine
           - source: docker.io/library/golang:1.24
-            target: ghcr.io/chrislusf/golang:1.24
+            target: ghcr.io/seaweedfs/golang:1.24
           - source: docker.io/library/alpine:latest
-            target: ghcr.io/chrislusf/alpine:latest
+            target: ghcr.io/seaweedfs/alpine:latest
           - source: docker.io/library/ubuntu:22.04
-            target: ghcr.io/chrislusf/ubuntu:22.04
+            target: ghcr.io/seaweedfs/ubuntu:22.04
           - source: docker.io/library/ubuntu:20.04
-            target: ghcr.io/chrislusf/ubuntu:20.04
+            target: ghcr.io/seaweedfs/ubuntu:20.04
 
     steps:
       - name: Login to Docker Hub
