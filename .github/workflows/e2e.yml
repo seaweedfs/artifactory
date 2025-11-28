@@ -31,6 +31,18 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v5
 
+    # Free disk space for large builds
+    - name: Free Disk Space
+      run: |
+        echo "Available disk space before cleanup:"
+        df -h
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo docker system prune -af --volumes
+        echo "Available disk space after cleanup:"
+        df -h
+
     - name: Clone private GitLab repository
       env:
         GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
@@ -63,6 +75,16 @@ jobs:
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # Configure BuildKit with Docker Hub mirror to reduce rate limit hits
+    - name: Create BuildKit config
+      run: |
+        mkdir -p ~/.docker
+        cat > ~/.docker/daemon.json <<EOF
+        {
+          "registry-mirrors": ["https://mirror.gcr.io"]
+        }
+        EOF
       
     - name: Cache Docker layers
       uses: actions/cache@v4
