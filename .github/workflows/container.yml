@@ -148,7 +148,7 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
         with:
-          context: ./seaweedfs-enterprise-source/docker
+          context: ./seaweedfs-enterprise-source
           push: ${{ github.event_name != 'pull_request' }}
           file: ./seaweedfs-enterprise-source/docker/${{ matrix.dockerfile }}
           build-args: |
