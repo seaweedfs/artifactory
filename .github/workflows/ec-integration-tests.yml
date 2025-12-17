@@ -37,10 +37,18 @@ jobs:
       run: |
         # Determine branch from webhook or manual input
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
-          BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          BRANCH_REF="${{ github.event.client_payload.ref }}"
+          # Handle null/empty ref by defaulting to enterprise
+          if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
+            BRANCH="enterprise"
+          else
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          fi
         else
-          BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          BRANCH="${{ github.event.inputs.gitlab_branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="enterprise"
+          fi
         fi
         
         echo "Cloning branch: $BRANCH"
@@ -156,10 +164,18 @@ jobs:
       run: |
         # Determine branch from webhook or manual input
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
-          BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          BRANCH_REF="${{ github.event.client_payload.ref }}"
+          # Handle null/empty ref by defaulting to enterprise
+          if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
+            BRANCH="enterprise"
+          else
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          fi
         else
-          BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          BRANCH="${{ github.event.inputs.gitlab_branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="enterprise"
+          fi
         fi
         
         echo "Cloning branch: $BRANCH"
@@ -249,11 +265,20 @@ jobs:
       env:
         GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
       run: |
+        # Determine branch from webhook or manual input
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          BRANCH_REF="${{ github.event.client_payload.ref || 'refs/heads/enterprise' }}"
-          BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          BRANCH_REF="${{ github.event.client_payload.ref }}"
+          # Handle null/empty ref by defaulting to enterprise
+          if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
+            BRANCH="enterprise"
+          else
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          fi
         else
-          BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
+          BRANCH="${{ github.event.inputs.gitlab_branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="enterprise"
+          fi
         fi
         
         echo "Cloning branch: $BRANCH"
