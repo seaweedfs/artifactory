@@ -1,0 +1,129 @@
+name: "Deploy Customer Portal"
+
+on:
+  repository_dispatch:
+    types:
+      - gitlab-push
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'GitLab branch to deploy'
+        required: false
+        default: 'enterprise'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v5
+
+      - name: Resolve GitLab branch
+        id: resolve_branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITLAB_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          BRANCH="$GITLAB_REF"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "null" ]; then
+            BRANCH="$INPUT_BRANCH"
+          fi
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "null" ]; then
+            BRANCH="enterprise"
+          fi
+
+          DEPLOY="true"
+          if [ "$EVENT_NAME" = "repository_dispatch" ] && [ "$BRANCH" != "enterprise" ]; then
+            echo "Skipping non-enterprise branch: $BRANCH"
+            DEPLOY="false"
+          fi
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "deploy=$DEPLOY" >> $GITHUB_OUTPUT
+
+      - name: Clone private GitLab repo
+        if: steps.resolve_branch.outputs.deploy == 'true'
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.resolve_branch.outputs.branch }}"
+          git clone -b "$BRANCH" https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          cd seaweedfs-enterprise-source
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Detect customer-portal changes
+        id: portal_changes
+        if: steps.resolve_branch.outputs.deploy == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.client_payload.before }}
+          AFTER: ${{ github.event.client_payload.after }}
+        run: |
+          if [ "$EVENT_NAME" != "repository_dispatch" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "null" ] || [ -z "$AFTER" ] || [ "$AFTER" = "null" ]; then
+            echo "::warning::GitLab payload missing before/after; proceeding with deploy."
+            echo "changed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Checking changes between $BEFORE and $AFTER"
+          if git -C seaweedfs-enterprise-source diff --name-only "$BEFORE" "$AFTER" -- > /tmp/changed_files.txt; then
+            if grep -q '^customer-portal/' /tmp/changed_files.txt; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "Customer portal changes detected:"
+              grep '^customer-portal/' /tmp/changed_files.txt
+            else
+              echo "No customer-portal changes detected."
+              echo "changed=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "::warning::Failed to compute diff; proceeding with deploy."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Go
+        if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-enterprise-source/go.mod'
+          cache-dependency-path: 'seaweedfs-enterprise-source/go.sum'
+
+      - name: Add GOPATH/bin to PATH
+        if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
+        run: echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Build customer-portal
+        if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
+        working-directory: seaweedfs-enterprise-source/customer-portal
+        run: |
+          make
+          test -f customer-portal
+          ls -lh customer-portal
+
+      - name: Deploy customer-portal binary
+        if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
+          REMOTE_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "Host *" > ~/.ssh/config
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/seaweedfs-portal/bin"
+          scp -i ~/.ssh/deploy_key seaweedfs-enterprise-source/customer-portal/customer-portal $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/bin/customer-portal
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "chmod +x ~/seaweedfs-portal/bin/customer-portal"
+
+          rm -f ~/.ssh/deploy_key
