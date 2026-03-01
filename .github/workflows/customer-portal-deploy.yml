@@ -102,11 +102,18 @@ jobs:
           REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
           REMOTE_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          mkdir -p ~/.ssh
+          mkdir -p ~/.ssh ~/.ssh/sockets
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          echo "Host *" > ~/.ssh/config
-          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+          cat >> ~/.ssh/config <<EOF
+          Host *
+            StrictHostKeyChecking no
+            ServerAliveInterval 60
+            ServerAliveCountMax 10
+            ControlMaster auto
+            ControlPath ~/.ssh/sockets/%r@%h-%p
+            ControlPersist 600
+          EOF
 
           # Create directories and log files
           ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "
@@ -203,15 +210,29 @@ jobs:
           REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
           REMOTE_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          mkdir -p ~/.ssh
+          mkdir -p ~/.ssh ~/.ssh/sockets
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          echo "Host *" > ~/.ssh/config
-          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+          cat >> ~/.ssh/config <<EOF
+          Host *
+            StrictHostKeyChecking no
+            ServerAliveInterval 60
+            ServerAliveCountMax 10
+            ControlMaster auto
+            ControlPath ~/.ssh/sockets/%r@%h-%p
+            ControlPersist 600
+          EOF
 
-          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/seaweedfs-portal/bin"
-          scp -i ~/.ssh/deploy_key seaweedfs-enterprise-source/customer-portal/customer-portal $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/bin/customer-portal
-          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "chmod +x ~/seaweedfs-portal/bin/customer-portal"
-          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "sudo systemctl restart seaweedfs-portal.service"
+          # Ensure temp directory exists
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/seaweedfs-portal/tmp"
+          scp -i ~/.ssh/deploy_key seaweedfs-enterprise-source/customer-portal/customer-portal $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/tmp/customer-portal
+          
+          # Stop service, replace binary securely, and restart
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "
+            sudo systemctl stop seaweedfs-portal.service && \
+            chmod +x ~/seaweedfs-portal/tmp/customer-portal && \
+            mkdir -p ~/seaweedfs-portal/bin && \
+            mv ~/seaweedfs-portal/tmp/customer-portal ~/seaweedfs-portal/bin/customer-portal && \
+            sudo systemctl start seaweedfs-portal.service"
 
           rm -f ~/.ssh/deploy_key
