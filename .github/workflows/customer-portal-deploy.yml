@@ -10,6 +10,11 @@ on:
         description: 'GitLab branch to deploy'
         required: false
         default: 'enterprise'
+      setup:
+        description: 'Run first-time server setup'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -90,6 +95,88 @@ jobs:
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
+      - name: First-time Server Setup
+        if: steps.resolve_branch.outputs.deploy == 'true' && github.event_name == 'workflow_dispatch' && inputs.setup
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
+          REMOTE_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "Host *" > ~/.ssh/config
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+
+          # Create directories and log files
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "
+            mkdir -p ~/seaweedfs-portal/bin ~/seaweedfs-portal/logs && \
+            chmod 755 ~/seaweedfs-portal/logs && \
+            touch ~/seaweedfs-portal/logs/portal.log ~/seaweedfs-portal/logs/portal.error.log && \
+            chmod 644 ~/seaweedfs-portal/logs/*.log"
+
+          # Create placeholder env file if missing
+          if ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "test -f ~/seaweedfs-portal/portal.env"; then
+            echo "portal.env already exists; leaving it unchanged."
+          else
+            cat > portal.env <<'EOF'
+          # Update values and keep this file private (chmod 600).
+          PORTAL_DB=postgres://portal_user:0o0o030808o@localhost/portal
+          PORTAL_SESSION_SECRET=change-me-in-production-32-chars!!
+          PORTAL_SMTP_PASSWORD=
+          EOF
+            scp -i ~/.ssh/deploy_key portal.env $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/portal.env
+            rm -f portal.env
+            ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "chmod 600 ~/seaweedfs-portal/portal.env"
+          fi
+
+          # Create service file
+          cat > seaweedfs-portal.service <<EOF
+          [Unit]
+          Description=SeaweedFS Customer Portal Service
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=$REMOTE_USER
+          WorkingDirectory=/home/$REMOTE_USER/seaweedfs-portal
+          EnvironmentFile=/home/$REMOTE_USER/seaweedfs-portal/portal.env
+          ExecStart=/home/$REMOTE_USER/seaweedfs-portal/bin/customer-portal -port=8090 -baseUrl=https://portal.seaweedfs.com
+          Restart=always
+          StandardOutput=append:/home/$REMOTE_USER/seaweedfs-portal/logs/portal.log
+          StandardError=append:/home/$REMOTE_USER/seaweedfs-portal/logs/portal.error.log
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # Setup logrotate configuration
+          cat > seaweedfs-portal_logrotate <<EOF
+          # SeaweedFS Customer Portal log rotation
+          /home/$REMOTE_USER/seaweedfs-portal/logs/*.log {
+              daily
+              rotate 7
+              compress
+              delaycompress
+              missingok
+              notifempty
+              create 644 $REMOTE_USER $REMOTE_USER
+              postrotate
+                  systemctl restart seaweedfs-portal.service
+              endscript
+          }
+          EOF
+
+          # Copy and install service and logrotate files
+          scp -i ~/.ssh/deploy_key seaweedfs-portal.service seaweedfs-portal_logrotate $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "
+            sudo mv ~/seaweedfs-portal/seaweedfs-portal.service /etc/systemd/system/ && \
+            sudo mv ~/seaweedfs-portal/seaweedfs-portal_logrotate /etc/logrotate.d/seaweedfs-portal && \
+            sudo systemctl daemon-reload && \
+            sudo systemctl enable seaweedfs-portal.service"
+
+          rm -f ~/.ssh/deploy_key seaweedfs-portal.service seaweedfs-portal_logrotate
+
       - name: Set up Go
         if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
         uses: actions/setup-go@v6
@@ -125,5 +212,6 @@ jobs:
           ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/seaweedfs-portal/bin"
           scp -i ~/.ssh/deploy_key seaweedfs-enterprise-source/customer-portal/customer-portal $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/bin/customer-portal
           ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "chmod +x ~/seaweedfs-portal/bin/customer-portal"
+          ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "sudo systemctl restart seaweedfs-portal.service"
 
           rm -f ~/.ssh/deploy_key
