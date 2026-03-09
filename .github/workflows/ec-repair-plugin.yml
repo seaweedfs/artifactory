@@ -1,0 +1,100 @@
+name: "EC Repair Plugin Worker (GitLab)"
+
+on:
+  repository_dispatch:
+    types:
+      - gitlab-push
+      - gitlab-merge-request
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'GitLab branch to test'
+        required: false
+        default: 'enterprise'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/ec-repair-plugin
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ec-repair-plugin:
+    name: EC Repair Plugin Worker E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v5
+
+    - name: Clone private GitLab repository
+      env:
+        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+      run: |
+        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          BRANCH_REF="${{ github.event.client_payload.ref }}"
+          if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
+            BRANCH="enterprise"
+          else
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          fi
+        else
+          BRANCH="${{ github.event.inputs.gitlab_branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="enterprise"
+          fi
+        fi
+
+        echo "Cloning branch: $BRANCH"
+        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+        echo "BRANCH_NAME=$BRANCH" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/go.mod'
+        cache-dependency-path: 'seaweedfs-source/go.sum'
+      id: go
+
+    - name: Build weed binary
+      working-directory: seaweedfs-source/weed
+      run: |
+        echo "Building SeaweedFS weed binary..."
+        go build -o weed .
+        ./weed version
+        echo "$(pwd)" >> $GITHUB_PATH
+
+    - name: Run EC Repair Plugin Worker Test
+      working-directory: seaweedfs-source
+      run: |
+        bash ${{ github.workspace }}/.github/scripts/test-ec-repair-plugin.sh
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-repair-plugin-logs-${{ env.COMMIT_SHA }}
+        path: |
+          /tmp/ec-repair-test-*/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "## EC Repair Plugin Worker Test" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: ${{ env.BRANCH_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What this tests" >> $GITHUB_STEP_SUMMARY
+        echo "1. Start weed mini + 4 volume servers (100MB volume limit)" >> $GITHUB_STEP_SUMMARY
+        echo "2. Upload data, EC-encode a volume (14 shards across 5 nodes)" >> $GITHUB_STEP_SUMMARY
+        echo "3. Simulate shard loss (kill node, delete shard files, restart)" >> $GITHUB_STEP_SUMMARY
+        echo "4. Trigger ec_repair plugin worker via admin API" >> $GITHUB_STEP_SUMMARY
+        echo "5. Verify all shards restored, no /tmp leaks, clean detection" >> $GITHUB_STEP_SUMMARY
