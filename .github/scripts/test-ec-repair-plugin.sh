@@ -31,12 +31,32 @@ info() { echo -e "${YELLOW}[INFO]${NC} $1"; }
 
 EXIT_CODE=0
 
+dump_logs() {
+    echo ""
+    echo "======== SERVER LOGS ========"
+    for logfile in "${DATA_DIR}"/*.log; do
+        [ -f "$logfile" ] || continue
+        echo ""
+        echo "──── $(basename "$logfile") ────"
+        tail -100 "$logfile"
+    done
+    echo "======== END LOGS ========"
+    echo ""
+}
+
 cleanup() {
+    local exit_code=$?
     info "Cleaning up..."
     pkill -f "${DATA_DIR}" 2>/dev/null || true
     sleep 2
     pkill -9 -f "${DATA_DIR}" 2>/dev/null || true
-    rm -rf "${DATA_DIR}"
+    if [ "$exit_code" -ne 0 ] || [ "$EXIT_CODE" -ne 0 ]; then
+        dump_logs
+        # preserve logs for artifact upload; only delete non-log data
+        find "${DATA_DIR}" -type f ! -name '*.log' -delete 2>/dev/null || true
+    else
+        rm -rf "${DATA_DIR}"
+    fi
 }
 trap cleanup EXIT
 
@@ -141,7 +161,7 @@ for i in $(seq 1 $NUM_EXTRA_VOLUMES); do
 done
 
 # Wait for volume servers to register with master
-sleep 5
+sleep 10
 REGISTERED=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/vol/status" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -167,10 +187,20 @@ dd if=/dev/urandom of="${DATA_DIR}/testfile" bs=1M count=10 2>/dev/null
 
 info "Uploading files to collection 'ectest'"
 for i in $(seq 1 12); do
-    ASSIGN=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/dir/assign?collection=ectest")
+    ASSIGN=""
+    for attempt in $(seq 1 5); do
+        ASSIGN=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/dir/assign?collection=ectest" 2>/dev/null) && break
+        info "Assign attempt $attempt failed, retrying..."
+        sleep 3
+    done
+    if [ -z "$ASSIGN" ]; then
+        fail "Failed to assign volume for upload $i after 5 attempts"
+        exit 1
+    fi
     FID=$(echo "$ASSIGN" | python3 -c "import sys,json; print(json.load(sys.stdin)['fid'])")
     URL=$(echo "$ASSIGN" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])")
-    curl -sf -F file=@"${DATA_DIR}/testfile" "http://${URL}/${FID}" > /dev/null
+    curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+        -F file=@"${DATA_DIR}/testfile" "http://${URL}/${FID}" > /dev/null
 done
 info "Uploaded 12 files (~120MB total)"
 
