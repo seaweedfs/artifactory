@@ -4,7 +4,7 @@
 #
 # Tests the ec_repair plugin worker end-to-end:
 # 1. Start weed mini (master + filer + volume + admin) + 4 standalone volume servers
-# 2. Upload data to fill a volume, then EC-encode it
+# 2. Upload data, then EC-encode via the erasure_coding plugin worker
 # 3. Simulate shard loss by stopping a volume server and deleting shard files
 # 4. Trigger ec_repair detection + execution via admin plugin API
 # 5. Verify all shards are restored and no temp files leaked to /tmp
@@ -122,10 +122,10 @@ fi
 wait_for_http "Admin" "http://${MASTER_IP}:${ADMIN_PORT}/health" 15
 info "Admin server ready on port $ADMIN_PORT"
 
-# Wait for plugin worker to register
+# Wait for plugin workers to register (need both erasure_coding and ec_repair)
 for attempt in $(seq 1 30); do
     JOB_TYPES=$(curl -sf "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types" || echo "[]")
-    if echo "$JOB_TYPES" | grep -q "ec_repair"; then
+    if echo "$JOB_TYPES" | grep -q "ec_repair" && echo "$JOB_TYPES" | grep -q "erasure_coding"; then
         break
     fi
     sleep 1
@@ -135,7 +135,11 @@ if ! echo "$JOB_TYPES" | grep -q "ec_repair"; then
     fail "ec_repair job type not registered with admin"
     exit 1
 fi
-info "ec_repair plugin worker registered"
+if ! echo "$JOB_TYPES" | grep -q "erasure_coding"; then
+    fail "erasure_coding job type not registered with admin"
+    exit 1
+fi
+info "Plugin workers registered (erasure_coding + ec_repair)"
 
 info "Starting $NUM_EXTRA_VOLUMES additional volume servers"
 for i in $(seq 1 $NUM_EXTRA_VOLUMES); do
@@ -180,7 +184,7 @@ if [ "$REGISTERED" -lt "$EXPECTED" ]; then
 fi
 pass "All $REGISTERED volume servers registered"
 
-# ── Upload data and EC-encode ──────────────────────────────────────────
+# ── Upload data and EC-encode via plugin worker ───────────────────────
 
 info "Generating 10MB test file"
 dd if=/dev/urandom of="${DATA_DIR}/testfile" bs=1M count=10 2>/dev/null
@@ -204,34 +208,53 @@ for i in $(seq 1 12); do
 done
 info "Uploaded 12 files (~120MB total)"
 
-# Find any ectest volume with data (pick the largest)
-ECVOL=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/vol/status" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-dcs = data['Volumes']['DataCenters']
-best_id, best_size = None, 0
-for dc in dcs.values():
-    for rack in dc.values():
-        for node_url, vols in rack.items():
-            if vols is None:
-                continue
-            for v in vols:
-                if v.get('Collection') == 'ectest' and v.get('Size', 0) > best_size:
-                    best_id, best_size = v['Id'], v['Size']
-if best_id is not None:
-    print(best_id)
-else:
-    sys.exit(1)
-" 2>/dev/null || echo "")
+# Configure erasure_coding plugin worker for CI: no quiet period, low thresholds
+info "Configuring erasure_coding plugin worker for CI"
+curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_coding/config" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "jobType": "erasure_coding",
+        "workerConfigValues": {
+            "quiet_for_seconds": {"int64Value": "0"},
+            "min_size_mb": {"int64Value": "1"},
+            "fullness_ratio": {"doubleValue": 0.0},
+            "min_interval_seconds": {"int64Value": "0"}
+        },
+        "adminConfigValues": {
+            "collection_filter": {"stringValue": "ectest"}
+        }
+    }' > /dev/null
 
-if [ -z "$ECVOL" ]; then
-    fail "No ectest volumes found"
+# Run erasure_coding detection + execution via plugin API
+info "Running erasure_coding plugin worker to EC-encode volumes"
+EC_ENCODE_RESULT=$(curl -sf -X POST "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_coding/run" \
+    -H "Content-Type: application/json" \
+    -d '{"max_results": 100, "timeout_seconds": 120}')
+
+EC_DETECTED=$(echo "$EC_ENCODE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('detected_count', 0))")
+EC_SUCCEEDED=$(echo "$EC_ENCODE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success_count', 0))")
+EC_ERRORS=$(echo "$EC_ENCODE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error_count', 0))")
+
+if [ "$EC_DETECTED" -lt 1 ]; then
+    fail "EC encoding detected 0 candidates (expected >= 1)"
+    echo "$EC_ENCODE_RESULT" | python3 -m json.tool 2>/dev/null || echo "$EC_ENCODE_RESULT"
     exit 1
 fi
-info "EC-encoding volume $ECVOL"
+if [ "$EC_SUCCEEDED" -lt 1 ] || [ "$EC_ERRORS" -gt 0 ]; then
+    fail "EC encoding: succeeded=$EC_SUCCEEDED errors=$EC_ERRORS"
+    echo "$EC_ENCODE_RESULT" | python3 -m json.tool 2>/dev/null || echo "$EC_ENCODE_RESULT"
+    exit 1
+fi
+pass "EC encoding completed: $EC_SUCCEEDED volume(s) encoded via plugin worker"
 
-echo "lock; ec.encode -collection=ectest -volumeId=${ECVOL} -force; unlock" | \
-    $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" > "${DATA_DIR}/ec-encode.log" 2>&1
+# Find the EC-encoded volume
+ECVOL=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | \
+    grep -o 'ec volume id:[0-9]*' | head -1 | grep -o '[0-9]*' || echo "")
+
+if [ -z "$ECVOL" ]; then
+    fail "No EC volumes found after encoding"
+    exit 1
+fi
 
 # Verify EC shards exist
 EC_NODES=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | grep "ec volume id:${ECVOL}" | wc -l)

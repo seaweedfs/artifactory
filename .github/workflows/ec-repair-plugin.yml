@@ -93,8 +93,8 @@ jobs:
         echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### What this tests" >> $GITHUB_STEP_SUMMARY
-        echo "1. Start weed mini + 4 volume servers (15MB volume limit)" >> $GITHUB_STEP_SUMMARY
-        echo "2. Upload data, EC-encode a volume (14 shards across 5 nodes)" >> $GITHUB_STEP_SUMMARY
+        echo "1. Start weed mini + 4 volume servers" >> $GITHUB_STEP_SUMMARY
+        echo "2. Upload data, EC-encode via erasure_coding plugin worker" >> $GITHUB_STEP_SUMMARY
         echo "3. Simulate shard loss (kill node, delete shard files, restart)" >> $GITHUB_STEP_SUMMARY
         echo "4. Trigger ec_repair plugin worker via admin API" >> $GITHUB_STEP_SUMMARY
         echo "5. Verify all shards restored, no /tmp leaks, clean detection" >> $GITHUB_STEP_SUMMARY
