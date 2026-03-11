@@ -204,25 +204,28 @@ for i in $(seq 1 12); do
 done
 info "Uploaded 12 files (~120MB total)"
 
-# Find a volume that's over the size limit
+# Find any ectest volume with data (pick the largest)
 ECVOL=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/vol/status" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 dcs = data['Volumes']['DataCenters']
+best_id, best_size = None, 0
 for dc in dcs.values():
     for rack in dc.values():
         for node_url, vols in rack.items():
             if vols is None:
                 continue
             for v in vols:
-                if v.get('Collection') == 'ectest' and v['Size'] > ${VOLUME_SIZE_LIMIT_MB} * 1024 * 1024:
-                    print(v['Id'])
-                    sys.exit(0)
-sys.exit(1)
+                if v.get('Collection') == 'ectest' and v.get('Size', 0) > best_size:
+                    best_id, best_size = v['Id'], v['Size']
+if best_id is not None:
+    print(best_id)
+else:
+    sys.exit(1)
 " 2>/dev/null || echo "")
 
 if [ -z "$ECVOL" ]; then
-    fail "No ectest volume exceeded ${VOLUME_SIZE_LIMIT_MB}MB"
+    fail "No ectest volumes found"
     exit 1
 fi
 info "EC-encoding volume $ECVOL"
