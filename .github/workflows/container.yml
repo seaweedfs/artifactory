@@ -55,7 +55,7 @@ jobs:
       - name: Install musl tools (amd64)
         if: ${{ !matrix.cross }}
         run: |
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools linux-headers-generic
 
       - name: Build OpenSSL for x86_64-musl (amd64)
         if: ${{ !matrix.cross }}
@@ -63,7 +63,9 @@ jobs:
           OPENSSL_VERSION="3.5.0"
           curl -sL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" | tar xz
           cd "openssl-${OPENSSL_VERSION}"
-          CC="musl-gcc -fPIC" ./Configure linux-x86_64 --prefix=/usr/local/x86_64-linux-musl-openssl \
+          KERNEL_HEADERS=$(find /usr/src -maxdepth 1 -name 'linux-headers-*-generic' | head -1)
+          CC="musl-gcc -fPIC -I${KERNEL_HEADERS}/include" ./Configure linux-x86_64 \
+            --prefix=/usr/local/x86_64-linux-musl-openssl \
             no-shared no-async no-engine
           make -j$(nproc)
           sudo make install_sw
@@ -78,10 +80,13 @@ jobs:
       - name: Cross-compile OpenSSL for aarch64-musl
         if: matrix.cross
         run: |
+          sudo apt-get install -y linux-headers-generic
           OPENSSL_VERSION="3.5.0"
           curl -sL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" | tar xz
           cd "openssl-${OPENSSL_VERSION}"
-          ./Configure linux-aarch64 --prefix=/usr/local/aarch64-linux-musl-openssl \
+          KERNEL_HEADERS=$(find /usr/src -maxdepth 1 -name 'linux-headers-*-generic' | head -1)
+          CFLAGS="-I${KERNEL_HEADERS}/include" ./Configure linux-aarch64 \
+            --prefix=/usr/local/aarch64-linux-musl-openssl \
             --cross-compile-prefix=aarch64-linux-gnu- \
             no-shared no-async no-engine
           make -j$(nproc)
