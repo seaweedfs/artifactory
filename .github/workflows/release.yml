@@ -37,7 +37,7 @@ jobs:
     steps:
       # Checkout the current artifactory repo (just to have the workflow)
       - name: Checkout artifactory repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Clone the private GitLab repository (SeaweedFS Enterprise)
       - name: Clone private GitLab repo (SeaweedFS Enterprise)

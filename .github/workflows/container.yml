@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
 
-  # ── Pre-build Rust volume server binaries natively ──────────────────
+  # ── Pre-build Rust volume server binaries natively ─────────────���────
   # Cross-compiles for amd64 and arm64 without QEMU, turning a 5-hour
   # emulated cargo build into ~15 minutes of native compilation.
   build-rust-binaries:
@@ -54,22 +54,7 @@ jobs:
 
       - name: Install musl tools (amd64)
         if: ${{ !matrix.cross }}
-        run: |
-          sudo apt-get install -y musl-tools linux-headers-generic
-
-      - name: Build OpenSSL for x86_64-musl (amd64)
-        if: ${{ !matrix.cross }}
-        run: |
-          OPENSSL_VERSION="3.5.0"
-          curl -sL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" | tar xz
-          cd "openssl-${OPENSSL_VERSION}"
-          KERNEL_HEADERS=$(find /usr/src -maxdepth 1 -name 'linux-headers-*-generic' | head -1)
-          CC="musl-gcc -fPIC -I${KERNEL_HEADERS}/include" ./Configure linux-x86_64 \
-            --prefix=/usr/local/x86_64-linux-musl-openssl \
-            no-shared no-async no-engine
-          make -j$(nproc)
-          sudo make install_sw
-          echo "X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_DIR=/usr/local/x86_64-linux-musl-openssl" >> "$GITHUB_ENV"
+        run: sudo apt-get install -y musl-tools
 
       - name: Install cross-compilation tools (arm64)
         if: matrix.cross
@@ -77,24 +62,8 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
-      - name: Cross-compile OpenSSL for aarch64-musl
-        if: matrix.cross
-        run: |
-          sudo apt-get install -y linux-headers-generic
-          OPENSSL_VERSION="3.5.0"
-          curl -sL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" | tar xz
-          cd "openssl-${OPENSSL_VERSION}"
-          KERNEL_HEADERS=$(find /usr/src -maxdepth 1 -name 'linux-headers-*-generic' | head -1)
-          CFLAGS="-I${KERNEL_HEADERS}/include" ./Configure linux-aarch64 \
-            --prefix=/usr/local/aarch64-linux-musl-openssl \
-            --cross-compile-prefix=aarch64-linux-gnu- \
-            no-shared no-async no-engine
-          make -j$(nproc)
-          sudo make install_sw
-          echo "AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_DIR=/usr/local/aarch64-linux-musl-openssl" >> "$GITHUB_ENV"
-
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -176,7 +145,7 @@ jobs:
     steps:
       # Checkout the current artifactory repo
       - name: Checkout artifactory repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Free disk space for large builds
       - name: Free Disk Space
@@ -226,7 +195,7 @@ jobs:
       # Docker meta for tagging
       - name: Docker meta
         id: docker_meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             chrislusf/seaweedfs-enterprise
@@ -244,7 +213,7 @@ jobs:
       # Set up QEMU for multi-platform builds
       - name: Set up QEMU
         if: contains(matrix.platforms, 'arm')
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       # Configure BuildKit with Docker Hub mirror to reduce rate limit hits
       - name: Create BuildKit config
@@ -256,14 +225,14 @@ jobs:
 
       # Set up Docker Buildx with mirror config
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           buildkitd-config: /tmp/buildkitd.toml
 
       # Login to Docker Hub BEFORE building to avoid rate limits
       - name: Login to Docker Hub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -271,7 +240,7 @@ jobs:
       # Login to GHCR
       - name: Login to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -279,7 +248,7 @@ jobs:
 
       # Build and push Docker image
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         env:
           DOCKER_BUILDKIT: 1
         with:

@@ -33,7 +33,7 @@ jobs:
     
     steps:
       - name: Checkout artifactory repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Clone private GitLab repository
         env:
@@ -170,7 +170,7 @@ jobs:
     
     steps:
       - name: Checkout artifactory repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Clone private GitLab repository
         env:
@@ -256,7 +256,7 @@ jobs:
     
     steps:
       - name: Checkout artifactory repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Clone private GitLab repository
         env:
@@ -339,7 +339,7 @@ jobs:
     
     steps:
       - name: Checkout artifactory repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Clone private GitLab repository
         env:

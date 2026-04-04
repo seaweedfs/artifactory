@@ -38,7 +38,7 @@ jobs:
     steps:
       # Checkout artifactory repo (for workflow context)
       - name: Checkout artifactory repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Parse GitLab webhook payload
       - name: Parse GitLab webhook payload
@@ -144,7 +144,7 @@ jobs:
 
       # Set up Go environment
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/go.mod'
           cache-dependency-path: seaweedfs-source/go.sum
@@ -245,7 +245,7 @@ jobs:
 
     steps:
       - name: Checkout artifactory repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Clone private GitLab repo
         env:
@@ -263,7 +263,7 @@ jobs:
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/go.mod'
           cache-dependency-path: seaweedfs-source/go.sum
