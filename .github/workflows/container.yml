@@ -21,7 +21,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  # ── Pre-build Rust volume server binaries natively ──────────────────
+  # Cross-compiles for amd64 and arm64 without QEMU, turning a 5-hour
+  # emulated cargo build into ~15 minutes of native compilation.
+  build-rust-binaries:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+            cross: true
+    steps:
+      - name: Clone private GitLab repo (SeaweedFS Enterprise)
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git clone -b enterprise https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          cd seaweedfs-enterprise-source
+          echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools (amd64)
+        if: ${{ !matrix.cross }}
+        run: sudo apt-get install -y musl-tools
+
+      - name: Install cross-compilation tools (arm64)
+        if: matrix.cross
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-enterprise-source/seaweed-volume/target
+          key: rust-docker-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-docker-${{ matrix.target }}-
+
+      - name: Build large-disk variant
+        env:
+          SEAWEEDFS_COMMIT: ${{ github.sha }}
+        run: |
+          cd seaweedfs-enterprise-source/seaweed-volume
+          cargo build --release --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/weed-volume ../../weed-volume-large-disk-${{ matrix.arch }}
+
+      - name: Build normal variant
+        env:
+          SEAWEEDFS_COMMIT: ${{ github.sha }}
+        run: |
+          cd seaweedfs-enterprise-source/seaweed-volume
+          cargo build --release --target ${{ matrix.target }} --no-default-features
+          cp target/${{ matrix.target }}/release/weed-volume ../../weed-volume-normal-${{ matrix.arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-volume-${{ matrix.arch }}
+          path: |
+            weed-volume-large-disk-${{ matrix.arch }}
+            weed-volume-normal-${{ matrix.arch }}
+
+  # ── Build Docker containers ─────────────────────────────────────────
   build-enterprise-containers:
+    needs: [build-rust-binaries]
     runs-on: ubuntu-latest
     strategy:
       # Build sequentially to avoid rate limits
@@ -34,30 +112,35 @@ jobs:
             build_args: ""
             dockerfile: "Dockerfile.go_build"
             platforms: "linux/amd64,linux/arm64,linux/arm"
+            rust_variant: "normal"
           # Large disk container
           - variant: "large_disk"
             suffix: "_large_disk"
             build_args: "TAGS=5BytesOffset"
             dockerfile: "Dockerfile.go_build"
             platforms: "linux/amd64,linux/arm64,linux/arm"
+            rust_variant: "large-disk"
           # RocksDB with large disk support
           - variant: "rocksdb_large"
             suffix: "_large_disk_rocksdb"
             build_args: ""
             dockerfile: "Dockerfile.rocksdb_large"
             platforms: "linux/amd64"
+            rust_variant: "large-disk"
           # Full features container
           - variant: "full"
             suffix: "_full"
             build_args: "TAGS=elastic,gocdk,rclone,sqlite,tarantool,tikv,ydb"
             dockerfile: "Dockerfile.go_build"
             platforms: "linux/amd64"
+            rust_variant: "normal"
           # Full features with large disk support
           - variant: "full_large"
             suffix: "_large_disk_full"
             build_args: "TAGS=5BytesOffset,elastic,gocdk,rclone,sqlite,tarantool,tikv,ydb"
             dockerfile: "Dockerfile.go_build"
             platforms: "linux/amd64"
+            rust_variant: "large-disk"
 
     steps:
       # Checkout the current artifactory repo
@@ -87,6 +170,27 @@ jobs:
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      # Download pre-built Rust binaries from the build-rust-binaries job
+      - name: Download pre-built Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rust-volume-*
+          merge-multiple: true
+          path: ./rust-bins
+
+      # Place Rust binaries in Docker build context
+      - name: Place Rust binaries in Docker context
+        run: |
+          mkdir -p seaweedfs-enterprise-source/weed-volume-prebuilt
+          for arch in amd64 arm64; do
+            src="./rust-bins/weed-volume-${{ matrix.rust_variant }}-${arch}"
+            if [ -f "$src" ]; then
+              cp "$src" "seaweedfs-enterprise-source/weed-volume-prebuilt/weed-volume-${arch}"
+              echo "Placed pre-built Rust binary for ${arch}"
+            fi
+          done
+          ls -la seaweedfs-enterprise-source/weed-volume-prebuilt/
 
       # Docker meta for tagging
       - name: Docker meta
@@ -165,4 +269,4 @@ jobs:
         if: always()
         run: |
           sudo docker system prune -f
-          sudo rm -rf /tmp/go-build* 
+          sudo rm -rf /tmp/go-build*
