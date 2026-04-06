@@ -204,6 +204,7 @@ jobs:
             ghcr.io/seaweedfs/seaweedfs-enterprise
           tags: |
             type=ref,event=tag,suffix=${{ matrix.suffix }}
+            type=raw,value=${{ inputs.tag_name }},suffix=${{ matrix.suffix }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest,suffix=${{ matrix.suffix }},enable={{is_default_branch}}
           flavor: |
             latest=false
