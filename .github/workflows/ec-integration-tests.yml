@@ -143,17 +143,18 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Test Features Covered" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **EC 10+4 Encoding**: Standard erasure coding with 10 data + 4 parity shards" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ **Customizable EC Ratios**: Enterprise feature for custom data/parity ratios" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Customizable EC Ratios**: Enterprise feature for custom data/parity ratios (see ec-custom-ratio-tests job)" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **Volume Location Collection**: Pre-encoding location caching" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **Multi-Disk Support**: Distribution across multiple disks per server" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **Disk Type Filtering**: SSD/HDD-aware EC placement" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **Rack-Aware Placement**: Cross-rack fault tolerance" >> $GITHUB_STEP_SUMMARY
 
-  # Additional job for custom EC ratio tests (Enterprise feature)
+  # End-to-end test for custom EC ratio support (Enterprise feature)
+  # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
   ec-custom-ratio-tests:
     name: EC Custom Ratio Tests
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -165,7 +166,6 @@ jobs:
         # Determine branch from webhook or manual input
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
           BRANCH_REF="${{ github.event.client_payload.ref }}"
-          # Handle null/empty ref by defaulting to enterprise
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
             BRANCH="enterprise"
           else
@@ -177,10 +177,10 @@ jobs:
             BRANCH="enterprise"
           fi
         fi
-        
+
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
-        
+
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -193,64 +193,61 @@ jobs:
       id: go
 
     - name: Build weed binary
-      working-directory: seaweedfs-source/weed
-      run: |
-        echo "Building SeaweedFS weed binary..."
-        go build -o weed .
-        ./weed version
-        echo "$(pwd)" >> $GITHUB_PATH
-
-    - name: Test Custom EC Ratios
       working-directory: seaweedfs-source
       run: |
-        echo "Testing Custom EC Ratio Support (Enterprise Feature)..."
-        
-        # Check if custom EC ratio implementation exists
-        if grep -r "CustomECRatio\|ecRatio\|ErasureCodingRatio" weed/shell/ 2>/dev/null; then
-          echo "Custom EC ratio implementation found!"
-          
-          # Run any custom EC ratio tests
-          if [ -d "test/erasure_coding_custom" ]; then
-            cd test/erasure_coding_custom
-            go test -v -timeout 30m
-          else
-            echo "No custom EC ratio test directory found, running standard EC tests with ratio flags..."
-          fi
-        else
-          echo "Custom EC ratio feature not yet implemented in this branch"
-        fi
+        echo "Building SeaweedFS weed binary for custom EC ratio tests..."
+        go build -o weed_bin ./weed
+        ./weed_bin version
+        ls -lh weed_bin
 
-    - name: Test EC Shell Commands
-      working-directory: seaweedfs-source
+    - name: Test Custom EC Ratio Config Propagation
+      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
       run: |
-        echo "Verifying EC shell command flags..."
-        
-        # Check ec.encode help for custom ratio flags
-        ./weed/weed shell -c "help ec.encode" 2>&1 || echo "Shell help check skipped"
-        
-        # Verify the EC commands exist and have expected flags
-        echo "Checking EC command implementations..."
-        
-        if grep -q "ecRatio\|dataShards\|parityShards" weed/shell/command_ec_encode.go 2>/dev/null; then
-          echo "✅ Custom EC ratio flags found in ec.encode command"
-        else
-          echo "ℹ️ Using standard 10+4 EC ratio"
-        fi
+        echo "Running EC custom ratio config propagation test..."
+        go test -v -run TestCustomECRatioConfigPropagation -timeout 15m
+
+    - name: Test Custom EC Ratio End-to-End (4+2)
+      if: success() || failure()
+      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
+      run: |
+        echo "Running EC custom ratio 4+2 end-to-end test..."
+        echo "This test verifies that configuring a 4+2 EC ratio via the admin API"
+        echo "produces exactly 6 EC shards (not the default 14 from 10+4)."
+        go test -v -run TestCustomECRatioEndToEnd -timeout 15m
+
+    - name: Test Multiple EC Ratios
+      if: success() || failure()
+      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
+      run: |
+        echo "Running multiple EC ratio tests (4+2, 6+3, 8+4)..."
+        go test -v -run TestMultipleECRatios -timeout 30m
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-custom-ratio-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/test/erasure_coding/custom_ratio_test/tmp/logs/*.log
+        if-no-files-found: ignore
+        retention-days: 7
 
     - name: EC Custom Ratio Test Summary
       if: always()
       run: |
-        echo "## 🔢 EC Custom Ratio Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "## EC Custom Ratio Test Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Enterprise EC Features" >> $GITHUB_STEP_SUMMARY
-        echo "- 📊 **Custom Data Shards**: Configurable number of data shards (default: 10)" >> $GITHUB_STEP_SUMMARY
-        echo "- 🛡️ **Custom Parity Shards**: Configurable number of parity shards (default: 4)" >> $GITHUB_STEP_SUMMARY
-        echo "- 🔧 **Flexible Ratios**: Support for various EC configurations (e.g., 4+2, 6+3, 10+4, 16+4)" >> $GITHUB_STEP_SUMMARY
+        echo "Regression test for [#8936](https://github.com/seaweedfs/seaweedfs/issues/8936)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Use Cases" >> $GITHUB_STEP_SUMMARY
-        echo "- **High Durability**: 10+4 provides ~1.4x storage overhead with high fault tolerance" >> $GITHUB_STEP_SUMMARY
-        echo "- **Storage Efficient**: 4+2 provides ~1.5x overhead with good fault tolerance" >> $GITHUB_STEP_SUMMARY
-        echo "- **Max Efficiency**: 16+4 provides ~1.25x overhead for large-scale storage" >> $GITHUB_STEP_SUMMARY
+        echo "### Tests" >> $GITHUB_STEP_SUMMARY
+        echo "- **Config Propagation**: Verifies admin API accepts and persists custom data_shards/parity_shards" >> $GITHUB_STEP_SUMMARY
+        echo "- **End-to-End 4+2**: Configures 4+2 ratio, uploads data, verifies 6 shards created (not 14)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Multiple Ratios**: Tests 4+2, 6+3, 8+4 ratios with data integrity verification" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What This Catches" >> $GITHUB_STEP_SUMMARY
+        echo "- Custom EC ratio not propagated from admin config to detection/execution" >> $GITHUB_STEP_SUMMARY
+        echo "- Detection code hardcoding default 10+4 instead of reading configured ratio" >> $GITHUB_STEP_SUMMARY
+        echo "- Data corruption or read failures after custom-ratio EC encoding" >> $GITHUB_STEP_SUMMARY
 
   # Regression test job
   ec-regression-tests:
