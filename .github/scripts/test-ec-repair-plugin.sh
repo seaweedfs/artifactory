@@ -292,8 +292,16 @@ fi
 DELETED_SHARDS=$(ls "${DATA_DIR}/vol${VICTIM_IDX}"/ectest_${ECVOL}.ec[0-9]* 2>/dev/null | wc -l)
 info "Simulating shard loss: killing vol${VICTIM_IDX} (port $VICTIM_PORT) and deleting $DELETED_SHARDS shard files"
 
-kill "$(cat "${DATA_DIR}/vol${VICTIM_IDX}.pid")" 2>/dev/null || true
-sleep 2
+VICTIM_PID=$(cat "${DATA_DIR}/vol${VICTIM_IDX}.pid")
+kill "$VICTIM_PID" 2>/dev/null || true
+# Wait for the process to fully exit (volume servers take up to 10s for graceful shutdown)
+for _i in $(seq 1 15); do
+    kill -0 "$VICTIM_PID" 2>/dev/null || break
+    sleep 1
+done
+# Force-kill if still alive
+kill -9 "$VICTIM_PID" 2>/dev/null || true
+sleep 1
 
 # Delete EC shard data files (keep .ecx/.ecj so the node doesn't re-report old shards)
 rm -f "${DATA_DIR}/vol${VICTIM_IDX}"/ectest_${ECVOL}.ec[0-9]*
