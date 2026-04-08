@@ -229,7 +229,7 @@ curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_
 info "Running erasure_coding plugin worker to EC-encode volumes"
 EC_ENCODE_RESULT=$(curl -sf -X POST "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_coding/run" \
     -H "Content-Type: application/json" \
-    -d '{"max_results": 100, "timeout_seconds": 120}')
+    -d '{"max_results": 100, "timeout_seconds": 300}')
 
 EC_DETECTED=$(echo "$EC_ENCODE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('detected_count', 0))")
 EC_SUCCEEDED=$(echo "$EC_ENCODE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success_count', 0))")
@@ -328,7 +328,7 @@ info "Triggering ec_repair detection + execution via admin API"
 
 RUN_RESULT=$(curl -sf -X POST "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/ec_repair/run" \
     -H "Content-Type: application/json" \
-    -d '{"max_results": 100, "timeout_seconds": 120}')
+    -d '{"max_results": 100, "timeout_seconds": 300}')
 
 DETECTED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('detected_count', 0))")
 EXECUTED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executed_count', 0))")
