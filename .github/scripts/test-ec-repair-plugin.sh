@@ -208,6 +208,52 @@ for i in $(seq 1 12); do
 done
 info "Uploaded 12 files (~120MB total)"
 
+# Wait for the master to receive volume-server heartbeats reflecting the
+# new data. Without this, the EC detection scan below races the heartbeat
+# (default 5s interval) and finds 0 candidates because the master still
+# reports the volumes as empty. Mirrors the require.Eventually pattern used
+# by OSS plugin worker tests in test/plugin_workers/erasure_coding.
+info "Waiting for master to see uploaded volumes in collection 'ectest'"
+ECTEST_BYTES_THRESHOLD=$((100 * 1024 * 1024))
+SEEN_BYTES=0
+master_seen=false
+for i in $(seq 1 30); do
+    SEEN_BYTES=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/vol/status" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(0)
+    sys.exit(0)
+total = 0
+# /vol/status shape: { 'Volumes': { 'DataCenters': { dcId: { rackId: { dnId: [ {Id, Size, Collection, ...}, ... ] } } } } }
+for dc in (data.get('Volumes', {}).get('DataCenters') or {}).values():
+    if not isinstance(dc, dict):
+        continue
+    for rack in dc.values():
+        if not isinstance(rack, dict):
+            continue
+        for vols in rack.values():
+            if not isinstance(vols, list):
+                continue
+            for vol in vols:
+                if isinstance(vol, dict) and vol.get('Collection') == 'ectest':
+                    total += int(vol.get('Size', 0) or 0)
+print(total)
+" 2>/dev/null || echo "0")
+    if [ "$SEEN_BYTES" -ge "$ECTEST_BYTES_THRESHOLD" ]; then
+        info "Master sees ${SEEN_BYTES} bytes in collection 'ectest'"
+        master_seen=true
+        break
+    fi
+    echo "Waiting for master to register uploaded volumes... ($i/30, saw ${SEEN_BYTES} bytes)"
+    sleep 1
+done
+if [ "$master_seen" != true ]; then
+    fail "Master did not register uploaded volumes within 30s (saw ${SEEN_BYTES} bytes)"
+    exit 1
+fi
+
 # Configure erasure_coding plugin worker for CI: no quiet period, low thresholds
 info "Configuring erasure_coding plugin worker for CI"
 curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_coding/config" \
