@@ -222,6 +222,30 @@ jobs:
         echo "Running multiple EC ratio tests (4+2, 6+3, 8+4)..."
         go test -v -run TestMultipleECRatios -timeout 30m
 
+    - name: Test 2+1 on 3 Disks (Issue #9146)
+      if: success() || failure()
+      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
+      run: |
+        echo "Running 2+1 ratio on 3-disk cluster — direct regression for issue #9146."
+        echo "Pre-fix this timed out because detection required 4 disks for a 3-shard ratio."
+        go test -v -run TestCustomECRatio2Plus1On3Disks -timeout 15m
+
+    - name: Test Admin Restart Preserves Custom Ratio
+      if: success() || failure()
+      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
+      run: |
+        echo "Running admin-restart persistence test — exercises the TaskPolicy proto fields."
+        echo "Pre-fix: the admin forgot custom ratios after restart because the proto dropped them."
+        go test -v -run TestCustomECRatioAdminRestartPersistsRatio -timeout 15m
+
+    - name: Test Invalid Ratio Override Is Rejected
+      if: success() || failure()
+      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
+      run: |
+        echo "Running partial-override rejection test — exercises atomic EffectiveRatio validation."
+        echo "Pre-fix: data_shards alone became <that>+default-parity, a mixed ratio the admin never asked for."
+        go test -v -run TestCustomECRatioRejectsInvalidOverride -timeout 15m
+
     - name: Archive test logs
       if: always()
       uses: actions/upload-artifact@v4
@@ -237,16 +261,22 @@ jobs:
       run: |
         echo "## EC Custom Ratio Test Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Regression test for [#8936](https://github.com/seaweedfs/seaweedfs/issues/8936)" >> $GITHUB_STEP_SUMMARY
+        echo "Regression tests for [#8936](https://github.com/seaweedfs/seaweedfs/issues/8936) and [#9146](https://github.com/seaweedfs/seaweedfs/issues/9146)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Tests" >> $GITHUB_STEP_SUMMARY
         echo "- **Config Propagation**: Verifies admin API accepts and persists custom data_shards/parity_shards" >> $GITHUB_STEP_SUMMARY
         echo "- **End-to-End 4+2**: Configures 4+2 ratio, uploads data, verifies 6 shards created (not 14)" >> $GITHUB_STEP_SUMMARY
         echo "- **Multiple Ratios**: Tests 4+2, 6+3, 8+4 ratios with data integrity verification" >> $GITHUB_STEP_SUMMARY
+        echo "- **2+1 on 3 disks** (#9146): Regression for the small-cluster edge — ratio plans, encodes, and reads back on exactly 3 volume servers" >> $GITHUB_STEP_SUMMARY
+        echo "- **Admin restart persistence**: Verifies the TaskPolicy proto round-trips data_shards/parity_shards across admin restart" >> $GITHUB_STEP_SUMMARY
+        echo "- **Invalid ratio override**: Verifies partial (data_shards alone) and oversize (31+31) overrides fall back to default 10+4 instead of becoming silent mixed ratios" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### What This Catches" >> $GITHUB_STEP_SUMMARY
         echo "- Custom EC ratio not propagated from admin config to detection/execution" >> $GITHUB_STEP_SUMMARY
         echo "- Detection code hardcoding default 10+4 instead of reading configured ratio" >> $GITHUB_STEP_SUMMARY
+        echo "- Min-disk floor rejecting valid small-cluster ratios (issue #9146)" >> $GITHUB_STEP_SUMMARY
+        echo "- TaskPolicy proto dropping ratio fields on admin restart" >> $GITHUB_STEP_SUMMARY
+        echo "- Partial/oversize ratio overrides silently mutating into mixed ratios" >> $GITHUB_STEP_SUMMARY
         echo "- Data corruption or read failures after custom-ratio EC encoding" >> $GITHUB_STEP_SUMMARY
 
   # Regression test job
