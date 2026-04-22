@@ -213,6 +213,7 @@ jobs:
           -filer.port=8888 \
           -filer=true \
           -metricsPort=9325 \
+          -master.peers=none \
           > /tmp/weed-server.log 2>&1 &
 
         # Wait for master to be ready
@@ -236,6 +237,10 @@ jobs:
         # Give server time to initialize all components including gRPC services
         echo "Waiting for SeaweedFS components to initialize..."
         sleep 15
+
+        # Additional wait specifically for gRPC services to be ready for streaming
+        echo "Allowing extra time for master gRPC streaming services to initialize..."
+        sleep 10
 
         # Start MQ broker with maximum verbosity for debugging
         echo "Starting MQ broker..."
@@ -384,6 +389,7 @@ jobs:
           -filer.port=8888 \
           -filer=true \
           -metricsPort=9325 \
+          -master.peers=none \
           > /tmp/weed-server.log 2>&1 &
 
         for i in $(seq 1 30); do
@@ -402,6 +408,10 @@ jobs:
         done
 
         sleep 15
+
+        # Additional wait specifically for gRPC services to be ready for streaming
+        echo "Allowing extra time for master gRPC streaming services to initialize..."
+        sleep 10
 
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:9333" \
@@ -524,6 +534,7 @@ jobs:
           -filer.port=8888 \
           -filer=true \
           -metricsPort=9325 \
+          -master.peers=none \
           > /tmp/weed-server.log 2>&1 &
 
         for i in $(seq 1 30); do
@@ -537,6 +548,10 @@ jobs:
         done
 
         sleep 15
+
+        # Additional wait specifically for gRPC services to be ready for streaming
+        echo "Allowing extra time for master gRPC streaming services to initialize..."
+        sleep 10
 
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:9333" \
@@ -650,6 +665,7 @@ jobs:
           -filer.port=8888 \
           -filer=true \
           -metricsPort=9325 \
+          -master.peers=none \
           > /tmp/weed-server.log 2>&1 &
 
         for i in $(seq 1 30); do
@@ -663,6 +679,10 @@ jobs:
         done
 
         sleep 15
+
+        # Additional wait specifically for gRPC services to be ready for streaming
+        echo "Allowing extra time for master gRPC streaming services to initialize..."
+        sleep 10
 
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:9333" \
