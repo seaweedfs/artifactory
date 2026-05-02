@@ -32,6 +32,8 @@ jobs:
             path: test/plugin_workers/erasure_coding
           - worker: ec_repair
             path: test/plugin_workers/ec_repair
+          - worker: ec_vacuum
+            path: test/plugin_workers/ec_vacuum
           - worker: vacuum
             path: test/plugin_workers/vacuum
           - worker: volume_balance
