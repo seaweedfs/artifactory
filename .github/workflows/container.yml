@@ -129,6 +129,14 @@ jobs:
             dockerfile: "Dockerfile.rocksdb_large"
             platforms: "linux/amd64"
             rust_variant: "large-disk"
+          # FoundationDB with large disk support
+          # ARM64 requires FoundationDB ARM64 client packages (7.4.5+); amd64 only for compatibility.
+          - variant: "foundationdb_large"
+            suffix: "_large_disk_foundationdb"
+            build_args: ""
+            dockerfile: "Dockerfile.foundationdb_large"
+            platforms: "linux/amd64"
+            rust_variant: "large-disk"
           # Full features container
           - variant: "full"
             suffix: "_full"
