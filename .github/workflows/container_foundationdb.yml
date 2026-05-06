@@ -1,0 +1,85 @@
+name: "Containers: FoundationDB Large Disk"
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the container'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-enterprise-foundationdb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone private GitLab repo (SeaweedFS Enterprise)
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git clone -b enterprise https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          cd seaweedfs-enterprise-source
+          echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Docker meta
+        id: docker_meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            chrislusf/seaweedfs-enterprise
+            ghcr.io/seaweedfs/seaweedfs-enterprise
+          tags: |
+            type=ref,event=tag,suffix=_large_disk_foundationdb
+            type=raw,value=${{ inputs.tag_name }},suffix=_large_disk_foundationdb,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest,suffix=_large_disk_foundationdb,enable={{is_default_branch}}
+          flavor: |
+            latest=false
+          labels: |
+            org.opencontainers.image.title=seaweedfs-enterprise
+            org.opencontainers.image.description=SeaweedFS Enterprise with FoundationDB filer store and 5BytesOffset large-disk support
+            org.opencontainers.image.vendor=Chris Lu
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ARM64 requires FoundationDB ARM64 client packages (7.4.5+); amd64 only for compatibility.
+      - name: Build and push Docker image (FoundationDB)
+        uses: docker/build-push-action@v7
+        with:
+          context: ./seaweedfs-enterprise-source
+          push: ${{ github.event_name != 'pull_request' }}
+          file: ./seaweedfs-enterprise-source/docker/Dockerfile.foundationdb_large
+          platforms: linux/amd64
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          cache-from: type=gha,scope=foundationdb_large
+          cache-to: type=gha,mode=max,scope=foundationdb_large
