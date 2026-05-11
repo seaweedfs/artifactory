@@ -3,7 +3,7 @@
 # EC Repair Plugin Worker Integration Test
 #
 # Tests the ec_repair plugin worker end-to-end:
-# 1. Start weed mini (master + filer + volume + admin) + 4 standalone volume servers
+# 1. Start weed mini (master + filer + volume + admin) + 13 standalone volume servers
 # 2. Upload data, then EC-encode via the erasure_coding plugin worker
 # 3. Simulate shard loss by stopping a volume server and deleting shard files
 # 4. Trigger ec_repair detection + execution via admin plugin API
@@ -17,7 +17,9 @@ MASTER_IP="127.0.0.1"
 MASTER_PORT=9333
 VOLUME_PORT_START=9340
 ADMIN_PORT=0
-NUM_EXTRA_VOLUMES=4
+# 1 mini volume + 13 extras = 14 disks, the minimum for default EC 10+4 after
+# #9369 (planner now treats each (server, disk_id) pair as a distinct target).
+NUM_EXTRA_VOLUMES=13
 VOLUME_SIZE_LIMIT_MB=15
 
 RED='\033[0;31m'
