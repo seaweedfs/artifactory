@@ -200,51 +200,23 @@ jobs:
         ./weed_bin version
         ls -lh weed_bin
 
-    - name: Test Custom EC Ratio Config Propagation
+    - name: Run EC Custom Ratio Tests
       working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
       run: |
-        echo "Running EC custom ratio config propagation test..."
-        go test -v -run TestCustomECRatioConfigPropagation -timeout 15m
-
-    - name: Test Custom EC Ratio End-to-End (4+2)
-      if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
-      run: |
-        echo "Running EC custom ratio 4+2 end-to-end test..."
-        echo "This test verifies that configuring a 4+2 EC ratio via the admin API"
-        echo "produces exactly 6 EC shards (not the default 14 from 10+4)."
-        go test -v -run TestCustomECRatioEndToEnd -timeout 15m
-
-    - name: Test Multiple EC Ratios
-      if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
-      run: |
-        echo "Running multiple EC ratio tests (4+2, 6+3, 8+4)..."
-        go test -v -run TestMultipleECRatios -timeout 30m
-
-    - name: Test 2+1 on 3 Disks (Issue #9146)
-      if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
-      run: |
-        echo "Running 2+1 ratio on 3-disk cluster — direct regression for issue #9146."
-        echo "Pre-fix this timed out because detection required 4 disks for a 3-shard ratio."
-        go test -v -run TestCustomECRatio2Plus1On3Disks -timeout 15m
-
-    - name: Test Admin Restart Preserves Custom Ratio
-      if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
-      run: |
-        echo "Running admin-restart persistence test — exercises the TaskPolicy proto fields."
-        echo "Pre-fix: the admin forgot custom ratios after restart because the proto dropped them."
-        go test -v -run TestCustomECRatioAdminRestartPersistsRatio -timeout 15m
-
-    - name: Test Invalid Ratio Override Is Rejected
-      if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
-      run: |
-        echo "Running partial-override rejection test — exercises atomic EffectiveRatio validation."
-        echo "Pre-fix: data_shards alone became <that>+default-parity, a mixed ratio the admin never asked for."
-        go test -v -run TestCustomECRatioRejectsInvalidOverride -timeout 15m
+        # Run the full suite in a single go test invocation so each test's
+        # defer cleanup() reaps weed_bin children before the next test starts.
+        # Splitting into per-test steps reparented orphans to PID 1 between
+        # steps and intermittently held port 8084 — see seaweedfs6
+        # admin_dockertest/ec_integration_test.go for the same single-process
+        # pattern.
+        echo "Running EC custom ratio test suite..."
+        echo "  - TestCustomECRatioConfigPropagation: admin API persists data_shards/parity_shards"
+        echo "  - TestCustomECRatioEndToEnd: configured 4+2 produces 6 shards (not default 14)"
+        echo "  - TestMultipleECRatios: 4+2, 6+3, 8+4 with data integrity verification"
+        echo "  - TestCustomECRatio2Plus1On3Disks: small-cluster edge (#9146)"
+        echo "  - TestCustomECRatioAdminRestartPersistsRatio: TaskPolicy proto round-trip"
+        echo "  - TestCustomECRatioRejectsInvalidOverride: atomic EffectiveRatio validation"
+        go test -v -timeout 40m
 
     - name: Archive test logs
       if: always()
