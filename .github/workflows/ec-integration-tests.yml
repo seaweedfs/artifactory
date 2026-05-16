@@ -321,3 +321,105 @@ jobs:
         echo "- 🐛 **Silent Failure Bug**: Functions return proper errors" >> $GITHUB_STEP_SUMMARY
         echo "- 🐛 **Cleanup Race Condition**: Pre-collected locations used for cleanup" >> $GITHUB_STEP_SUMMARY
 
+  # End-to-end test for the versioned-EC vacuum 2PC switch protocol.
+  # Drives a real local cluster (master + 14 volume servers + filer +
+  # 2 workers + admin, all `weed` subprocesses on localhost ports) through
+  # three sequential vacuum rounds:
+  #   - round 1: 0 -> 1
+  #   - round 2: 1 -> 2 (exercises post-switch reads, the path that the
+  #     read-time Version + shard-fd-swap fix unblocks)
+  #   - vacuum-to-empty (2 -> 3): empty new generation triggers the
+  #     TeardownEmptyVolume callback cluster-wide.
+  ec-vacuum-2pc-tests:
+    name: EC Vacuum 2PC Switch Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone private GitLab repository
+      env:
+        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+      run: |
+        # Determine branch from webhook or manual input
+        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          BRANCH_REF="${{ github.event.client_payload.ref }}"
+          if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
+            BRANCH="enterprise"
+          else
+            BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
+          fi
+        else
+          BRANCH="${{ github.event.inputs.gitlab_branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="enterprise"
+          fi
+        fi
+
+        echo "Cloning branch: $BRANCH"
+        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+        echo "BRANCH_NAME=$BRANCH" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/go.mod'
+        cache-dependency-path: 'seaweedfs-source/go.sum'
+      id: go
+
+    - name: Run EC Vacuum 2PC Switch Test
+      working-directory: seaweedfs-source/test/ec_vacuum/admin_dockertest
+      env:
+        EC_VACUUM_INTEGRATION: "1"
+      run: |
+        # The test forks ~18 weed subprocesses (master + 14 volume +
+        # filer + 2 workers + admin) and drives the ec_vacuum plugin
+        # through three sequential 2PC switch rounds. It builds its own
+        # `weed_bin` from the source tree; the 30-minute job timeout
+        # covers the ~6-8 minute happy-path run plus per-step deadlines
+        # (5min waitForActiveVersion per round + cluster boot).
+        echo "Running TestEcVacuumVersionedSwitch..."
+        echo "  - round 1: active_version 0 -> 1 (stage / Prepare / Commit fan-out)"
+        echo "  - round 2: 1 -> 2 (validates post-switch read path)"
+        echo "  - vacuum-to-empty: 2 -> 3 + TeardownEmptyVolume across all 14 holders"
+        go test -v -timeout 25m -run TestEcVacuumVersionedSwitch .
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-vacuum-2pc-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/test/ec_vacuum/admin_dockertest/tmp/logs/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: EC Vacuum 2PC Test Summary
+      if: always()
+      run: |
+        echo "## EC Vacuum 2PC Switch Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "End-to-end integration test for the versioned-EC vacuum SwitchVersion protocol." >> $GITHUB_STEP_SUMMARY
+        echo "See \`weed/worker/tasks/ec_vacuum/DESIGN.md\` for the protocol." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What This Exercises" >> $GITHUB_STEP_SUMMARY
+        echo "- **stage / Prepare / Commit fan-out** across all 14 shard holders" >> $GITHUB_STEP_SUMMARY
+        echo "- **Master heartbeat propagation** of \`active_version\` / \`has_pending_switch\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Versioned-EC LookupEcVolume.VersionedLocations** populated and read by the worker" >> $GITHUB_STEP_SUMMARY
+        echo "- **Post-switch reads**: the commit handler refreshes \`ev.Version\` from \`.vif.v<N>\` and reopens shard / .ecx / .ecj fds; without this, post-switch reads tripped a one-byte 'size mismatch'." >> $GITHUB_STEP_SUMMARY
+        echo "- **Worker's compaction target version** stamped into the new \`.vif.v<N>\` (so the server-side refresh picks the right needle layout)." >> $GITHUB_STEP_SUMMARY
+        echo "- **Vacuum-to-empty TeardownEmptyVolume**: empty new generation removes the EcVolume from every shard holder's disk_location map and unlinks every \`<base>.*\` file." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What This Catches" >> $GITHUB_STEP_SUMMARY
+        echo "- Worker writing \`.vif.v<N>\` with the source's needle Version instead of the post-compaction one" >> $GITHUB_STEP_SUMMARY
+        echo "- \`OpenAgainstGeneration\` swapping \`.ecx\` / \`.ecj\` but leaving \`shard.ecdFile\` on legacy \`.ec<NN>\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`OpenAgainstGeneration\` not refreshing \`ev.Version\` / EC ratio from the new \`.vif.v<N>\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Master dropping versioned-EC heartbeat fields on no-op shard-set updates" >> $GITHUB_STEP_SUMMARY
+        echo "- Worker \`cleanupEcVacuumShards\` deleting freshly-committed \`.v<N>\` files because \`KeepVersion=0\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`TeardownEmptyVolume\` not wired through the volume server's commit-ordering deps" >> $GITHUB_STEP_SUMMARY
+
