@@ -106,9 +106,10 @@ echo $! > "${DATA_DIR}/mini.pid"
 
 wait_for_http "Master" "http://${MASTER_IP}:${MASTER_PORT}/cluster/status" 30
 
-# Detect admin port from logs
+# Detect admin port from logs. The mini welcome banner prints a line like
+# "    Admin UI:        http://127.0.0.1:23646" once all components are ready.
 for attempt in $(seq 1 20); do
-    ADMIN_PORT=$(grep -o "Admin server is ready at http://[^:]*:\([0-9]*\)" "${DATA_DIR}/mini.log" | grep -o '[0-9]*$' || true)
+    ADMIN_PORT=$(grep -o "Admin UI:[[:space:]]*http://[^:]*:[0-9]*" "${DATA_DIR}/mini.log" | grep -o '[0-9]*$' | head -1 || true)
     if [ -n "$ADMIN_PORT" ]; then
         break
     fi
