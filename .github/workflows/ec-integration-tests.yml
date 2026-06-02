@@ -209,13 +209,18 @@ jobs:
         # steps and intermittently held port 8084 — see seaweedfs6
         # admin_dockertest/ec_integration_test.go for the same single-process
         # pattern.
-        echo "Running EC custom ratio test suite..."
-        echo "  - TestCustomECRatioConfigPropagation: admin API persists data_shards/parity_shards"
-        echo "  - TestCustomECRatioEndToEnd: configured 4+2 produces 6 shards (not default 14)"
-        echo "  - TestMultipleECRatios: 4+2, 6+3, 8+4 with data integrity verification"
-        echo "  - TestCustomECRatio2Plus1On3Disks: small-cluster edge (#9146)"
-        echo "  - TestCustomECRatioAdminRestartPersistsRatio: TaskPolicy proto round-trip"
-        echo "  - TestCustomECRatioRejectsInvalidOverride: atomic EffectiveRatio validation"
+        # Runs the ENTIRE custom_ratio_test package (no -run filter), so every
+        # test in it gates the build, including any added later. Representative
+        # coverage:
+        echo "Running the full EC custom ratio test suite (go test -v, whole package)..."
+        echo "  - config propagation: admin API persists data_shards/parity_shards"
+        echo "  - end-to-end custom ratios: configured 4+2 produces 6 shards (not default 14)"
+        echo "  - multiple ratios (4+2, 6+3, 8+4) with data integrity verification"
+        echo "  - small-cluster edge: 2+1 on 3 disks"
+        echo "  - admin restart persists the ratio (TaskPolicy proto round-trip)"
+        echo "  - invalid override rejection (atomic EffectiveRatio validation)"
+        echo "  - ratio-merge guards: go red if a merge silently re-hardcodes the"
+        echo "    default 10+4 ratio in the validate / prune / decode / balance paths"
         go test -v -timeout 40m
 
     - name: Archive test logs
@@ -242,6 +247,7 @@ jobs:
         echo "- **2+1 on 3 disks** (#9146): Regression for the small-cluster edge — ratio plans, encodes, and reads back on exactly 3 volume servers" >> $GITHUB_STEP_SUMMARY
         echo "- **Admin restart persistence**: Verifies the TaskPolicy proto round-trips data_shards/parity_shards across admin restart" >> $GITHUB_STEP_SUMMARY
         echo "- **Invalid ratio override**: Verifies partial (data_shards alone) and oversize (31+31) overrides fall back to default 10+4 instead of becoming silent mixed ratios" >> $GITHUB_STEP_SUMMARY
+        echo "- **Ratio-merge guards**: Go red if a merge silently re-hardcodes the default 10+4 ratio in the EC validate / prune / decode / balance paths (the whole package runs, so guards added later are covered automatically)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### What This Catches" >> $GITHUB_STEP_SUMMARY
         echo "- Custom EC ratio not propagated from admin config to detection/execution" >> $GITHUB_STEP_SUMMARY
@@ -249,6 +255,7 @@ jobs:
         echo "- Min-disk floor rejecting valid small-cluster ratios (issue #9146)" >> $GITHUB_STEP_SUMMARY
         echo "- TaskPolicy proto dropping ratio fields on admin restart" >> $GITHUB_STEP_SUMMARY
         echo "- Partial/oversize ratio overrides silently mutating into mixed ratios" >> $GITHUB_STEP_SUMMARY
+        echo "- A merge reverting per-volume ratio handling back to the hardcoded 10+4 default" >> $GITHUB_STEP_SUMMARY
         echo "- Data corruption or read failures after custom-ratio EC encoding" >> $GITHUB_STEP_SUMMARY
 
   # Regression test job
