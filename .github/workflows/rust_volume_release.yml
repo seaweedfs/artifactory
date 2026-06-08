@@ -84,23 +84,25 @@ jobs:
           SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
         run: |
           cd seaweedfs-enterprise-source/seaweed-volume
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} --target-dir target/large-disk
 
       - name: Build Rust volume server (normal)
         env:
           SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
         run: |
           cd seaweedfs-enterprise-source/seaweed-volume
-          cargo build --release --target ${{ matrix.target }} --no-default-features
+          cargo build --release --target ${{ matrix.target }} --no-default-features --target-dir target/normal
 
       - name: Package binaries
         run: |
-          base=seaweedfs-enterprise-source/seaweed-volume/target/${{ matrix.target }}/release
-          cp "$base/weed-volume" weed-volume-large-disk
+          # Build each variant into its own --target-dir so the second build
+          # doesn't overwrite the first at the shared release path.
+          root=seaweedfs-enterprise-source/seaweed-volume/target
+          cp "$root/large-disk/${{ matrix.target }}/release/weed-volume" weed-volume-large-disk
           tar czf weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz weed-volume-large-disk
           rm weed-volume-large-disk
 
-          cp "$base/weed-volume" weed-volume-normal
+          cp "$root/normal/${{ matrix.target }}/release/weed-volume" weed-volume-normal
           tar czf weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz weed-volume-normal
           rm weed-volume-normal
 
