@@ -1,0 +1,123 @@
+name: "rust: build enterprise volume server binaries"
+
+# Mirrors the OSS rust_binaries_release.yml in seaweedfs/seaweedfs, but builds
+# the Rust weed-volume from the private enterprise source (same as release.yml
+# does for the Go weed binary) and publishes enterprise-marked assets + .md5.
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: read
+
+jobs:
+
+  build-rust-volume-enterprise-linux:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset_suffix: linux_amd64
+          - target: aarch64-unknown-linux-gnu
+            asset_suffix: linux_arm64
+            cross: true
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone private GitLab repo (SeaweedFS Enterprise)
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git clone -b enterprise https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          cd seaweedfs-enterprise-source
+          echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "OPENSSL_DIR=/usr" >> "$GITHUB_ENV"
+          echo "OPENSSL_INCLUDE_DIR=/usr/include" >> "$GITHUB_ENV"
+          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-enterprise-source/seaweed-volume/target
+          key: rust-enterprise-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-enterprise-${{ matrix.target }}-
+
+      - name: Build Rust volume server (large disk)
+        env:
+          SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
+        run: |
+          cd seaweedfs-enterprise-source/seaweed-volume
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Build Rust volume server (normal)
+        env:
+          SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
+        run: |
+          cd seaweedfs-enterprise-source/seaweed-volume
+          cargo build --release --target ${{ matrix.target }} --no-default-features
+
+      - name: Package binaries
+        run: |
+          base=seaweedfs-enterprise-source/seaweed-volume/target/${{ matrix.target }}/release
+          cp "$base/weed-volume" weed-volume-large-disk
+          tar czf weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz weed-volume-large-disk
+          rm weed-volume-large-disk
+
+          cp "$base/weed-volume" weed-volume-normal
+          tar czf weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz weed-volume-normal
+          rm weed-volume-normal
+
+      - name: Generate md5 checksums
+        run: |
+          for f in weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz; do
+            md5sum "$f" > "$f.md5"
+          done
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          files: |
+            weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz
+            weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz.md5
+            weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz
+            weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
