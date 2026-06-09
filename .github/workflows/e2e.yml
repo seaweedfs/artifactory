@@ -81,16 +81,6 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    # Configure BuildKit with Docker Hub mirror to reduce rate limit hits
-    - name: Create BuildKit config
-      run: |
-        mkdir -p ~/.docker
-        cat > ~/.docker/daemon.json <<EOF
-        {
-          "registry-mirrors": ["https://mirror.gcr.io"]
-        }
-        EOF
-      
     - name: Cache Docker layers
       uses: actions/cache@v5
       with:
