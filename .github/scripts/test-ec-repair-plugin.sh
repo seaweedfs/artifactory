@@ -144,6 +144,25 @@ if ! echo "$JOB_TYPES" | grep -q "erasure_coding"; then
 fi
 info "Plugin workers registered (erasure_coding + ec_repair)"
 
+# Disable the admin background scheduler for both job types so that only this
+# script's explicit /run calls drive detection and execution. Otherwise a
+# scheduled ec_repair run can rebuild the deleted shard moments before the
+# scripted run, which then correctly detects 0 repair tasks and fails the test.
+# Manual /run and /detect ignore adminRuntime.enabled. min_interval_seconds=0
+# keeps the worker from skipping back-to-back scripted detections.
+info "Disabling background plugin scheduling (test drives runs explicitly)"
+for JOB_TYPE in erasure_coding ec_repair; do
+    curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/${JOB_TYPE}/config" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"jobType\": \"${JOB_TYPE}\",
+            \"adminRuntime\": {\"enabled\": false},
+            \"workerConfigValues\": {
+                \"min_interval_seconds\": {\"int64Value\": \"0\"}
+            }
+        }" > /dev/null
+done
+
 info "Starting $NUM_EXTRA_VOLUMES additional volume servers"
 for i in $(seq 1 $NUM_EXTRA_VOLUMES); do
     PORT=$((VOLUME_PORT_START + i))
@@ -263,6 +282,7 @@ curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_
     -H "Content-Type: application/json" \
     -d '{
         "jobType": "erasure_coding",
+        "adminRuntime": {"enabled": false},
         "workerConfigValues": {
             "quiet_for_seconds": {"int64Value": "0"},
             "min_size_mb": {"int64Value": "1"},
