@@ -387,7 +387,28 @@ $WEED_BINARY volume \
 echo $! > "${DATA_DIR}/vol${VICTIM_IDX}.pid"
 
 wait_for_http "Volume ${VICTIM_IDX}" "http://${MASTER_IP}:${VICTIM_PORT}/status" 30
-sleep 3
+
+# Wait for the master heartbeat to reflect missing shards. Otherwise the
+# immediate ec_repair run can race and detect 0 repair tasks.
+info "Waiting for master to register missing shards from restarted volume server"
+EXPECTED_SHARDS=$((SHARDS_BEFORE - DELETED_SHARDS))
+CURRENT_SHARDS=$SHARDS_BEFORE
+shards_confirmed=false
+for i in $(seq 1 30); do
+    CURRENT_SHARDS=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | \
+        grep "ec volume id:${ECVOL}" | grep -o 'shards:\[[^]]*\]' | tr ',' '\n' | wc -w)
+    if [ "$CURRENT_SHARDS" -le "$EXPECTED_SHARDS" ]; then
+        info "Master sees ${CURRENT_SHARDS} shards after loss (expected <= ${EXPECTED_SHARDS})"
+        shards_confirmed=true
+        break
+    fi
+    echo "Waiting for master to register missing shards... ($i/30, saw ${CURRENT_SHARDS})"
+    sleep 1
+done
+if [ "$shards_confirmed" != true ]; then
+    fail "Master did not register missing shards within 30s (still saw ${CURRENT_SHARDS} shards)"
+    exit 1
+fi
 
 pass "Shard loss simulated on vol${VICTIM_IDX}"
 
