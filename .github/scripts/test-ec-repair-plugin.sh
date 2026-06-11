@@ -49,6 +49,9 @@ dump_logs() {
 cleanup() {
     local exit_code=$?
     info "Cleaning up..."
+    # drop background servers from the job table so bash does not print a
+    # "Killed: 9" notice per process, which reads like a test failure
+    disown -a 2>/dev/null || true
     pkill -f "${DATA_DIR}" 2>/dev/null || true
     sleep 2
     pkill -9 -f "${DATA_DIR}" 2>/dev/null || true
@@ -326,7 +329,7 @@ if [ -z "$ECVOL" ]; then
 fi
 
 # Verify EC shards exist
-EC_NODES=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | grep "ec volume id:${ECVOL}" | wc -l)
+EC_NODES=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | grep "ec volume id:${ECVOL}" | wc -l | tr -d ' ')
 if [ "$EC_NODES" -lt 2 ]; then
     fail "EC shards not distributed (found on $EC_NODES nodes)"
     exit 1
@@ -335,7 +338,7 @@ pass "Volume $ECVOL EC-encoded and distributed across $EC_NODES nodes"
 
 # Count total shards before corruption
 SHARDS_BEFORE=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | \
-    grep "ec volume id:${ECVOL}" | grep -o 'shards:\[[^]]*\]' | tr ',' '\n' | wc -w)
+    grep "ec volume id:${ECVOL}" | grep -o 'shards:\[[^]]*\]' | tr ',' '\n' | wc -w | tr -d ' ')
 info "Total EC shards before corruption: $SHARDS_BEFORE"
 
 # ── Simulate shard loss ────────────────────────────────────────────────
@@ -345,7 +348,7 @@ VICTIM_PORT=""
 VICTIM_IDX=""
 for i in $(seq 1 $NUM_EXTRA_VOLUMES); do
     PORT=$((VOLUME_PORT_START + i))
-    EC_FILES=$(ls "${DATA_DIR}/vol${i}"/ectest_${ECVOL}.ec[0-9]* 2>/dev/null | wc -l || echo 0)
+    EC_FILES=$({ ls "${DATA_DIR}/vol${i}"/ectest_${ECVOL}.ec[0-9]* 2>/dev/null || true; } | wc -l | tr -d ' ')
     if [ "$EC_FILES" -gt 0 ]; then
         VICTIM_PORT=$PORT
         VICTIM_IDX=$i
@@ -358,7 +361,7 @@ if [ -z "$VICTIM_PORT" ]; then
     exit 1
 fi
 
-DELETED_SHARDS=$(ls "${DATA_DIR}/vol${VICTIM_IDX}"/ectest_${ECVOL}.ec[0-9]* 2>/dev/null | wc -l)
+DELETED_SHARDS=$(ls "${DATA_DIR}/vol${VICTIM_IDX}"/ectest_${ECVOL}.ec[0-9]* 2>/dev/null | wc -l | tr -d ' ')
 info "Simulating shard loss: killing vol${VICTIM_IDX} (port $VICTIM_PORT) and deleting $DELETED_SHARDS shard files"
 
 VICTIM_PID=$(cat "${DATA_DIR}/vol${VICTIM_IDX}.pid")
@@ -422,7 +425,7 @@ pass "Execution succeeded: $SUCCEEDED job(s) completed, $ERRORS errors"
 
 # Count shards after repair
 SHARDS_AFTER=$(echo 'volume.list' | $WEED_BINARY shell -master="${MASTER_IP}:${MASTER_PORT}" 2>&1 | \
-    grep "ec volume id:${ECVOL}" | grep -o 'shards:\[[^]]*\]' | tr ',' '\n' | wc -w)
+    grep "ec volume id:${ECVOL}" | grep -o 'shards:\[[^]]*\]' | tr ',' '\n' | wc -w | tr -d ' ')
 
 if [ "$SHARDS_AFTER" -lt "$SHARDS_BEFORE" ]; then
     fail "Shards after repair ($SHARDS_AFTER) < shards before corruption ($SHARDS_BEFORE)"
@@ -431,7 +434,7 @@ else
 fi
 
 # Verify no temp files leaked to /tmp
-LEAKED=$(ls -d /tmp/ec-repair-${ECVOL}-* 2>/dev/null | wc -l || echo 0)
+LEAKED=$({ ls -d /tmp/ec-repair-${ECVOL}-* 2>/dev/null || true; } | wc -l | tr -d ' ')
 if [ "$LEAKED" -gt 0 ]; then
     fail "Found $LEAKED leaked ec-repair temp dirs in /tmp (workingDir fix not applied)"
 else
