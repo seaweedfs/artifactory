@@ -1,22 +1,22 @@
-name: "GitLab Webhook: Build and Test"
+name: "seaweed-mono Webhook: Build and Test"
 
 on:
-  # Triggered by GitLab webhook via repository_dispatch
+  # Triggered by seaweed-mono push (repository_dispatch) via repository_dispatch
   repository_dispatch:
     types: 
-      - gitlab-push
-      - gitlab-merge-request
-      - gitlab-tag
+      - mono-push
+      - mono-merge-request
+      - mono-tag
   
   # Also allow manual triggering for testing
   workflow_dispatch:
     inputs:
       gitlab_branch:
-        description: 'GitLab branch to build'
+        description: 'seaweed-mono branch to build'
         required: false
         default: 'enterprise'
       gitlab_ref:
-        description: 'GitLab commit SHA or ref'
+        description: 'seaweed-mono commit SHA or ref'
         required: false
         default: ''
       run_tests:
@@ -31,7 +31,7 @@ permissions:
   checks: write
 
 jobs:
-  # Job to process GitLab webhook and build
+  # Job to process seaweed-mono webhook and build
   gitlab-webhook-build:
     runs-on: ubuntu-latest
     
@@ -40,15 +40,15 @@ jobs:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
 
-      # Parse GitLab webhook payload
-      - name: Parse GitLab webhook payload
+      # Parse seaweed-mono webhook payload
+      - name: Parse seaweed-mono webhook payload
         id: parse_webhook
         run: |
           echo "Event type: ${{ github.event.action }}"
           
           # Extract information from webhook payload
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            # Check if GitLab template variables were replaced properly
+            # Check if seaweed-mono template variables were replaced properly
             RAW_REF="${{ github.event.client_payload.ref }}"
             RAW_USER="${{ github.event.client_payload.user_name }}"
             
@@ -57,14 +57,14 @@ jobs:
             
             # If template variables weren't replaced (still contain %), use defaults
             if [[ "$RAW_REF" == *"%{"* ]] || [ -z "$RAW_REF" ] || [ "$RAW_REF" = "null" ]; then
-              echo "⚠️  GitLab template variables not replaced, using defaults"
+              echo "⚠️  seaweed-mono template variables not replaced, using defaults"
               GITLAB_REF="refs/heads/enterprise"
               GITLAB_BRANCH="enterprise"
-              GITLAB_USER="GitLab User"
+              GITLAB_USER="seaweed-mono User"
               GITLAB_COMMIT=""
-              GITLAB_COMMIT_MSG="GitLab webhook trigger (template variables not replaced)"
+              GITLAB_COMMIT_MSG="seaweed-mono webhook trigger (template variables not replaced)"
             else
-              echo "✅ GitLab template variables replaced successfully"
+              echo "✅ seaweed-mono template variables replaced successfully"
               GITLAB_REF="${{ github.event.client_payload.ref }}"
               GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
               if [ "$GITLAB_BRANCH" = "null" ]; then
@@ -81,7 +81,7 @@ jobs:
             echo "commit_message=$GITLAB_COMMIT_MSG" >> $GITHUB_OUTPUT
             echo "user=$GITLAB_USER" >> $GITHUB_OUTPUT
             
-            echo "📡 GitLab Webhook Received"
+            echo "📡 seaweed-mono Webhook Received"
             echo "Branch: $GITLAB_BRANCH"
             echo "Commit: $GITLAB_COMMIT"
             echo "User: $GITLAB_USER"
@@ -100,20 +100,20 @@ jobs:
             echo "Branch: $GITLAB_BRANCH"
           fi
 
-      # Clone the private GitLab repository
-      - name: Clone private GitLab repo
+      # Clone the private seaweed-mono repository
+      - name: Clone seaweed-mono (enterprise) source
         id: clone
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           BRANCH="${{ steps.parse_webhook.outputs.branch }}"
           COMMIT="${{ steps.parse_webhook.outputs.commit }}"
           
-          echo "🔄 Cloning GitLab repository..."
+          echo "🔄 Cloning seaweed-mono repository..."
           echo "Branch: $BRANCH"
           
           # Clone the repository
-          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           
           cd seaweedfs-source
           
@@ -206,7 +206,7 @@ jobs:
       - name: Build summary
         if: always()
         run: |
-          echo "## 🎯 GitLab Webhook Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎯 seaweed-mono Webhook Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📡 Trigger Information" >> $GITHUB_STEP_SUMMARY
           echo "- **Event**: ${{ github.event.action || 'manual' }}" >> $GITHUB_STEP_SUMMARY
@@ -247,9 +247,9 @@ jobs:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
 
-      - name: Clone private GitLab repo
+      - name: Clone seaweed-mono (enterprise) source
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           BRANCH="${{ github.event.client_payload.ref }}"
           if [ -z "$BRANCH" ]; then
@@ -258,7 +258,7 @@ jobs:
             BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||' | sed 's|refs/tags/||')
           fi
           
-          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           cd seaweedfs-source
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
@@ -313,9 +313,9 @@ jobs:
       - name: Build notification
         run: |
           if [ "${{ needs.gitlab-webhook-build.result }}" = "success" ]; then
-            echo "✅ GitLab webhook build completed successfully"
+            echo "✅ seaweed-mono webhook build completed successfully"
           else
-            echo "❌ GitLab webhook build failed"
+            echo "❌ seaweed-mono webhook build failed"
           fi
           
           if [ "${{ needs.build-release-binaries.result }}" = "success" ]; then

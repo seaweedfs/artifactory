@@ -3,11 +3,11 @@ name: "Deploy Customer Portal"
 on:
   repository_dispatch:
     types:
-      - gitlab-push
+      - mono-push
   workflow_dispatch:
     inputs:
       gitlab_branch:
-        description: 'GitLab branch to deploy'
+        description: 'seaweed-mono branch to deploy'
         required: false
         default: 'enterprise'
       setup:
@@ -26,7 +26,7 @@ jobs:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
 
-      - name: Resolve GitLab branch
+      - name: Resolve seaweed-mono branch
         id: resolve_branch
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -51,13 +51,13 @@ jobs:
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           echo "deploy=$DEPLOY" >> $GITHUB_OUTPUT
 
-      - name: Clone private GitLab repo
+      - name: Clone seaweed-mono (enterprise) source
         if: steps.resolve_branch.outputs.deploy == 'true'
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           BRANCH="${{ steps.resolve_branch.outputs.branch }}"
-          git clone -b "$BRANCH" https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
@@ -75,7 +75,7 @@ jobs:
           fi
 
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "null" ] || [ -z "$AFTER" ] || [ "$AFTER" = "null" ]; then
-            echo "::warning::GitLab payload missing before/after; proceeding with deploy."
+            echo "::warning::seaweed-mono payload missing before/after; proceeding with deploy."
             echo "changed=true" >> $GITHUB_OUTPUT
             exit 0
           fi

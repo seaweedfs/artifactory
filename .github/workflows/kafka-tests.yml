@@ -1,17 +1,17 @@
-name: "Kafka Gateway Tests (GitLab)"
+name: "Kafka Gateway Tests (seaweed-mono)"
 
 on:
-  # Triggered by GitLab webhook
+  # Triggered by seaweed-mono push (repository_dispatch)
   repository_dispatch:
     types:
-      - gitlab-push
-      - gitlab-merge-request
+      - mono-push
+      - mono-merge-request
 
   # Allow manual triggering
   workflow_dispatch:
     inputs:
       gitlab_branch:
-        description: 'GitLab branch to test'
+        description: 'seaweed-mono branch to test'
         required: false
         default: 'enterprise'
 
@@ -43,9 +43,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -53,7 +53,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -97,9 +97,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -107,7 +107,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -153,9 +153,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -163,7 +163,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -335,9 +335,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -345,7 +345,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -480,9 +480,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -490,7 +490,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -611,9 +611,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -621,7 +621,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -745,9 +745,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
@@ -755,7 +755,7 @@ jobs:
           BRANCH="enterprise"
         fi
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV

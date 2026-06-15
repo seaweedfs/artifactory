@@ -1,17 +1,17 @@
-name: "Volume Server Integration Tests (GitLab)"
+name: "Volume Server Integration Tests (seaweed-mono)"
 
 on:
-  # Triggered by GitLab webhook
+  # Triggered by seaweed-mono push (repository_dispatch)
   repository_dispatch:
     types:
-      - gitlab-push
-      - gitlab-merge-request
+      - mono-push
+      - mono-merge-request
 
   # Allow manual triggering
   workflow_dispatch:
     inputs:
       gitlab_branch:
-        description: 'GitLab branch to test'
+        description: 'seaweed-mono branch to test'
         required: false
         default: 'enterprise'
 
@@ -40,9 +40,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
-    - name: Clone private GitLab repository
+    - name: Clone seaweed-mono (enterprise) source
       env:
-        GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         # Determine branch from webhook or manual input
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
@@ -60,7 +60,7 @@ jobs:
         fi
 
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
 
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
@@ -141,6 +141,6 @@ jobs:
           fi
         fi
         echo "## Volume Server Integration Test Summary (${{ matrix.test-type }} - Shard ${{ matrix.shard }})" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Source: gitlab.com/chrislusf/seaweedfs (branch: ${{ env.BRANCH_NAME }}, commit: ${{ env.COMMIT_SHA }})" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Source: github.com/seaweedfs/seaweed-mono (branch: ${{ env.BRANCH_NAME }}, commit: ${{ env.COMMIT_SHA }})" >> "$GITHUB_STEP_SUMMARY"
         echo "- Suite: test/volume_server/${{ matrix.test-type }} (Pattern: ${TEST_PATTERN})" >> "$GITHUB_STEP_SUMMARY"
         echo "- Command: go test -v -count=1 -timeout=${{ env.TEST_TIMEOUT }} ./test/volume_server/${{ matrix.test-type }}/... -run \"${TEST_PATTERN}\"" >> "$GITHUB_STEP_SUMMARY"

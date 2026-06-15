@@ -22,11 +22,11 @@ jobs:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
 
-      - name: Clone private GitLab repo (SeaweedFS Enterprise)
+      - name: Clone seaweed-mono (enterprise) source
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-enterprise-source
+          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV

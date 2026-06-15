@@ -1,17 +1,17 @@
-name: "Ceph S3 tests (GitLab)"
+name: "Ceph S3 tests (seaweed-mono)"
 
 on:
-  # Triggered by GitLab webhook
+  # Triggered by seaweed-mono push (repository_dispatch)
   repository_dispatch:
     types: 
-      - gitlab-push
-      - gitlab-merge-request
+      - mono-push
+      - mono-merge-request
   
   # Allow manual triggering
   workflow_dispatch:
     inputs:
       gitlab_branch:
-        description: 'GitLab branch to test'
+        description: 'seaweed-mono branch to test'
         required: false
         default: 'enterprise'
 
@@ -31,9 +31,9 @@ jobs:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
 
-      - name: Clone private GitLab repository
+      - name: Clone seaweed-mono (enterprise) source
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           # Determine branch from webhook or manual input
           BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
@@ -43,7 +43,7 @@ jobs:
           fi
           
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://gitlab-ci-token:${GITLAB_TOKEN}@gitlab.com/chrislusf/seaweedfs.git seaweedfs-source
+          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"
@@ -70,7 +70,7 @@ jobs:
 
       - name: Fix S3 tests bucket creation conflicts
         run: |
-          # Check if fix script exists in GitLab source
+          # Check if fix script exists in seaweed-mono source
           if [ -f seaweedfs-source/test/s3/fix_s3_tests_bucket_conflicts.py ]; then
             python3 seaweedfs-source/test/s3/fix_s3_tests_bucket_conflicts.py
           else
