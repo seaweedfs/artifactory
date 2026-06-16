@@ -82,10 +82,10 @@ jobs:
 
           echo "Checking changes between $BEFORE and $AFTER"
           if git -C seaweedfs-enterprise-source diff --name-only "$BEFORE" "$AFTER" -- > /tmp/changed_files.txt; then
-            if grep -q '^customer-portal/' /tmp/changed_files.txt; then
+            if grep -q '^enterprise/customer-portal/' /tmp/changed_files.txt; then
               echo "changed=true" >> $GITHUB_OUTPUT
               echo "Customer portal changes detected:"
-              grep '^customer-portal/' /tmp/changed_files.txt
+              grep '^enterprise/customer-portal/' /tmp/changed_files.txt
             else
               echo "No customer-portal changes detected."
               echo "changed=false" >> $GITHUB_OUTPUT

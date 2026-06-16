@@ -81,7 +81,7 @@ jobs:
         run: |
           cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/weed-volume ../../weed-volume-large-disk-${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/weed-volume ../../../weed-volume-large-disk-${{ matrix.arch }}
 
       - name: Build normal variant
         env:
@@ -89,7 +89,7 @@ jobs:
         run: |
           cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }} --no-default-features
-          cp target/${{ matrix.target }}/release/weed-volume ../../weed-volume-normal-${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/weed-volume ../../../weed-volume-normal-${{ matrix.arch }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
