@@ -10,7 +10,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/plugin-workers
@@ -46,23 +46,28 @@ jobs:
     - name: Clone seaweed-mono (enterprise) source
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
       run: |
-        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          BRANCH_REF="${{ github.event.client_payload.ref }}"
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+          BRANCH_REF="$PAYLOAD_REF"
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
           fi
         else
-          BRANCH="${{ github.event.inputs.gitlab_branch }}"
+          BRANCH="$INPUT_BRANCH"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
         fi
 
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
 
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
@@ -71,10 +76,10 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
     - name: Run plugin worker tests
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: go test -v ./${{ matrix.path }}

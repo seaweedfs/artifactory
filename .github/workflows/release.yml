@@ -44,7 +44,7 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -61,7 +61,7 @@ jobs:
           pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
           build_flags: -buildvcs=false
           ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
-          project_path: seaweedfs-enterprise-source/weed
+          project_path: seaweedfs-enterprise-source/enterprise/weed
           binary_name: weed
           asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}"
 
@@ -77,6 +77,6 @@ jobs:
           pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
           build_flags: -buildvcs=false -tags 5BytesOffset
           ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
-          project_path: seaweedfs-enterprise-source/weed
+          project_path: seaweedfs-enterprise-source/enterprise/weed
           binary_name: weed
           asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}_large_disk" 

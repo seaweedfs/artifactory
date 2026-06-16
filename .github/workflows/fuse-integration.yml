@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/fuse-integration
@@ -38,16 +38,22 @@ jobs:
     - name: Clone seaweed-mono (enterprise) source
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
       run: |
         # Determine branch from webhook or manual input
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
-        
+
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
         echo "Cloning branch: $BRANCH"
-        git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
         
         cd seaweedfs-source
         echo "Cloned commit: $(git rev-parse HEAD)"
@@ -56,8 +62,8 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: seaweedfs-source/go.sum
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: seaweedfs-source/enterprise/go.sum
         
     - name: Install FUSE and dependencies
       run: |
@@ -68,7 +74,7 @@ jobs:
         ls -la /dev/fuse || true
         
     - name: Build SeaweedFS
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: |
         go build -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v .
         chmod +x weed
@@ -82,8 +88,8 @@ jobs:
         
         # Copy only the working test files to avoid Go module conflicts
         # These are the files we've verified work without package name issues
-        cp seaweedfs-source/test/fuse_integration/simple_test.go /tmp/seaweedfs-fuse-tests/ 2>/dev/null || echo "⚠️ simple_test.go not found"
-        cp seaweedfs-source/test/fuse_integration/working_demo_test.go /tmp/seaweedfs-fuse-tests/ 2>/dev/null || echo "⚠️ working_demo_test.go not found"
+        cp seaweedfs-source/enterprise/test/fuse_integration/simple_test.go /tmp/seaweedfs-fuse-tests/ 2>/dev/null || echo "⚠️ simple_test.go not found"
+        cp seaweedfs-source/enterprise/test/fuse_integration/working_demo_test.go /tmp/seaweedfs-fuse-tests/ 2>/dev/null || echo "⚠️ working_demo_test.go not found"
         
         # Note: Other test files (framework.go, basic_operations_test.go, etc.) 
         # have Go module conflicts and are skipped until resolved
@@ -190,7 +196,7 @@ jobs:
     - name: Verify SeaweedFS Binary Integration
       run: |
         # Test that SeaweedFS binary is accessible from test environment
-        WEED_BINARY=$(pwd)/seaweedfs-source/weed/weed
+        WEED_BINARY=$(pwd)/seaweedfs-source/enterprise/weed/weed
         
         if [ -f "$WEED_BINARY" ]; then
           echo "✅ SeaweedFS binary found at: $WEED_BINARY"
@@ -214,13 +220,17 @@ jobs:
         
     - name: Test Summary
       if: always()
+      env:
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
       run: |
         echo "## 🚀 FUSE Integration Test Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### seaweed-mono Source" >> $GITHUB_STEP_SUMMARY
         echo "- **Repository**: https://github.com/seaweedfs/seaweed-mono" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+        BRANCH="${PAYLOAD_REF:-$INPUT_BRANCH}"; BRANCH="${BRANCH:-main}"; BRANCH="${BRANCH#refs/heads/}"
+        echo "- **Branch**: $BRANCH" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Framework Status" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **Framework Design**: Complete and validated" >> $GITHUB_STEP_SUMMARY

@@ -27,7 +27,7 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -75,9 +75,9 @@ jobs:
       - name: Build and push Docker image (FoundationDB)
         uses: docker/build-push-action@v7
         with:
-          context: ./seaweedfs-enterprise-source
+          context: ./seaweedfs-enterprise-source/enterprise
           push: ${{ github.event_name != 'pull_request' }}
-          file: ./seaweedfs-enterprise-source/docker/Dockerfile.foundationdb_large
+          file: ./seaweedfs-enterprise-source/enterprise/docker/Dockerfile.foundationdb_large
           platforms: linux/amd64
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}

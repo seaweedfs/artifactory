@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
   
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/s3-go-tests
@@ -38,17 +38,27 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           # Determine branch from webhook or manual input
-          BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
           BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
           if [ "$BRANCH" = "null" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
-          
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
-          
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -56,11 +66,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
         id: go
 
       - name: Build SeaweedFS
-        working-directory: seaweedfs-source/weed
+        working-directory: seaweedfs-source/enterprise/weed
         run: |
           go install -buildvcs=false
           echo "SeaweedFS binary installed to: $(which weed)"
@@ -101,7 +111,7 @@ jobs:
 
       - name: Run S3 Versioning Tests - ${{ matrix.test-type }}
         timeout-minutes: 25
-        working-directory: seaweedfs-source/test/s3/versioning
+        working-directory: seaweedfs-source/enterprise/test/s3/versioning
         run: |
           set -x
           echo "=== System Information ==="
@@ -125,7 +135,7 @@ jobs:
 
       - name: Show server logs on failure
         if: failure()
-        working-directory: seaweedfs-source/test/s3/versioning
+        working-directory: seaweedfs-source/enterprise/test/s3/versioning
         run: |
           echo "=== Server Logs ==="
           if [ -f weed-test.log ]; then
@@ -157,7 +167,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: s3-versioning-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
-          path: seaweedfs-source/test/s3/versioning/weed-test*.log
+          path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
           retention-days: 3
 
   s3-retention-tests:
@@ -175,17 +185,27 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           # Determine branch from webhook or manual input
-          BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
           BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
           if [ "$BRANCH" = "null" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
-          
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
-          
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -193,17 +213,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
         id: go
 
       - name: Install SeaweedFS
-        working-directory: seaweedfs-source/weed
+        working-directory: seaweedfs-source/enterprise/weed
         run: |
           go install -buildvcs=false
 
       - name: Run S3 Retention Tests - ${{ matrix.test-type }}
         timeout-minutes: 25
-        working-directory: seaweedfs-source/test/s3/retention
+        working-directory: seaweedfs-source/enterprise/test/s3/retention
         run: |
           set -x
           echo "=== System Information ==="
@@ -224,7 +244,7 @@ jobs:
 
       - name: Show server logs on failure
         if: failure()
-        working-directory: seaweedfs-source/test/s3/retention
+        working-directory: seaweedfs-source/enterprise/test/s3/retention
         run: |
           echo "=== Server Logs ==="
           if [ -f weed-test.log ]; then
@@ -243,7 +263,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: s3-retention-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
-          path: seaweedfs-source/test/s3/retention/weed-test*.log
+          path: seaweedfs-source/enterprise/test/s3/retention/weed-test*.log
           retention-days: 3
 
   s3-cors-tests:
@@ -261,17 +281,27 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           # Determine branch from webhook or manual input
-          BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
           BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
           if [ "$BRANCH" = "null" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
-          
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
-          
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -279,17 +309,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
         id: go
 
       - name: Install SeaweedFS
-        working-directory: seaweedfs-source/weed
+        working-directory: seaweedfs-source/enterprise/weed
         run: |
           go install -buildvcs=false
 
       - name: Run S3 CORS Tests - ${{ matrix.test-type }}
         timeout-minutes: 25
-        working-directory: seaweedfs-source/test/s3/cors
+        working-directory: seaweedfs-source/enterprise/test/s3/cors
         run: |
           set -x
           echo "=== System Information ==="
@@ -310,7 +340,7 @@ jobs:
 
       - name: Show server logs on failure
         if: failure()
-        working-directory: seaweedfs-source/test/s3/cors
+        working-directory: seaweedfs-source/enterprise/test/s3/cors
         run: |
           echo "=== Server Logs ==="
           if [ -f weed-test.log ]; then
@@ -329,7 +359,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: s3-cors-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
-          path: seaweedfs-source/test/s3/cors/weed-test*.log
+          path: seaweedfs-source/enterprise/test/s3/cors/weed-test*.log
           retention-days: 3
 
   s3-retention-worm:
@@ -344,17 +374,27 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           # Determine branch from webhook or manual input
-          BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
           BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
           if [ "$BRANCH" = "null" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
-          
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
-          
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -362,17 +402,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
         id: go
 
       - name: Install SeaweedFS
-        working-directory: seaweedfs-source/weed
+        working-directory: seaweedfs-source/enterprise/weed
         run: |
           go install -buildvcs=false
 
       - name: Run WORM Integration Tests
         timeout-minutes: 15
-        working-directory: seaweedfs-source/test/s3/retention
+        working-directory: seaweedfs-source/enterprise/test/s3/retention
         run: |
           set -x
           echo "=== System Information ==="
@@ -397,7 +437,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: s3-retention-worm-logs-${{ env.COMMIT_SHA }}
-          path: seaweedfs-source/test/s3/retention/weed-test*.log
+          path: seaweedfs-source/enterprise/test/s3/retention/weed-test*.log
           retention-days: 3
 
   s3-test-summary:
@@ -407,12 +447,16 @@ jobs:
     if: always()
     steps:
       - name: Generate Test Summary
+        env:
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           echo "## 🧪 S3 Go Tests Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### seaweed-mono Source" >> $GITHUB_STEP_SUMMARY
           echo "- **Repository**: https://github.com/seaweedfs/seaweed-mono" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+          BRANCH="${PAYLOAD_REF:-$INPUT_BRANCH}"; BRANCH="${BRANCH:-main}"; BRANCH="${BRANCH#refs/heads/}"
+          echo "- **Branch**: $BRANCH" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Results" >> $GITHUB_STEP_SUMMARY
           echo "- **S3 Versioning**: ${{ needs.s3-versioning-tests.result }}" >> $GITHUB_STEP_SUMMARY

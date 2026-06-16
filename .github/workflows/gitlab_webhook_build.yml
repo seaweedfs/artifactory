@@ -14,7 +14,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to build'
         required: false
-        default: 'enterprise'
+        default: 'main'
       gitlab_ref:
         description: 'seaweed-mono commit SHA or ref'
         required: false
@@ -43,44 +43,51 @@ jobs:
       # Parse seaweed-mono webhook payload
       - name: Parse seaweed-mono webhook payload
         id: parse_webhook
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          PAYLOAD_USER: ${{ github.event.client_payload.user_name }}
+          PAYLOAD_AFTER: ${{ github.event.client_payload.after }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+          INPUT_REF: ${{ github.event.inputs.gitlab_ref }}
         run: |
           echo "Event type: ${{ github.event.action }}"
-          
+
           # Extract information from webhook payload
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
             # Check if seaweed-mono template variables were replaced properly
-            RAW_REF="${{ github.event.client_payload.ref }}"
-            RAW_USER="${{ github.event.client_payload.user_name }}"
-            
+            RAW_REF="$PAYLOAD_REF"
+            RAW_USER="$PAYLOAD_USER"
+
             echo "Raw ref from payload: '$RAW_REF'"
             echo "Raw user from payload: '$RAW_USER'"
-            
+
             # If template variables weren't replaced (still contain %), use defaults
             if [[ "$RAW_REF" == *"%{"* ]] || [ -z "$RAW_REF" ] || [ "$RAW_REF" = "null" ]; then
               echo "⚠️  seaweed-mono template variables not replaced, using defaults"
-              GITLAB_REF="refs/heads/enterprise"
-              GITLAB_BRANCH="enterprise"
+              GITLAB_REF="refs/heads/main"
+              GITLAB_BRANCH="main"
               GITLAB_USER="seaweed-mono User"
               GITLAB_COMMIT=""
               GITLAB_COMMIT_MSG="seaweed-mono webhook trigger (template variables not replaced)"
             else
               echo "✅ seaweed-mono template variables replaced successfully"
-              GITLAB_REF="${{ github.event.client_payload.ref }}"
+              GITLAB_REF="$PAYLOAD_REF"
               GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
               if [ "$GITLAB_BRANCH" = "null" ]; then
-                GITLAB_BRANCH="enterprise"
-                GITLAB_REF="refs/heads/enterprise"
+                GITLAB_BRANCH="main"
+                GITLAB_REF="refs/heads/main"
               fi
-              GITLAB_USER="${{ github.event.client_payload.user_name }}"
-              GITLAB_COMMIT="${{ github.event.client_payload.after }}"
+              GITLAB_USER="$PAYLOAD_USER"
+              GITLAB_COMMIT="$PAYLOAD_AFTER"
               GITLAB_COMMIT_MSG="Push to $GITLAB_BRANCH by $GITLAB_USER"
             fi
-            
+
             echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
             echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
             echo "commit_message=$GITLAB_COMMIT_MSG" >> $GITHUB_OUTPUT
             echo "user=$GITLAB_USER" >> $GITHUB_OUTPUT
-            
+
             echo "📡 seaweed-mono Webhook Received"
             echo "Branch: $GITLAB_BRANCH"
             echo "Commit: $GITLAB_COMMIT"
@@ -88,14 +95,14 @@ jobs:
             echo "Message: $GITLAB_COMMIT_MSG"
           else
             # Manual trigger
-            GITLAB_BRANCH="${{ github.event.inputs.gitlab_branch || 'enterprise' }}"
-            GITLAB_COMMIT="${{ github.event.inputs.gitlab_ref || '' }}"
-            
+            GITLAB_BRANCH="${INPUT_BRANCH:-main}"
+            GITLAB_COMMIT="${INPUT_REF:-}"
+
             echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
             echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
             echo "commit_message=Manual trigger" >> $GITHUB_OUTPUT
             echo "user=${{ github.actor }}" >> $GITHUB_OUTPUT
-            
+
             echo "🔧 Manual Trigger"
             echo "Branch: $GITLAB_BRANCH"
           fi
@@ -108,12 +115,15 @@ jobs:
         run: |
           BRANCH="${{ steps.parse_webhook.outputs.branch }}"
           COMMIT="${{ steps.parse_webhook.outputs.commit }}"
-          
+
           echo "🔄 Cloning seaweed-mono repository..."
           echo "Branch: $BRANCH"
-          
+
+          # Validate the resolved branch before using it in a clone command
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
           # Clone the repository
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           
           cd seaweedfs-source
           
@@ -146,12 +156,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
-          cache-dependency-path: seaweedfs-source/go.sum
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: seaweedfs-source/enterprise/go.sum
 
       # Verify Go modules
       - name: Verify Go modules
-        working-directory: seaweedfs-source
+        working-directory: seaweedfs-source/enterprise
         run: |
           echo "🔍 Verifying Go modules..."
           go mod verify
@@ -160,7 +170,7 @@ jobs:
 
       # Run Go vet and format checks
       - name: Run Go checks
-        working-directory: seaweedfs-source
+        working-directory: seaweedfs-source/enterprise
         run: |
           echo "🔍 Running go vet..."
           go vet ./weed/... || echo "::warning::go vet found issues"
@@ -177,7 +187,7 @@ jobs:
       # Run tests if requested
       - name: Run tests
         if: github.event.inputs.run_tests != 'false'
-        working-directory: seaweedfs-source
+        working-directory: seaweedfs-source/enterprise
         run: |
           echo "🧪 Running tests..."
           
@@ -190,7 +200,7 @@ jobs:
 
       # Build verification binary
       - name: Build verification
-        working-directory: seaweedfs-source
+        working-directory: seaweedfs-source/enterprise
         run: |
           echo "🔨 Building weed binary for verification..."
           CGO_ENABLED=0 go build -o weed-test ./weed
@@ -227,7 +237,7 @@ jobs:
     needs: gitlab-webhook-build
     # Only run for enterprise branch or tags
     if: |
-      (github.event.client_payload.ref == 'refs/heads/enterprise') ||
+      (github.event.client_payload.ref == 'refs/heads/main') ||
       (startsWith(github.event.client_payload.ref, 'refs/tags/')) ||
       (github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
@@ -250,26 +260,30 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
         run: |
-          BRANCH="${{ github.event.client_payload.ref }}"
+          BRANCH="$PAYLOAD_REF"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||' | sed 's|refs/tags/||')
           fi
-          
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+          # Validate the resolved branch before using it in a clone command
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           cd seaweedfs-source
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
-          cache-dependency-path: seaweedfs-source/go.sum
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: seaweedfs-source/enterprise/go.sum
 
       - name: Build binary
-        working-directory: seaweedfs-source
+        working-directory: seaweedfs-source/enterprise
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -301,7 +315,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: weed-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: seaweedfs-source/weed-*
+          path: seaweedfs-source/enterprise/weed-*
           retention-days: 30
 
   # Notification job (optional)

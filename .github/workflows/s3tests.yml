@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/s3tests
@@ -34,16 +34,30 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           # Determine branch from webhook or manual input
-          BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
           BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
           if [ "$BRANCH" = "null" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
-          
+
+          # Validate the resolved branch before using it in a clone command
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "Refusing invalid branch: $BRANCH" >&2
+            exit 1
+          fi
+
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"
@@ -52,7 +66,7 @@ jobs:
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-source/go.mod'
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
         id: go
 
       - name: Set up Python
@@ -71,8 +85,8 @@ jobs:
       - name: Fix S3 tests bucket creation conflicts
         run: |
           # Check if fix script exists in seaweed-mono source
-          if [ -f seaweedfs-source/test/s3/fix_s3_tests_bucket_conflicts.py ]; then
-            python3 seaweedfs-source/test/s3/fix_s3_tests_bucket_conflicts.py
+          if [ -f seaweedfs-source/enterprise/test/s3/fix_s3_tests_bucket_conflicts.py ]; then
+            python3 seaweedfs-source/enterprise/test/s3/fix_s3_tests_bucket_conflicts.py
           else
             echo "⚠️ S3 tests fix script not found, proceeding without fix"
           fi
@@ -80,7 +94,7 @@ jobs:
           S3_TESTS_PATH: s3-tests
 
       - name: Build SeaweedFS
-        working-directory: seaweedfs-source/weed
+        working-directory: seaweedfs-source/enterprise/weed
         run: |
           go install -buildvcs=false
           echo "SeaweedFS binary installed to: $(which weed)"
@@ -93,7 +107,7 @@ jobs:
           # Create clean data directory for this test run
           export WEED_DATA_DIR="/tmp/seaweedfs-s3tests-$(date +%s)"
           export WEED_BINARY="$(which weed)"
-          export S3_CONFIG_FILE="$GITHUB_WORKSPACE/seaweedfs-source/docker/compose/s3.json"
+          export S3_CONFIG_FILE="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3.json"
           
           echo "Starting SeaweedFS components individually..."
           echo "Data directory: $WEED_DATA_DIR"
@@ -124,7 +138,7 @@ jobs:
       - name: Run Basic S3 tests
         timeout-minutes: 15
         env:
-          S3TEST_CONF: ../seaweedfs-source/docker/compose/s3tests.conf
+          S3TEST_CONF: ../seaweedfs-source/enterprise/docker/compose/s3tests.conf
         shell: bash
         run: |
           cd s3-tests
@@ -132,7 +146,7 @@ jobs:
           
           # Debug: Show the config file contents
           echo "=== S3 Config File Contents ==="
-          cat ../seaweedfs-source/docker/compose/s3tests.conf
+          cat ../seaweedfs-source/enterprise/docker/compose/s3tests.conf
           echo "=== End Config ==="
           
           # Additional wait for S3-Filer integration to be fully ready
