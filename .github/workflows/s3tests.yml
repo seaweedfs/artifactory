@@ -34,16 +34,30 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
         run: |
           # Determine branch from webhook or manual input
-          BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
           BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
           if [ "$BRANCH" = "null" ]; then
             BRANCH="main"
           fi
-          
+
+          # Validate the resolved branch before using it in a clone command
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "Refusing invalid branch: $BRANCH" >&2
+            exit 1
+          fi
+
           echo "Cloning branch: $BRANCH"
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           
           cd seaweedfs-source
           echo "Cloned commit: $(git rev-parse HEAD)"

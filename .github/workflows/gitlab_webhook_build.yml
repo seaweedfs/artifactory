@@ -43,18 +43,25 @@ jobs:
       # Parse seaweed-mono webhook payload
       - name: Parse seaweed-mono webhook payload
         id: parse_webhook
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          PAYLOAD_USER: ${{ github.event.client_payload.user_name }}
+          PAYLOAD_AFTER: ${{ github.event.client_payload.after }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+          INPUT_REF: ${{ github.event.inputs.gitlab_ref }}
         run: |
           echo "Event type: ${{ github.event.action }}"
-          
+
           # Extract information from webhook payload
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
             # Check if seaweed-mono template variables were replaced properly
-            RAW_REF="${{ github.event.client_payload.ref }}"
-            RAW_USER="${{ github.event.client_payload.user_name }}"
-            
+            RAW_REF="$PAYLOAD_REF"
+            RAW_USER="$PAYLOAD_USER"
+
             echo "Raw ref from payload: '$RAW_REF'"
             echo "Raw user from payload: '$RAW_USER'"
-            
+
             # If template variables weren't replaced (still contain %), use defaults
             if [[ "$RAW_REF" == *"%{"* ]] || [ -z "$RAW_REF" ] || [ "$RAW_REF" = "null" ]; then
               echo "⚠️  seaweed-mono template variables not replaced, using defaults"
@@ -65,22 +72,22 @@ jobs:
               GITLAB_COMMIT_MSG="seaweed-mono webhook trigger (template variables not replaced)"
             else
               echo "✅ seaweed-mono template variables replaced successfully"
-              GITLAB_REF="${{ github.event.client_payload.ref }}"
+              GITLAB_REF="$PAYLOAD_REF"
               GITLAB_BRANCH=$(echo "$GITLAB_REF" | sed 's|refs/heads/||')
               if [ "$GITLAB_BRANCH" = "null" ]; then
                 GITLAB_BRANCH="main"
                 GITLAB_REF="refs/heads/main"
               fi
-              GITLAB_USER="${{ github.event.client_payload.user_name }}"
-              GITLAB_COMMIT="${{ github.event.client_payload.after }}"
+              GITLAB_USER="$PAYLOAD_USER"
+              GITLAB_COMMIT="$PAYLOAD_AFTER"
               GITLAB_COMMIT_MSG="Push to $GITLAB_BRANCH by $GITLAB_USER"
             fi
-            
+
             echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
             echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
             echo "commit_message=$GITLAB_COMMIT_MSG" >> $GITHUB_OUTPUT
             echo "user=$GITLAB_USER" >> $GITHUB_OUTPUT
-            
+
             echo "📡 seaweed-mono Webhook Received"
             echo "Branch: $GITLAB_BRANCH"
             echo "Commit: $GITLAB_COMMIT"
@@ -88,14 +95,14 @@ jobs:
             echo "Message: $GITLAB_COMMIT_MSG"
           else
             # Manual trigger
-            GITLAB_BRANCH="${{ github.event.inputs.gitlab_branch || 'main' }}"
-            GITLAB_COMMIT="${{ github.event.inputs.gitlab_ref || '' }}"
-            
+            GITLAB_BRANCH="${INPUT_BRANCH:-main}"
+            GITLAB_COMMIT="${INPUT_REF:-}"
+
             echo "branch=$GITLAB_BRANCH" >> $GITHUB_OUTPUT
             echo "commit=$GITLAB_COMMIT" >> $GITHUB_OUTPUT
             echo "commit_message=Manual trigger" >> $GITHUB_OUTPUT
             echo "user=${{ github.actor }}" >> $GITHUB_OUTPUT
-            
+
             echo "🔧 Manual Trigger"
             echo "Branch: $GITLAB_BRANCH"
           fi
@@ -108,12 +115,15 @@ jobs:
         run: |
           BRANCH="${{ steps.parse_webhook.outputs.branch }}"
           COMMIT="${{ steps.parse_webhook.outputs.commit }}"
-          
+
           echo "🔄 Cloning seaweed-mono repository..."
           echo "Branch: $BRANCH"
-          
+
+          # Validate the resolved branch before using it in a clone command
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
           # Clone the repository
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           
           cd seaweedfs-source
           
@@ -250,15 +260,19 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
         run: |
-          BRANCH="${{ github.event.client_payload.ref }}"
+          BRANCH="$PAYLOAD_REF"
           if [ -z "$BRANCH" ]; then
             BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||' | sed 's|refs/tags/||')
           fi
-          
-          git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+          # Validate the resolved branch before using it in a clone command
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
           cd seaweedfs-source
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
