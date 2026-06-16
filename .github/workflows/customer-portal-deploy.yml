@@ -9,7 +9,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to deploy'
         required: false
-        default: 'enterprise'
+        default: 'main'
       setup:
         description: 'Run first-time server setup'
         required: true
@@ -39,11 +39,11 @@ jobs:
             BRANCH="$INPUT_BRANCH"
           fi
           if [ -z "$BRANCH" ] || [ "$BRANCH" = "null" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
 
           DEPLOY="true"
-          if [ "$EVENT_NAME" = "repository_dispatch" ] && [ "$BRANCH" != "enterprise" ]; then
+          if [ "$EVENT_NAME" = "repository_dispatch" ] && [ "$BRANCH" != "main" ]; then
             echo "Skipping non-enterprise branch: $BRANCH"
             DEPLOY="false"
           fi
@@ -188,8 +188,8 @@ jobs:
         if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'seaweedfs-enterprise-source/go.mod'
-          cache-dependency-path: 'seaweedfs-enterprise-source/go.sum'
+          go-version-file: 'seaweedfs-enterprise-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-enterprise-source/enterprise/go.sum'
 
       - name: Add GOPATH/bin to PATH
         if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
@@ -197,7 +197,7 @@ jobs:
 
       - name: Build customer-portal
         if: steps.portal_changes.outputs.changed == 'true' && steps.resolve_branch.outputs.deploy == 'true'
-        working-directory: seaweedfs-enterprise-source/customer-portal
+        working-directory: seaweedfs-enterprise-source/enterprise/customer-portal
         run: |
           make
           test -f customer-portal
@@ -225,7 +225,7 @@ jobs:
 
           # Ensure temp directory exists
           ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/seaweedfs-portal/tmp"
-          scp -i ~/.ssh/deploy_key seaweedfs-enterprise-source/customer-portal/customer-portal $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/tmp/customer-portal
+          scp -i ~/.ssh/deploy_key seaweedfs-enterprise-source/enterprise/customer-portal/customer-portal $REMOTE_USER@$REMOTE_HOST:~/seaweedfs-portal/tmp/customer-portal
           
           # Stop service, replace binary securely, and restart
           ssh -i ~/.ssh/deploy_key $REMOTE_USER@$REMOTE_HOST "

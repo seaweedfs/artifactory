@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/kafka-tests
@@ -47,10 +47,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -61,19 +61,19 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         go mod download
         go mod tidy
 
     - name: Run Kafka Gateway Unit Tests
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         # Set process limits for container isolation
         ulimit -n 512 || echo "Warning: Could not set file descriptor limit"
@@ -101,10 +101,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -115,19 +115,19 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         go mod download
         go mod tidy
 
     - name: Run Integration Tests
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         # Higher limits for integration tests
         ulimit -n 1024 || echo "Warning: Could not set file descriptor limit"
@@ -157,10 +157,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -171,13 +171,13 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Warm Go module cache
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         # Warm cache for root module
         go mod download || true
@@ -186,14 +186,14 @@ jobs:
         go mod download || true
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         # Use go mod download with timeout to prevent hanging
         timeout 90s go mod download || echo "Warning: Dependency download timed out, continuing with cached modules"
         go mod tidy
 
     - name: Build and start SeaweedFS MQ
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         set -e
         # Build weed binary
@@ -281,7 +281,7 @@ jobs:
         fi
 
     - name: Run End-to-End Tests
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         # Higher limits for E2E tests
         ulimit -n 1024 || echo "Warning: Could not set file descriptor limit"
@@ -339,10 +339,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -353,26 +353,26 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Warm Go module cache
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         go mod download || true
         cd test/kafka
         go mod download || true
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         timeout 90s go mod download || echo "Warning: Dependency download timed out, continuing with cached modules"
         go mod tidy
 
     - name: Build and start SeaweedFS MQ
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         set -e
         go build -o /usr/local/bin/weed ./weed
@@ -443,7 +443,7 @@ jobs:
         fi
 
     - name: Run Consumer Group Tests
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         # Test consumer group functionality with explicit timeout
         ulimit -n 512 || echo "Warning: Could not set file descriptor limit"
@@ -484,10 +484,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -498,26 +498,26 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Warm Go module cache
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         go mod download || true
         cd test/kafka
         go mod download || true
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         timeout 90s go mod download || echo "Warning: Dependency download timed out, continuing with cached modules"
         go mod tidy
 
     - name: Build and start SeaweedFS MQ
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         set -e
         go build -o /usr/local/bin/weed ./weed
@@ -577,7 +577,7 @@ jobs:
         fi
 
     - name: Run Client Compatibility Tests
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         go test -v -run "^TestClientCompatibility" -timeout 180s ./integration/...
       env:
@@ -615,10 +615,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -629,26 +629,26 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Warm Go module cache
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         go mod download || true
         cd test/kafka
         go mod download || true
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         timeout 90s go mod download || echo "Warning: Dependency download timed out, continuing with cached modules"
         go mod tidy
 
     - name: Build and start SeaweedFS MQ
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         set -e
         go build -o /usr/local/bin/weed ./weed
@@ -708,7 +708,7 @@ jobs:
         fi
 
     - name: Run SMQ Integration Tests
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         ulimit -n 512 || echo "Warning: Could not set file descriptor limit"
         ulimit -u 100 || echo "Warning: Could not set process limit"
@@ -749,10 +749,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -763,19 +763,19 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache: true
-        cache-dependency-path: seaweedfs-source/**/go.sum
+        cache-dependency-path: seaweedfs-source/enterprise/**/go.sum
       id: go
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/test/kafka
+      working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
         go mod download
         go mod tidy
 
     - name: Run Protocol Tests
-      working-directory: seaweedfs-source/weed/mq/kafka
+      working-directory: seaweedfs-source/enterprise/weed/mq/kafka
       run: |
         export TMPDIR=/tmp
         # Run protocol tests from the weed/mq/kafka directory since they test the protocol implementation

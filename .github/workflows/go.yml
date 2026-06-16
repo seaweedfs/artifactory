@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/go
@@ -36,10 +36,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -47,15 +47,15 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Get dependencies
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: go get -v -t -d ./...
 
     - name: Go Vet (excluding protobuf lock copying)
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: |
         # Run go vet and filter out known protobuf MessageState lock copying warnings
         # These are expected in generated protobuf code with embedded sync.Mutex and are safe in practice
@@ -75,10 +75,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -89,11 +89,11 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Build
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: |
         echo "Building SeaweedFS with all tags..."
         go build -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v .
@@ -106,7 +106,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: weed-binary-${{ env.COMMIT_SHA }}
-        path: seaweedfs-source/weed/weed
+        path: seaweedfs-source/enterprise/weed/weed
         retention-days: 7
 
     - name: Go Build Summary
@@ -117,14 +117,14 @@ jobs:
         echo "### seaweed-mono Source" >> $GITHUB_STEP_SUMMARY
         echo "- **Repository**: https://github.com/seaweedfs/seaweed-mono" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
         echo "- **Go Version**: $(go version | cut -d' ' -f3)" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Tags**: elastic, gocdk, sqlite, ydb, tarantool, tikv, rclone" >> $GITHUB_STEP_SUMMARY
         echo "- **Target**: SeaweedFS Enterprise Edition" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        if [ -f seaweedfs-source/weed/weed ]; then
+        if [ -f seaweedfs-source/enterprise/weed/weed ]; then
           echo "✅ **Binary built successfully and available as artifact**" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ **Binary build failed**" >> $GITHUB_STEP_SUMMARY
@@ -142,10 +142,10 @@ jobs:
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         echo "Cloning branch: $BRANCH"
         git clone -b $BRANCH https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
@@ -153,9 +153,9 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Test
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: go test -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v ./...

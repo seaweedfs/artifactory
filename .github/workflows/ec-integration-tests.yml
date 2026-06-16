@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/ec-integration
@@ -40,14 +40,14 @@ jobs:
           BRANCH_REF="${{ github.event.client_payload.ref }}"
           # Handle null/empty ref by defaulting to enterprise
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
           fi
         else
           BRANCH="${{ github.event.inputs.gitlab_branch }}"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
         fi
         
@@ -62,12 +62,12 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
     - name: Build weed binary
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: |
         echo "Building SeaweedFS weed binary for EC tests..."
         go build -o weed .
@@ -81,7 +81,7 @@ jobs:
         echo "$(pwd)" >> $GITHUB_PATH
 
     - name: Run EC Integration Tests
-      working-directory: seaweedfs-source/test/erasure_coding
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
       run: |
         echo "Running EC Integration Tests..."
         echo "Test directory contents:"
@@ -92,21 +92,21 @@ jobs:
 
     - name: Run EC Disk-Aware Tests
       if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
       run: |
         echo "Running EC Disk-Aware Rebalancing Tests..."
         go test -v -run TestDiskAwareECRebalancing -timeout 30m || true
 
     - name: Run EC Disk Type Tests
       if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
       run: |
         echo "Running EC Disk Type Support Tests..."
         go test -v -run TestECDiskTypeSupport -timeout 30m || true
 
     - name: Run EC Cross-Rack Placement Tests
       if: success() || failure()
-      working-directory: seaweedfs-source/test/erasure_coding
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
       run: |
         echo "Running EC Cross-Rack Placement Tests..."
         go test -v -run TestCrossRackECPlacement -timeout 30m || true
@@ -117,7 +117,7 @@ jobs:
       with:
         name: ec-integration-test-logs-${{ env.COMMIT_SHA }}
         path: |
-          seaweedfs-source/test/erasure_coding/*.log
+          seaweedfs-source/enterprise/test/erasure_coding/*.log
           /tmp/seaweedfs_ec_*/*.log
         if-no-files-found: ignore
         retention-days: 7
@@ -167,14 +167,14 @@ jobs:
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
           BRANCH_REF="${{ github.event.client_payload.ref }}"
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
           fi
         else
           BRANCH="${{ github.event.inputs.gitlab_branch }}"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
         fi
 
@@ -188,12 +188,12 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
     - name: Build weed binary
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       run: |
         echo "Building SeaweedFS weed binary for custom EC ratio tests..."
         go build -o weed_bin ./weed
@@ -201,7 +201,7 @@ jobs:
         ls -lh weed_bin
 
     - name: Run EC Custom Ratio Tests
-      working-directory: seaweedfs-source/test/erasure_coding/custom_ratio_test
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding/custom_ratio_test
       run: |
         # Run the full suite in a single go test invocation so each test's
         # defer cleanup() reaps weed_bin children before the next test starts.
@@ -229,7 +229,7 @@ jobs:
       with:
         name: ec-custom-ratio-test-logs-${{ env.COMMIT_SHA }}
         path: |
-          seaweedfs-source/test/erasure_coding/custom_ratio_test/tmp/logs/*.log
+          seaweedfs-source/enterprise/test/erasure_coding/custom_ratio_test/tmp/logs/*.log
         if-no-files-found: ignore
         retention-days: 7
 
@@ -276,14 +276,14 @@ jobs:
           BRANCH_REF="${{ github.event.client_payload.ref }}"
           # Handle null/empty ref by defaulting to enterprise
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
           fi
         else
           BRANCH="${{ github.event.inputs.gitlab_branch }}"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
         fi
         
@@ -296,18 +296,18 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
     - name: Run EC Regression Tests
-      working-directory: seaweedfs-source/test/erasure_coding
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
       run: |
         echo "Running EC Regression Prevention Tests..."
         go test -v -run TestECEncodingRegressionPrevention -timeout 10m
 
     - name: Run EC Unit Tests
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: |
         echo "Running EC-related unit tests..."
         go test -v ./storage/erasure_coding/... -timeout 10m || true
@@ -353,14 +353,14 @@ jobs:
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
           BRANCH_REF="${{ github.event.client_payload.ref }}"
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
           fi
         else
           BRANCH="${{ github.event.inputs.gitlab_branch }}"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
         fi
 
@@ -375,12 +375,12 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
     - name: Run EC Vacuum 2PC Switch Test
-      working-directory: seaweedfs-source/test/ec_vacuum/admin_dockertest
+      working-directory: seaweedfs-source/enterprise/test/ec_vacuum/admin_dockertest
       env:
         EC_VACUUM_INTEGRATION: "1"
       run: |
@@ -402,7 +402,7 @@ jobs:
       with:
         name: ec-vacuum-2pc-test-logs-${{ env.COMMIT_SHA }}
         path: |
-          seaweedfs-source/test/ec_vacuum/admin_dockertest/tmp/logs/*.log
+          seaweedfs-source/enterprise/test/ec_vacuum/admin_dockertest/tmp/logs/*.log
         if-no-files-found: ignore
         retention-days: 7
 

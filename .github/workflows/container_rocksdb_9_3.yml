@@ -26,7 +26,7 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -34,7 +34,7 @@ jobs:
       - name: Change shard counts from 10/4 to 9/3
         run: |
           set -euo pipefail
-          TARGET="seaweedfs-enterprise-source/weed/storage/erasure_coding/ec_encoder.go"
+          TARGET="seaweedfs-enterprise-source/enterprise/weed/storage/erasure_coding/ec_encoder.go"
           if [ ! -f "$TARGET" ]; then
             echo "Target file not found: $TARGET" >&2
             exit 1
@@ -84,20 +84,20 @@ jobs:
       - name: Create custom Dockerfile for modified source
         run: |
           # Copy the original Dockerfile and modify it to use our modified source
-          cp seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_large seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_9_3
+          cp seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_large seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_9_3
           
           # Replace the git clone step with copying our modified source
-          sed -i '/RUN git clone.*seaweedfs/d' seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_9_3
-          sed -i '/ARG BRANCH=/d' seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_9_3
-          sed -i '/RUN cd.*git checkout/d' seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_9_3
-          sed -i '/RUN mkdir -p \/go\/src\/github.com\/seaweedfs\//a COPY . /go/src/github.com/seaweedfs/seaweedfs' seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_9_3
+          sed -i '/RUN git clone.*seaweedfs/d' seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_9_3
+          sed -i '/ARG BRANCH=/d' seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_9_3
+          sed -i '/RUN cd.*git checkout/d' seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_9_3
+          sed -i '/RUN mkdir -p \/go\/src\/github.com\/seaweedfs\//a COPY . /go/src/github.com/seaweedfs/seaweedfs' seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_9_3
 
       - name: Build and push Docker image (RocksDB 9/3)
         uses: docker/build-push-action@v7
         with:
-          context: ./seaweedfs-enterprise-source
+          context: ./seaweedfs-enterprise-source/enterprise
           push: ${{ github.event_name != 'pull_request' }}
-          file: ./seaweedfs-enterprise-source/docker/Dockerfile.rocksdb_9_3
+          file: ./seaweedfs-enterprise-source/enterprise/docker/Dockerfile.rocksdb_9_3
           platforms: linux/amd64
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}

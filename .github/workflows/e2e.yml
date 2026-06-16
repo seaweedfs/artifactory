@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/e2e
@@ -48,10 +48,10 @@ jobs:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
       run: |
         # Determine branch from webhook or manual input
-        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}"
+        BRANCH="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}"
         BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
         if [ "$BRANCH" = "null" ]; then
-          BRANCH="enterprise"
+          BRANCH="main"
         fi
         
         echo "Cloning branch: $BRANCH"
@@ -64,7 +64,7 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
       id: go
 
     - name: Configure Docker Hub mirror
@@ -105,7 +105,7 @@ jobs:
 
     - name: Start SeaweedFS
       timeout-minutes: 20
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: |
         # Enable Docker buildkit for better caching
         export DOCKER_BUILDKIT=1
@@ -131,7 +131,7 @@ jobs:
 
     - name: Run FIO 4k
       timeout-minutes: 15
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: |
         echo "Starting FIO at: $(date)"
         # Concurrent r/w
@@ -145,7 +145,7 @@ jobs:
 
     - name: Run FIO 128k
       timeout-minutes: 15
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: |
         echo "Starting FIO at: $(date)"
         # Concurrent r/w
@@ -159,7 +159,7 @@ jobs:
 
     - name: Run FIO 1MB
       timeout-minutes: 15
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: |
         echo "Starting FIO at: $(date)"
         # Concurrent r/w
@@ -173,7 +173,7 @@ jobs:
 
     - name: Save logs
       if: always()
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: |
         docker compose -f ./compose/e2e-mount.yml logs > output.log
         echo 'Showing last 500 log lines of mount service:'
@@ -182,7 +182,7 @@ jobs:
     - name: Check for data races
       if: always()
       continue-on-error: true # TODO: remove this comment to enable build failure on data races (after all are fixed)
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: grep -A50 'DATA RACE' output.log && exit 1 || exit 0
 
     - name: Archive logs
@@ -190,7 +190,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: e2e-output-logs-${{ env.COMMIT_SHA }}
-        path: seaweedfs-source/docker/output.log
+        path: seaweedfs-source/enterprise/docker/output.log
 
     - name: E2E Test Summary
       if: always()
@@ -200,7 +200,7 @@ jobs:
         echo "### seaweed-mono Source" >> $GITHUB_STEP_SUMMARY
         echo "- **Repository**: https://github.com/seaweedfs/seaweed-mono" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'enterprise' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: $(echo '${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}' | sed 's|refs/heads/||')" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Test Components" >> $GITHUB_STEP_SUMMARY
         echo "- 🐳 **Docker Compose**: SeaweedFS cluster with FUSE mount" >> $GITHUB_STEP_SUMMARY
@@ -219,5 +219,5 @@ jobs:
 
     - name: Cleanup
       if: always()
-      working-directory: seaweedfs-source/docker
+      working-directory: seaweedfs-source/enterprise/docker
       run: docker compose -f ./compose/e2e-mount.yml down --volumes --remove-orphans --rmi all

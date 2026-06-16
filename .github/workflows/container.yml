@@ -40,7 +40,7 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
 
@@ -70,8 +70,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            seaweedfs-enterprise-source/seaweed-volume/target
-          key: rust-docker-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/seaweed-volume/Cargo.lock') }}
+            seaweedfs-enterprise-source/enterprise/seaweed-volume/target
+          key: rust-docker-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/enterprise/seaweed-volume/Cargo.lock') }}
           restore-keys: |
             rust-docker-${{ matrix.target }}-
 
@@ -79,7 +79,7 @@ jobs:
         env:
           SEAWEEDFS_COMMIT: ${{ github.sha }}
         run: |
-          cd seaweedfs-enterprise-source/seaweed-volume
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/weed-volume ../../weed-volume-large-disk-${{ matrix.arch }}
 
@@ -87,7 +87,7 @@ jobs:
         env:
           SEAWEEDFS_COMMIT: ${{ github.sha }}
         run: |
-          cd seaweedfs-enterprise-source/seaweed-volume
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }} --no-default-features
           cp target/${{ matrix.target }}/release/weed-volume ../../weed-volume-normal-${{ matrix.arch }}
 
@@ -168,7 +168,7 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -184,15 +184,15 @@ jobs:
       # Place Rust binaries in Docker build context
       - name: Place Rust binaries in Docker context
         run: |
-          mkdir -p seaweedfs-enterprise-source/weed-volume-prebuilt
+          mkdir -p seaweedfs-enterprise-source/enterprise/weed-volume-prebuilt
           for arch in amd64 arm64; do
             src="./rust-bins/weed-volume-${{ matrix.rust_variant }}-${arch}"
             if [ -f "$src" ]; then
-              cp "$src" "seaweedfs-enterprise-source/weed-volume-prebuilt/weed-volume-${arch}"
+              cp "$src" "seaweedfs-enterprise-source/enterprise/weed-volume-prebuilt/weed-volume-${arch}"
               echo "Placed pre-built Rust binary for ${arch}"
             fi
           done
-          ls -la seaweedfs-enterprise-source/weed-volume-prebuilt/
+          ls -la seaweedfs-enterprise-source/enterprise/weed-volume-prebuilt/
 
       # Docker meta for tagging
       - name: Docker meta
@@ -255,9 +255,9 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
         with:
-          context: ./seaweedfs-enterprise-source
+          context: ./seaweedfs-enterprise-source/enterprise
           push: ${{ github.event_name != 'pull_request' }}
-          file: ./seaweedfs-enterprise-source/docker/${{ matrix.dockerfile }}
+          file: ./seaweedfs-enterprise-source/enterprise/docker/${{ matrix.dockerfile }}
           build-args: |
             ${{ matrix.build_args }}
             BUILDKIT_INLINE_CACHE=1

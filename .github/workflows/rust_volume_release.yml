@@ -41,7 +41,7 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
-          git clone -b enterprise https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
@@ -74,8 +74,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            seaweedfs-enterprise-source/seaweed-volume/target
-          key: rust-enterprise-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/seaweed-volume/Cargo.lock') }}
+            seaweedfs-enterprise-source/enterprise/seaweed-volume/target
+          key: rust-enterprise-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/enterprise/seaweed-volume/Cargo.lock') }}
           restore-keys: |
             rust-enterprise-${{ matrix.target }}-
 
@@ -83,21 +83,21 @@ jobs:
         env:
           SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
         run: |
-          cd seaweedfs-enterprise-source/seaweed-volume
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }} --target-dir target/large-disk
 
       - name: Build Rust volume server (normal)
         env:
           SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
         run: |
-          cd seaweedfs-enterprise-source/seaweed-volume
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }} --no-default-features --target-dir target/normal
 
       - name: Package binaries
         run: |
           # Build each variant into its own --target-dir so the second build
           # doesn't overwrite the first at the shared release path.
-          root=seaweedfs-enterprise-source/seaweed-volume/target
+          root=seaweedfs-enterprise-source/enterprise/seaweed-volume/target
           cp "$root/large-disk/${{ matrix.target }}/release/weed-volume" weed-volume-large-disk
           tar czf weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz weed-volume-large-disk
           rm weed-volume-large-disk

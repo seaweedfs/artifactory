@@ -13,7 +13,7 @@ on:
       gitlab_branch:
         description: 'seaweed-mono branch to test'
         required: false
-        default: 'enterprise'
+        default: 'main'
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/volume-server-integration
@@ -48,14 +48,14 @@ jobs:
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
           BRANCH_REF="${{ github.event.client_payload.ref }}"
           if [ "$BRANCH_REF" = "null" ] || [ -z "$BRANCH_REF" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           else
             BRANCH=$(echo "$BRANCH_REF" | sed 's|refs/heads/||')
           fi
         else
           BRANCH="${{ github.event.inputs.gitlab_branch }}"
           if [ -z "$BRANCH" ]; then
-            BRANCH="enterprise"
+            BRANCH="main"
           fi
         fi
 
@@ -70,20 +70,20 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version-file: 'seaweedfs-source/go.mod'
-        cache-dependency-path: 'seaweedfs-source/go.sum'
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Build SeaweedFS binary
-      working-directory: seaweedfs-source/weed
+      working-directory: seaweedfs-source/enterprise/weed
       run: |
         go build -o weed .
         chmod +x weed
         ./weed version
 
     - name: Run volume server integration tests
-      working-directory: seaweedfs-source
+      working-directory: seaweedfs-source/enterprise
       env:
-        WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/weed/weed
+        WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
       run: |
         if [ "${{ matrix.test-type }}" == "grpc" ]; then
           if [ "${{ matrix.shard }}" == "1" ]; then
