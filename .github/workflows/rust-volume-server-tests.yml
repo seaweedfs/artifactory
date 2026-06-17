@@ -1,0 +1,291 @@
+name: "Rust Volume Server Tests (seaweed-mono)"
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/rust-volume-server-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust-unit-tests:
+    name: Rust Unit Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-
+
+      - name: Build Rust volume server
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
+
+      - name: Run Rust unit tests
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo test
+
+  rust-integration-tests:
+    name: Rust Integration Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-
+
+      - name: Build Go weed binary
+        run: |
+          cd seaweedfs-source/enterprise/weed
+          go build -tags 5BytesOffset -o weed .
+          chmod +x weed
+          ./weed version
+
+      - name: Build Rust volume binary
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
+
+      - name: Run integration tests
+        env:
+          WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+          RUST_VOLUME_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+        run: |
+          echo "Running Rust volume server integration tests..."
+          cd seaweedfs-source/enterprise
+          go test -v -count=1 -timeout=15m ./test/volume_server/rust/...
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/rust-volume-server-it-logs
+          find /tmp -maxdepth 1 -type d -name "seaweedfs_volume_server_it_*" -print -exec cp -r {} /tmp/rust-volume-server-it-logs/ \; || true
+
+      - name: Archive logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-volume-server-integration-test-logs
+          path: /tmp/rust-volume-server-it-logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## Rust Volume Server Integration Test Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Suite: test/volume_server/rust" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Command: go test -v -count=1 -timeout=15m ./test/volume_server/rust/..." >> "$GITHUB_STEP_SUMMARY"
+
+  rust-volume-go-tests:
+    name: Go Tests with Rust Volume (${{ matrix.test-type }} - Shard ${{ matrix.shard }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        test-type: [grpc, http]
+        shard: [1, 2, 3]
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-
+
+      - name: Build Go weed binary
+        run: |
+          cd seaweedfs-source/enterprise/weed
+          go build -tags 5BytesOffset -o weed .
+          chmod +x weed
+          ./weed version
+
+      - name: Build Rust volume binary
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
+
+      - name: Run volume server integration tests with Rust volume
+        env:
+          WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+          RUST_VOLUME_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+          VOLUME_SERVER_IMPL: rust
+        run: |
+          if [ "${{ matrix.test-type }}" == "grpc" ]; then
+            if [ "${{ matrix.shard }}" == "1" ]; then
+              TEST_PATTERN="^Test[A-H]"
+            elif [ "${{ matrix.shard }}" == "2" ]; then
+              TEST_PATTERN="^Test[I-S]"
+            else
+              TEST_PATTERN="^Test[T-Z]"
+            fi
+          else
+            if [ "${{ matrix.shard }}" == "1" ]; then
+              TEST_PATTERN="^Test[A-G]"
+            elif [ "${{ matrix.shard }}" == "2" ]; then
+              TEST_PATTERN="^Test[H-R]"
+            else
+              TEST_PATTERN="^Test[S-Z]"
+            fi
+          fi
+          echo "Running Go volume server tests with Rust volume for ${{ matrix.test-type }} (Shard ${{ matrix.shard }}, pattern: ${TEST_PATTERN})..."
+          cd seaweedfs-source/enterprise
+          go test -v -count=1 -tags 5BytesOffset -timeout=30m ./test/volume_server/${{ matrix.test-type }}/... -run "${TEST_PATTERN}"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/rust-volume-go-test-logs
+          find /tmp -maxdepth 1 -type d -name "seaweedfs_volume_server_it_*" -print -exec cp -r {} /tmp/rust-volume-go-test-logs/ \; || true
+
+      - name: Archive logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-volume-go-test-logs-${{ matrix.test-type }}-shard${{ matrix.shard }}
+          path: /tmp/rust-volume-go-test-logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Test summary
+        if: always()
+        run: |
+          if [ "${{ matrix.test-type }}" == "grpc" ]; then
+            if [ "${{ matrix.shard }}" == "1" ]; then
+              TEST_PATTERN="^Test[A-H]"
+            elif [ "${{ matrix.shard }}" == "2" ]; then
+              TEST_PATTERN="^Test[I-S]"
+            else
+              TEST_PATTERN="^Test[T-Z]"
+            fi
+          else
+            if [ "${{ matrix.shard }}" == "1" ]; then
+              TEST_PATTERN="^Test[A-G]"
+            elif [ "${{ matrix.shard }}" == "2" ]; then
+              TEST_PATTERN="^Test[H-R]"
+            else
+              TEST_PATTERN="^Test[S-Z]"
+            fi
+          fi
+          echo "## Rust Volume - Go Test Summary (${{ matrix.test-type }} - Shard ${{ matrix.shard }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Suite: test/volume_server/${{ matrix.test-type }} (Pattern: ${TEST_PATTERN})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Volume server: Rust (VOLUME_SERVER_IMPL=rust)" >> "$GITHUB_STEP_SUMMARY"
