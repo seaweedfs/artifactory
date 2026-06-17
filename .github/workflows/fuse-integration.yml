@@ -1,0 +1,150 @@
+name: "FUSE Integration Tests (seaweed-mono)"
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/fuse-integration
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TEST_TIMEOUT: '45m'
+
+jobs:
+  fuse-integration:
+    name: FUSE Integration Testing
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Install FUSE and dependencies
+      run: |
+        sudo apt-get update
+        # fuse3 is pre-installed on ubuntu-22.04 runners and conflicts
+        # with the legacy fuse package, so only install the dev headers.
+        sudo apt-get install -y libfuse3-dev
+        # Allow non-root FUSE mounts with allow_other
+        echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
+        sudo chmod 644 /etc/fuse.conf
+        # Verify FUSE installation
+        fusermount3 --version || fusermount --version || true
+        ls -la /dev/fuse
+
+    - name: Build SeaweedFS
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        go build -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -o weed .
+        chmod +x weed
+        ./weed version
+        # Make weed binary available in PATH for the test framework
+        sudo cp weed /usr/local/bin/weed
+
+    - name: Install test dependencies
+      working-directory: seaweedfs-source/enterprise/test/fuse_integration
+      run: |
+        go mod download
+
+    - name: Run FUSE Integration Tests
+      working-directory: seaweedfs-source/enterprise/test/fuse_integration
+      run: |
+        set -o pipefail
+        echo "Running full FUSE integration test suite..."
+        go test -v -count=1 -timeout=${{ env.TEST_TIMEOUT }} ./... 2>&1 | tee /tmp/fuse-test-output.log
+
+    - name: Generate Test Coverage Report
+      if: always()
+      working-directory: seaweedfs-source/enterprise/test/fuse_integration
+      run: |
+        echo "Generating test coverage report..."
+        go test -count=1 -timeout=${{ env.TEST_TIMEOUT }} -coverprofile=/tmp/coverage.out ./... || echo "Coverage generation completed with warnings"
+        if [ -f /tmp/coverage.out ]; then
+          go tool cover -html=/tmp/coverage.out -o /tmp/coverage.html
+          echo "Coverage report generated: /tmp/coverage.html"
+        fi
+
+    - name: Verify SeaweedFS Binary Integration
+      run: |
+        # Test that SeaweedFS binary is accessible from the test environment
+        WEED_BINARY="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/weed/weed"
+
+        if [ -f "$WEED_BINARY" ]; then
+          echo "SeaweedFS binary found at: $WEED_BINARY"
+          "$WEED_BINARY" version
+          echo "Binary is ready for full integration testing"
+        else
+          echo "SeaweedFS binary not found"
+          exit 1
+        fi
+
+    - name: Upload Test Artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuse-integration-test-results-${{ env.COMMIT_SHA }}
+        path: |
+          /tmp/fuse-test-output.log
+          /tmp/coverage.out
+          /tmp/coverage.html
+          /tmp/seaweedfs-fuse-logs/
+        retention-days: 7
+
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "## FUSE Integration Test Summary" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Source" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Suite**: Go \`weed\` FUSE mount integration (enterprise/test/fuse_integration)" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Commit**: ${COMMIT_SHA:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Go Version**: $(go version | cut -d' ' -f3)" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Test Capabilities" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **File Operations**: Create, read, write, delete, permissions" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Directory Operations**: Create, list, delete, nested structures" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Large Files**: Multi-megabyte file handling" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Concurrent Operations**: Multi-threaded stress testing" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Error Scenarios**: Comprehensive error handling validation" >> "$GITHUB_STEP_SUMMARY"

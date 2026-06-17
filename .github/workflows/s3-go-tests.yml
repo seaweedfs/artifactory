@@ -1,0 +1,1094 @@
+name: "S3 Go Tests (seaweed-mono)"
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/s3-go-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s3-versioning-tests:
+    name: S3 Versioning Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-type: ["quick", "comprehensive"]
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Build SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go build -buildvcs=false -o weed .
+          echo "SeaweedFS binary built at: $GITHUB_WORKSPACE/seaweedfs-source/enterprise/weed/weed"
+          ./weed version
+
+      - name: Start SeaweedFS Components
+        timeout-minutes: 10
+        run: |
+          set -x
+          # Create clean data directory for this test run
+          export WEED_DATA_DIR="/tmp/seaweedfs-s3versioning-$(date +%s)"
+          export WEED_BINARY="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/weed/weed"
+
+          echo "Starting SeaweedFS components for S3 versioning tests..."
+          echo "Data directory: $WEED_DATA_DIR"
+          echo "Weed binary: $WEED_BINARY"
+
+          # Make startup script executable and run it
+          chmod +x $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh
+          $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh \
+            --data-dir "$WEED_DATA_DIR" \
+            --binary "$WEED_BINARY" \
+            --verbose 1 \
+            --master-port 9333 \
+            --volume-port 8080 \
+            --filer-port 8888 \
+            --volume-max 100 \
+            --volume-size-limit 100 \
+            --filer-max-mb 64 &
+
+          # Store environment variables for later steps
+          echo "WEED_DATA_DIR=$WEED_DATA_DIR" >> $GITHUB_ENV
+          echo "WEED_BINARY=$WEED_BINARY" >> $GITHUB_ENV
+
+          # Wait for startup script to complete component initialization
+          wait
+
+          echo "All SeaweedFS components started successfully!"
+
+      - name: Run S3 Versioning Tests - ${{ matrix.test-type }}
+        timeout-minutes: 25
+        working-directory: seaweedfs-source/enterprise/test/s3/versioning
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+
+          # Set the weed binary path for tests
+          export PATH="$(dirname $WEED_BINARY):$PATH"
+
+          # Run tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          if [ "${{ matrix.test-type }}" = "quick" ]; then
+            # Override TEST_PATTERN for quick tests only
+            make test-with-server TEST_PATTERN="TestBucketListReturnDataVersioning|TestVersioningBasicWorkflow|TestVersioningDeleteMarkers"
+          else
+            # Run all versioning tests
+            make test-with-server
+          fi
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/enterprise/test/s3/versioning
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Cleanup SeaweedFS Components
+        if: always()
+        run: |
+          echo "Stopping SeaweedFS components..."
+          if [ -n "$WEED_DATA_DIR" ] && [ -d "$WEED_DATA_DIR" ]; then
+            $GITHUB_WORKSPACE/.github/scripts/start-seaweedfs-components.sh --stop --data-dir "$WEED_DATA_DIR" || true
+            # Clean up data directory
+            rm -rf "$WEED_DATA_DIR" || true
+          fi
+
+          # Additional cleanup - kill any remaining weed processes
+          pkill -f "weed.*master\|weed.*volume\|weed.*filer" 2>/dev/null || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-versioning-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
+          retention-days: 3
+
+  s3-versioning-compatibility:
+    name: S3 Versioning Compatibility Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run Core Versioning Test (Python s3tests equivalent)
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/enterprise/test/s3/versioning
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+
+          # Run the specific test that is equivalent to the Python s3tests
+          make test-with-server || {
+            echo "❌ Test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -100 weed-test.log
+            fi
+            echo "=== Process information ==="
+            ps aux | grep -E "(weed|test)" || true
+            exit 1
+          }
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-versioning-compatibility-logs
+          path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
+          retention-days: 3
+
+  s3-cors-compatibility:
+    name: S3 CORS Compatibility Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run Core CORS Test (AWS S3 compatible)
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/enterprise/test/s3/cors
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+
+          # Run the specific test that is equivalent to AWS S3 CORS behavior
+          make test-with-server || {
+            echo "❌ Test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -100 weed-test.log
+            fi
+            echo "=== Process information ==="
+            ps aux | grep -E "(weed|test)" || true
+            exit 1
+          }
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-cors-compatibility-logs
+          path: seaweedfs-source/enterprise/test/s3/cors/weed-test*.log
+          retention-days: 3
+
+  s3-retention-tests:
+    name: S3 Retention Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-type: ["quick", "comprehensive"]
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Retention Tests - ${{ matrix.test-type }}
+        timeout-minutes: 25
+        working-directory: seaweedfs-source/enterprise/test/s3/retention
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+
+          # Run tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          if [ "${{ matrix.test-type }}" = "quick" ]; then
+            # Override TEST_PATTERN for quick tests only
+            make test-with-server TEST_PATTERN="TestBasicRetentionWorkflow|TestRetentionModeCompliance|TestLegalHoldWorkflow"
+          else
+            # Run all retention tests
+            make test-with-server
+          fi
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/enterprise/test/s3/retention
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-retention-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/enterprise/test/s3/retention/weed-test*.log
+          retention-days: 3
+
+  s3-lifecycle-tests:
+    name: S3 Lifecycle Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per test so each gets a fresh `weed mini` server, avoiding
+        # the cross-test volume-pool exhaustion that surfaced when several
+        # TTL-pinned bucket collections piled up in a single run.
+        test:
+          - TestLifecycleAbortIncompleteMultipartUpload
+          - TestLifecycleAdminDispatchSucceedsWithCustomFilerGrpcPort
+          - TestLifecycleBootstrapWalkOnExistingObjects
+          - TestLifecycleConfigUpdateBetweenSweeps
+          - TestLifecycleDeleteBucketLifecycleStopsDispatching
+          - TestLifecycleDisabledRuleSkipsObject
+          - TestLifecycleEmptyBucketSweepIsNoOp
+          - TestLifecycleExpirationDateInThePast
+          - TestLifecycleExpirationFiresOnBackdatedObject
+          - TestLifecycleExpiredDeleteMarkerCleanup
+          - TestLifecycleMultipleBucketsInOneSweep
+          - TestLifecycleMultipleRulesInOneBucket
+          - TestLifecycleNewerNoncurrentVersions
+          - TestLifecycleNoncurrentVersionExpiration
+          - TestLifecycleSizeFilterGreaterThan
+          - TestLifecycleSkipsObjectLockedObjects
+          - TestLifecycleSuspendedVersioningExpiration
+          - TestLifecycleTagFilter
+          - TestLifecycleVersionedBucketCreatesDeleteMarker
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run ${{ matrix.test }}
+        timeout-minutes: 8
+        working-directory: seaweedfs-source/enterprise/test/s3/lifecycle
+        run: |
+          set -x
+          make test-with-server TEST_PATTERN='^${{ matrix.test }}$$'
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/enterprise/test/s3/lifecycle
+        run: |
+          if [ -f weed-test.log ]; then
+            echo "=== Last 200 lines of server logs ==="
+            tail -200 weed-test.log
+          fi
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp 2>/dev/null | grep -E "(8333|9333|8080|8888)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-lifecycle-test-logs-${{ matrix.test }}
+          path: seaweedfs-source/enterprise/test/s3/lifecycle/weed-test*.log
+          retention-days: 3
+
+  s3-checksum-tests:
+    name: S3 Checksum Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Checksum Tests
+        timeout-minutes: 16
+        working-directory: seaweedfs-source/enterprise/test/s3/checksum
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+          make test-with-server
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/enterprise/test/s3/checksum
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-checksum-test-logs
+          path: seaweedfs-source/enterprise/test/s3/checksum/weed-test*.log
+          retention-days: 3
+
+  s3-cors-tests:
+    name: S3 CORS Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-type: ["quick", "comprehensive"]
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 CORS Tests - ${{ matrix.test-type }}
+        timeout-minutes: 25
+        working-directory: seaweedfs-source/enterprise/test/s3/cors
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+          df -h
+          echo "=== Starting Tests ==="
+
+          # Run tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          if [ "${{ matrix.test-type }}" = "quick" ]; then
+            # Override TEST_PATTERN for quick tests only
+            make test-with-server TEST_PATTERN="TestCORSConfigurationManagement|TestServiceLevelCORS|TestCORSBasicWorkflow"
+          else
+            # Run all CORS tests
+            make test-with-server
+          fi
+
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: seaweedfs-source/enterprise/test/s3/cors
+        run: |
+          echo "=== Server Logs ==="
+          if [ -f weed-test.log ]; then
+            echo "Last 100 lines of server logs:"
+            tail -100 weed-test.log
+          else
+            echo "No server log file found"
+          fi
+
+          echo "=== Test Environment ==="
+          ps aux | grep -E "(weed|test)" || true
+          netstat -tlnp | grep -E "(8333|9333|8080)" || true
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-cors-test-logs-${{ matrix.test-type }}-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/enterprise/test/s3/cors/weed-test*.log
+          retention-days: 3
+
+  s3-retention-worm:
+    name: S3 Retention WORM Integration Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+          cd seaweedfs-source
+          echo "Cloned commit: $(git rev-parse HEAD)"
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run WORM Integration Tests
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/enterprise/test/s3/retention
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+
+          # Run the WORM integration tests with automatic server management
+          # The test-with-server target handles server startup/shutdown automatically
+          make test-with-server TEST_PATTERN="TestWORM|TestRetentionExtendedAttributes|TestRetentionConcurrentOperations" || {
+            echo "❌ WORM integration test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -100 weed-test.log
+            fi
+            echo "=== Process information ==="
+            ps aux | grep -E "(weed|test)" || true
+            exit 1
+          }
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-retention-worm-logs-${{ env.COMMIT_SHA }}
+          path: seaweedfs-source/enterprise/test/s3/retention/weed-test*.log
+          retention-days: 3
+
+  s3-versioning-stress:
+    name: S3 Versioning Stress Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Versioning Stress Tests
+        timeout-minutes: 30
+        working-directory: seaweedfs-source/enterprise/test/s3/versioning
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+
+          # Start server for stress tests
+          make start-server
+
+          # Run stress tests (concurrent operations)
+          make test-versioning-stress || {
+            echo "❌ Stress test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -200 weed-test.log
+            fi
+            make stop-server
+            make clean
+            exit 1
+          }
+
+          # Run pagination stress tests (>1000 versions)
+          echo "=== Running pagination stress tests ==="
+          make test-versioning-pagination-stress || {
+            echo "❌ Pagination stress test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -200 weed-test.log
+            fi
+            make stop-server
+            make clean
+            exit 1
+          }
+
+          make stop-server
+          make clean
+
+      - name: Upload stress test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-versioning-stress-logs
+          path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
+          retention-days: 7
+
+  s3-tagging-tests:
+    # CI job for S3 object tagging tests
+    name: S3 Tagging Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Tagging Tests
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/enterprise/test/s3/tagging
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+
+          # Set environment variables for the test
+          export S3_ENDPOINT="http://localhost:8006"
+          export S3_ACCESS_KEY="0555b35654ad1656d804"
+          export S3_SECRET_KEY="h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q=="
+          export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY"
+          export AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY"
+
+          # Run the specific test that is equivalent to AWS S3 tagging behavior
+          make test-with-server || {
+            echo "❌ Test failed, checking logs..."
+            if [ -f weed-test.log ]; then
+              echo "=== Server logs ==="
+              tail -100 weed-test.log
+            fi
+            echo "=== Process information ==="
+            ps aux | grep -E "(weed|test)" || true
+            exit 1
+          }
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-tagging-test-logs
+          path: seaweedfs-source/enterprise/test/s3/tagging/weed-test*.log
+          retention-days: 3
+
+  s3-remote-cache-tests:
+    name: S3 Remote Cache Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          # Determine branch from webhook or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            BRANCH="$PAYLOAD_REF"
+          else
+            BRANCH="$INPUT_BRANCH"
+          fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+        id: go
+
+      - name: Install SeaweedFS
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          go install -buildvcs=false
+
+      - name: Run S3 Remote Cache Tests
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/enterprise/test/s3/remote_cache
+        run: |
+          set -x
+          echo "=== System Information ==="
+          uname -a
+          free -h
+
+          # Run the remote cache integration tests
+          # Tests singleflight deduplication for caching remote objects
+          make test-with-server || {
+            echo "❌ Test failed, checking logs..."
+            if [ -f primary-weed.log ]; then
+              echo "=== Primary server logs ==="
+              tail -100 primary-weed.log
+            fi
+            if [ -f remote-weed.log ]; then
+              echo "=== Remote server logs ==="
+              tail -100 remote-weed.log
+            fi
+            echo "=== Process information ==="
+            ps aux | grep -E "(weed|test)" || true
+            exit 1
+          }
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-remote-cache-test-logs
+          path: |
+            seaweedfs-source/enterprise/test/s3/remote_cache/primary-weed.log
+            seaweedfs-source/enterprise/test/s3/remote_cache/remote-weed.log
+          retention-days: 3
+
+  s3-test-summary:
+    name: S3 Test Summary
+    runs-on: ubuntu-22.04
+    needs:
+      - s3-versioning-tests
+      - s3-versioning-compatibility
+      - s3-cors-compatibility
+      - s3-retention-tests
+      - s3-lifecycle-tests
+      - s3-checksum-tests
+      - s3-cors-tests
+      - s3-retention-worm
+      - s3-versioning-stress
+      - s3-tagging-tests
+      - s3-remote-cache-tests
+    if: always()
+    steps:
+      - name: Generate Test Summary
+        env:
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          echo "## 🧪 S3 Go Tests Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### seaweed-mono Source" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: https://github.com/seaweedfs/seaweed-mono" >> $GITHUB_STEP_SUMMARY
+          BRANCH="${PAYLOAD_REF:-$INPUT_BRANCH}"; BRANCH="${BRANCH:-main}"; BRANCH="${BRANCH#refs/heads/}"
+          echo "- **Branch**: $BRANCH" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Versioning**: ${{ needs.s3-versioning-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Versioning Compatibility**: ${{ needs.s3-versioning-compatibility.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 CORS Compatibility**: ${{ needs.s3-cors-compatibility.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Retention**: ${{ needs.s3-retention-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Lifecycle**: ${{ needs.s3-lifecycle-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Checksum**: ${{ needs.s3-checksum-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 CORS**: ${{ needs.s3-cors-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 WORM**: ${{ needs.s3-retention-worm.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Versioning Stress**: ${{ needs.s3-versioning-stress.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Tagging**: ${{ needs.s3-tagging-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Remote Cache**: ${{ needs.s3-remote-cache-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Count successful tests
+          SUCCESS_COUNT=0
+          [ "${{ needs.s3-versioning-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-versioning-compatibility.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-cors-compatibility.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-retention-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-lifecycle-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-checksum-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-cors-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-retention-worm.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-versioning-stress.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-tagging-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-remote-cache-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **$SUCCESS_COUNT/11** test suites passed" >> $GITHUB_STEP_SUMMARY
+
+          if [ $SUCCESS_COUNT -eq 11 ]; then
+            echo "🎉 **All S3 tests passed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some tests failed. Check individual job logs for details.**" >> $GITHUB_STEP_SUMMARY
+          fi
