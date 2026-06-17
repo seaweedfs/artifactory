@@ -1,0 +1,175 @@
+name: "seaweed-vfs (seaweed-mono)"
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/seaweed-vfs
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Build the Rust workspace (sw-client, sw-fuse, sw-kd) and run unit tests.
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libfuse3-dev pkg-config
+      - name: Build
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: cargo build --workspace --locked
+      - name: Test
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: cargo test --workspace --locked
+
+  # Compile the kernel module against pinned Debian trixie (6.12) headers,
+  # matching the deployment/dev kernel. (ubuntu-latest's own kernel headers
+  # drift across VFS API changes, e.g. the 6.13 i_op->mkdir signature.)
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Build seaweedvfs.ko in debian:trixie
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work/seaweedfs-source/seaweed-vfs debian:trixie \
+            bash -euxc '
+              apt-get update
+              apt-get install -y build-essential linux-headers-amd64
+              KDIR=$(ls -d /usr/src/linux-headers-*-amd64 | grep -vi common | sort -V | tail -1)
+              echo "Building against $KDIR"
+              test -d "$KDIR"
+              make -C kernel KDIR="$KDIR"
+              ls -l kernel/seaweedvfs.ko
+            '
+
+  # End-to-end FUSE smoke test against a real single-node SeaweedFS cluster.
+  fuse-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
+      - name: Install weed
+        run: |
+          curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin weed
+          weed version
+      - name: Start SeaweedFS (master+volume+filer)
+        run: |
+          mkdir -p "$RUNNER_TEMP/sw"
+          weed server -dir="$RUNNER_TEMP/sw" -filer -ip=127.0.0.1 \
+            -master.volumeSizeLimitMB=128 > "$RUNNER_TEMP/weed.log" 2>&1 &
+          echo "waiting for filer..."
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8888/ >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8888/ >/dev/null
+      - name: Build sw-fuse
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: cargo build -p sw-fuse --locked
+      - name: Mount + read/write smoke test
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/mnt"
+          RUST_LOG=info ./target/debug/sw-fuse "$RUNNER_TEMP/mnt" --filer 127.0.0.1:18888 \
+            > "$RUNNER_TEMP/swvfs.log" 2>&1 &
+          SW=$!
+          sleep 3
+          mount | grep -q "seaweedfs on $RUNNER_TEMP/mnt"
+          # small file round-trip
+          echo "hello-from-ci" > "$RUNNER_TEMP/mnt/ci.txt"
+          test "$(cat "$RUNNER_TEMP/mnt/ci.txt")" = "hello-from-ci"
+          # multi-chunk file round-trip
+          head -c 6000000 /dev/urandom > "$RUNNER_TEMP/big.bin"
+          cp "$RUNNER_TEMP/big.bin" "$RUNNER_TEMP/mnt/big.bin"
+          cmp "$RUNNER_TEMP/big.bin" "$RUNNER_TEMP/mnt/big.bin"
+          # directory ops
+          mkdir "$RUNNER_TEMP/mnt/d"; echo x > "$RUNNER_TEMP/mnt/d/y"; ls -la "$RUNNER_TEMP/mnt/d"
+          rm "$RUNNER_TEMP/mnt/d/y"; rmdir "$RUNNER_TEMP/mnt/d"
+          # POSIX conformance (ops sw-fuse lacks are auto-skipped, not failed)
+          bash tests/posix_itest.sh "$RUNNER_TEMP/mnt"
+          fusermount3 -u "$RUNNER_TEMP/mnt"
+          wait $SW 2>/dev/null || true
+          echo "smoke test OK"
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== weed.log ==="; tail -100 "$RUNNER_TEMP/weed.log" 2>/dev/null || true
+          echo "=== swvfs.log ==="; tail -100 "$RUNNER_TEMP/swvfs.log" 2>/dev/null || true
