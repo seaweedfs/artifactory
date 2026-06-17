@@ -1,4 +1,5 @@
 name: "seaweed-vfs (seaweed-mono)"
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)

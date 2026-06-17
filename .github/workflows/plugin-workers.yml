@@ -1,4 +1,5 @@
 name: "Plugin Worker Tests (seaweed-mono)"
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
 
 on:
   repository_dispatch:
