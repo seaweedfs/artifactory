@@ -1,0 +1,402 @@
+name: "EC Integration Tests (seaweed-mono)"
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/ec-integration
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ec-integration-tests:
+    name: EC Integration Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Build weed binary
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        echo "Building SeaweedFS weed binary for EC tests..."
+        go build -o weed .
+
+        # Verify binary
+        echo "Verifying built binary..."
+        ./weed version
+        ls -lh weed
+
+        # Make binary available in PATH for tests
+        echo "$(pwd)" >> $GITHUB_PATH
+
+    - name: Run EC Integration Tests
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      run: |
+        echo "Running EC Integration Tests..."
+        echo "Test directory contents:"
+        ls -la
+
+        # Run the integration tests with verbose output
+        go test -v -timeout 30m
+
+    - name: Run EC Disk-Aware Tests
+      if: success() || failure()
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      run: |
+        echo "Running EC Disk-Aware Rebalancing Tests..."
+        go test -v -run TestDiskAwareECRebalancing -timeout 30m || true
+
+    - name: Run EC Disk Type Tests
+      if: success() || failure()
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      run: |
+        echo "Running EC Disk Type Support Tests..."
+        go test -v -run TestECDiskTypeSupport -timeout 30m || true
+
+    - name: Run EC Cross-Rack Placement Tests
+      if: success() || failure()
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      run: |
+        echo "Running EC Cross-Rack Placement Tests..."
+        go test -v -run TestCrossRackECPlacement -timeout 30m || true
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-integration-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/enterprise/test/erasure_coding/*.log
+          /tmp/seaweedfs_ec_*/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: EC Integration Test Summary
+      if: always()
+      run: |
+        echo "## 🔧 EC Integration Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Source" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Tests Executed" >> $GITHUB_STEP_SUMMARY
+        echo "- 🧪 **EC Encoding/Decoding**: Volume location timing bug fix verification" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔄 **Master Timing Race Condition**: Race condition simulation and fix verification" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 **Shard Distribution**: Multi-server EC shard distribution tests" >> $GITHUB_STEP_SUMMARY
+        echo "- 🧹 **Cleanup Verification**: Post-encoding cleanup validation" >> $GITHUB_STEP_SUMMARY
+        echo "- 💿 **Disk-Aware EC Rebalancing**: Multi-disk shard placement tests" >> $GITHUB_STEP_SUMMARY
+        echo "- 📁 **Disk Type Support**: SSD/HDD disk type filtering tests" >> $GITHUB_STEP_SUMMARY
+        echo "- 🏢 **Cross-Rack Placement**: Rack-aware EC shard distribution" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Test Features Covered" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **EC 10+4 Encoding**: Standard erasure coding with 10 data + 4 parity shards" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Customizable EC Ratios**: Enterprise feature for custom data/parity ratios (see ec-custom-ratio-tests job)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Volume Location Collection**: Pre-encoding location caching" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Multi-Disk Support**: Distribution across multiple disks per server" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Disk Type Filtering**: SSD/HDD-aware EC placement" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Rack-Aware Placement**: Cross-rack fault tolerance" >> $GITHUB_STEP_SUMMARY
+
+  # End-to-end test for custom EC ratio support (Enterprise feature)
+  # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
+  ec-custom-ratio-tests:
+    name: EC Custom Ratio Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Build weed binary
+      working-directory: seaweedfs-source/enterprise
+      run: |
+        echo "Building SeaweedFS weed binary for custom EC ratio tests..."
+        go build -o weed_bin ./weed
+        ./weed_bin version
+        ls -lh weed_bin
+
+    - name: Run EC Custom Ratio Tests
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding/custom_ratio_test
+      run: |
+        # Run the full suite in a single go test invocation so each test's
+        # defer cleanup() reaps weed_bin children before the next test starts.
+        # Splitting into per-test steps reparented orphans to PID 1 between
+        # steps and intermittently held port 8084 — see seaweedfs6
+        # admin_dockertest/ec_integration_test.go for the same single-process
+        # pattern.
+        # Runs the ENTIRE custom_ratio_test package (no -run filter), so every
+        # test in it gates the build, including any added later. Representative
+        # coverage:
+        echo "Running the full EC custom ratio test suite (go test -v, whole package)..."
+        echo "  - config propagation: admin API persists data_shards/parity_shards"
+        echo "  - end-to-end custom ratios: configured 4+2 produces 6 shards (not default 14)"
+        echo "  - multiple ratios (4+2, 6+3, 8+4) with data integrity verification"
+        echo "  - small-cluster edge: 2+1 on 3 disks"
+        echo "  - admin restart persists the ratio (TaskPolicy proto round-trip)"
+        echo "  - invalid override rejection (atomic EffectiveRatio validation)"
+        echo "  - ratio-merge guards: go red if a merge silently re-hardcodes the"
+        echo "    default 10+4 ratio in the validate / prune / decode / balance paths"
+        go test -v -timeout 40m
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-custom-ratio-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/enterprise/test/erasure_coding/custom_ratio_test/tmp/logs/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: EC Custom Ratio Test Summary
+      if: always()
+      run: |
+        echo "## EC Custom Ratio Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Regression tests for [#8936](https://github.com/seaweedfs/seaweedfs/issues/8936) and [#9146](https://github.com/seaweedfs/seaweedfs/issues/9146)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Tests" >> $GITHUB_STEP_SUMMARY
+        echo "- **Config Propagation**: Verifies admin API accepts and persists custom data_shards/parity_shards" >> $GITHUB_STEP_SUMMARY
+        echo "- **End-to-End 4+2**: Configures 4+2 ratio, uploads data, verifies 6 shards created (not 14)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Multiple Ratios**: Tests 4+2, 6+3, 8+4 ratios with data integrity verification" >> $GITHUB_STEP_SUMMARY
+        echo "- **2+1 on 3 disks** (#9146): Regression for the small-cluster edge — ratio plans, encodes, and reads back on exactly 3 volume servers" >> $GITHUB_STEP_SUMMARY
+        echo "- **Admin restart persistence**: Verifies the TaskPolicy proto round-trips data_shards/parity_shards across admin restart" >> $GITHUB_STEP_SUMMARY
+        echo "- **Invalid ratio override**: Verifies partial (data_shards alone) and oversize (31+31) overrides fall back to default 10+4 instead of becoming silent mixed ratios" >> $GITHUB_STEP_SUMMARY
+        echo "- **Ratio-merge guards**: Go red if a merge silently re-hardcodes the default 10+4 ratio in the EC validate / prune / decode / balance paths (the whole package runs, so guards added later are covered automatically)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What This Catches" >> $GITHUB_STEP_SUMMARY
+        echo "- Custom EC ratio not propagated from admin config to detection/execution" >> $GITHUB_STEP_SUMMARY
+        echo "- Detection code hardcoding default 10+4 instead of reading configured ratio" >> $GITHUB_STEP_SUMMARY
+        echo "- Min-disk floor rejecting valid small-cluster ratios (issue #9146)" >> $GITHUB_STEP_SUMMARY
+        echo "- TaskPolicy proto dropping ratio fields on admin restart" >> $GITHUB_STEP_SUMMARY
+        echo "- Partial/oversize ratio overrides silently mutating into mixed ratios" >> $GITHUB_STEP_SUMMARY
+        echo "- A merge reverting per-volume ratio handling back to the hardcoded 10+4 default" >> $GITHUB_STEP_SUMMARY
+        echo "- Data corruption or read failures after custom-ratio EC encoding" >> $GITHUB_STEP_SUMMARY
+
+  # Regression test job
+  ec-regression-tests:
+    name: EC Regression Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Run EC Regression Tests
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      run: |
+        echo "Running EC Regression Prevention Tests..."
+        go test -v -run TestECEncodingRegressionPrevention -timeout 10m
+
+    - name: Run EC Unit Tests
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        echo "Running EC-related unit tests..."
+        go test -v ./storage/erasure_coding/... -timeout 10m || true
+        go test -v ./shell/... -run ".*[Ee][Cc].*" -timeout 10m || true
+
+    - name: EC Regression Test Summary
+      if: always()
+      run: |
+        echo "## 🔒 EC Regression Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Regression Prevention" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Function Signature Checks**: Verify fixed function signatures haven't reverted" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Timing Pattern Checks**: Verify correct volume location collection order" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ **Error Handling**: Verify proper error returns (not silent nil)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Known Bug Fixes Verified" >> $GITHUB_STEP_SUMMARY
+        echo "- 🐛 **Double Storage Bug**: Volume locations collected BEFORE EC encoding" >> $GITHUB_STEP_SUMMARY
+        echo "- 🐛 **Silent Failure Bug**: Functions return proper errors" >> $GITHUB_STEP_SUMMARY
+        echo "- 🐛 **Cleanup Race Condition**: Pre-collected locations used for cleanup" >> $GITHUB_STEP_SUMMARY
+
+  # End-to-end test for the versioned-EC vacuum 2PC switch protocol.
+  # Drives a real local cluster (master + 14 volume servers + filer +
+  # 2 workers + admin, all `weed` subprocesses on localhost ports) through
+  # three sequential vacuum rounds:
+  #   - round 1: 0 -> 1
+  #   - round 2: 1 -> 2 (exercises post-switch reads, the path that the
+  #     read-time Version + shard-fd-swap fix unblocks)
+  #   - vacuum-to-empty (2 -> 3): empty new generation triggers the
+  #     TeardownEmptyVolume callback cluster-wide.
+  ec-vacuum-2pc-tests:
+    name: EC Vacuum 2PC Switch Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Run EC Vacuum 2PC Switch Test
+      working-directory: seaweedfs-source/enterprise/test/ec_vacuum/admin_dockertest
+      env:
+        EC_VACUUM_INTEGRATION: "1"
+      run: |
+        # The test forks ~18 weed subprocesses (master + 14 volume +
+        # filer + 2 workers + admin) and drives the ec_vacuum plugin
+        # through three sequential 2PC switch rounds. It builds its own
+        # `weed_bin` from the source tree; the 30-minute job timeout
+        # covers the ~6-8 minute happy-path run plus per-step deadlines
+        # (5min waitForActiveVersion per round + cluster boot).
+        echo "Running TestEcVacuumVersionedSwitch..."
+        echo "  - round 1: active_version 0 -> 1 (stage / Prepare / Commit fan-out)"
+        echo "  - round 2: 1 -> 2 (validates post-switch read path)"
+        echo "  - vacuum-to-empty: 2 -> 3 + TeardownEmptyVolume across all 14 holders"
+        go test -v -timeout 25m -run TestEcVacuumVersionedSwitch .
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-vacuum-2pc-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/enterprise/test/ec_vacuum/admin_dockertest/tmp/logs/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: EC Vacuum 2PC Test Summary
+      if: always()
+      run: |
+        echo "## EC Vacuum 2PC Switch Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "End-to-end integration test for the versioned-EC vacuum SwitchVersion protocol." >> $GITHUB_STEP_SUMMARY
+        echo "See \`weed/worker/tasks/ec_vacuum/DESIGN.md\` for the protocol." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What This Exercises" >> $GITHUB_STEP_SUMMARY
+        echo "- **stage / Prepare / Commit fan-out** across all 14 shard holders" >> $GITHUB_STEP_SUMMARY
+        echo "- **Master heartbeat propagation** of \`active_version\` / \`has_pending_switch\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Versioned-EC LookupEcVolume.VersionedLocations** populated and read by the worker" >> $GITHUB_STEP_SUMMARY
+        echo "- **Post-switch reads**: the commit handler refreshes \`ev.Version\` from \`.vif.v<N>\` and reopens shard / .ecx / .ecj fds; without this, post-switch reads tripped a one-byte 'size mismatch'." >> $GITHUB_STEP_SUMMARY
+        echo "- **Worker's compaction target version** stamped into the new \`.vif.v<N>\` (so the server-side refresh picks the right needle layout)." >> $GITHUB_STEP_SUMMARY
+        echo "- **Vacuum-to-empty TeardownEmptyVolume**: empty new generation removes the EcVolume from every shard holder's disk_location map and unlinks every \`<base>.*\` file." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What This Catches" >> $GITHUB_STEP_SUMMARY
+        echo "- Worker writing \`.vif.v<N>\` with the source's needle Version instead of the post-compaction one" >> $GITHUB_STEP_SUMMARY
+        echo "- \`OpenAgainstGeneration\` swapping \`.ecx\` / \`.ecj\` but leaving \`shard.ecdFile\` on legacy \`.ec<NN>\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`OpenAgainstGeneration\` not refreshing \`ev.Version\` / EC ratio from the new \`.vif.v<N>\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Master dropping versioned-EC heartbeat fields on no-op shard-set updates" >> $GITHUB_STEP_SUMMARY
+        echo "- Worker \`cleanupEcVacuumShards\` deleting freshly-committed \`.v<N>\` files because \`KeepVersion=0\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`TeardownEmptyVolume\` not wired through the volume server's commit-ordering deps" >> $GITHUB_STEP_SUMMARY

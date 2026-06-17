@@ -1,0 +1,255 @@
+name: "go: build binary (seaweed-mono)"
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/go
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  vet:
+    name: Go Vet
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Get dependencies
+      working-directory: seaweedfs-source/enterprise/weed
+      run: go get -v -t -d ./...
+
+    - name: Go Vet (excluding protobuf lock copying)
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        # Run go vet and filter out known protobuf MessageState lock copying warnings
+        # These are expected in generated protobuf code with embedded sync.Mutex and are safe in practice
+        go vet -v ./... 2>&1 | grep -v "MessageState contains sync.Mutex" | grep -v "IdentityAccessManagement contains sync.RWMutex" | tee vet-output.txt
+        # Fail only if there are actual vet errors (not counting the filtered lock warnings)
+        if grep -q "vet:" vet-output.txt; then exit 1; fi
+
+  vet-32bit:
+    name: Go Vet 32-bit
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Go Vet linux/386 (type-checks for 32-bit int overflows)
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        GOOS=linux GOARCH=386 go vet ./... 2>&1 | grep -v "MessageState contains sync.Mutex" | grep -v "IdentityAccessManagement contains sync.RWMutex" | tee vet-32bit-output.txt
+        if grep -q "vet:" vet-32bit-output.txt; then exit 1; fi
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Build
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        echo "Building SeaweedFS with all tags..."
+        go build -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v .
+        # Verify binary
+        echo "Verifying built binary..."
+        ./weed version
+        ls -lh weed
+
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: weed-binary-${{ env.COMMIT_SHA }}
+        path: seaweedfs-source/enterprise/weed/weed
+        retention-days: 7
+
+    - name: Go Build Summary
+      if: always()
+      env:
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        echo "## 🔨 Go Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### seaweed-mono Source" >> $GITHUB_STEP_SUMMARY
+        echo "- **Repository**: https://github.com/seaweedfs/seaweed-mono" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ env.COMMIT_SHA }}" >> $GITHUB_STEP_SUMMARY
+        BRANCH="${PAYLOAD_REF:-$INPUT_BRANCH}"; BRANCH="${BRANCH:-main}"; BRANCH="${BRANCH#refs/heads/}"
+        echo "- **Branch**: $BRANCH" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "- **Go Version**: $(go version | cut -d' ' -f3)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Tags**: elastic, gocdk, sqlite, ydb, tarantool, tikv, rclone" >> $GITHUB_STEP_SUMMARY
+        echo "- **Target**: SeaweedFS Enterprise Edition" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f seaweedfs-source/enterprise/weed/weed ]; then
+          echo "✅ **Binary built successfully and available as artifact**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Binary build failed**" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Test
+      working-directory: seaweedfs-source/enterprise/weed
+      run: go test -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v ./...
+
+  test-32bit:
+    name: Test 32-bit
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    # 386 test binaries run natively on the amd64 runner. This catches what vet
+    # can't: unaligned 64-bit atomics and arithmetic that wraps at runtime.
+    # -short skips the e2e suites already covered on amd64.
+    - name: Test linux/386
+      working-directory: seaweedfs-source/enterprise/weed
+      run: GOOS=linux GOARCH=386 go test -short ./...

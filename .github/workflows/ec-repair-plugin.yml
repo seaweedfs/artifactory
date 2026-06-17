@@ -1,0 +1,95 @@
+name: "EC Repair Plugin Worker (seaweed-mono)"
+
+on:
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/ec-repair-plugin
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ec-repair-plugin:
+    name: EC Repair Plugin Worker E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Build weed binary
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        echo "Building SeaweedFS weed binary..."
+        go build -o weed .
+        ./weed version
+        echo "$(pwd)" >> $GITHUB_PATH
+
+    - name: Run EC Repair Plugin Worker Test
+      working-directory: seaweedfs-source/enterprise
+      env:
+        WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+      run: |
+        bash "$GITHUB_WORKSPACE/.github/scripts/test-ec-repair-plugin.sh"
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-repair-plugin-logs-${{ env.COMMIT_SHA }}
+        path: |
+          /tmp/ec-repair-test-*/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "## EC Repair Plugin Worker Test" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${COMMIT_SHA:-${GITHUB_SHA:0:8}}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### What this tests" >> $GITHUB_STEP_SUMMARY
+        echo "1. Start weed mini + 13 volume servers" >> $GITHUB_STEP_SUMMARY
+        echo "2. Upload data, EC-encode via erasure_coding plugin worker" >> $GITHUB_STEP_SUMMARY
+        echo "3. Simulate shard loss (kill node, delete shard files, restart)" >> $GITHUB_STEP_SUMMARY
+        echo "4. Trigger ec_repair plugin worker via admin API" >> $GITHUB_STEP_SUMMARY
+        echo "5. Verify all shards restored, no /tmp leaks, clean detection" >> $GITHUB_STEP_SUMMARY
