@@ -12,7 +12,7 @@
 set -euo pipefail
 
 WEED_BINARY="${WEED_BINARY:-weed}"
-DATA_DIR="${WEED_DATA_DIR:-/tmp/ec-repair-test-$$}"
+DATA_DIR="${WEED_DATA_DIR:-$(mktemp -d /tmp/ec-repair-test.XXXXXXXXXX)}"
 MASTER_IP="127.0.0.1"
 MASTER_PORT=9333
 VOLUME_PORT_START=9340
@@ -181,13 +181,18 @@ done
 sleep 10
 REGISTERED=$(curl -sf "http://${MASTER_IP}:${MASTER_PORT}/vol/status" | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-dcs = data['Volumes']['DataCenters']
-count = 0
-for dc in dcs.values():
-    for rack in dc.values():
-        count += len(rack)
-print(count)
+try:
+    data = json.load(sys.stdin)
+    dcs = data.get('Volumes', {}).get('DataCenters', {})
+    count = 0
+    for dc in dcs.values():
+        if isinstance(dc, dict):
+            for rack in dc.values():
+                if isinstance(rack, dict):
+                    count += len(rack)
+    print(count)
+except Exception:
+    print(0)
 " 2>/dev/null || echo "0")
 
 EXPECTED=$((1 + NUM_EXTRA_VOLUMES))
@@ -353,14 +358,18 @@ DELETED_SHARDS=$(ls "${DATA_DIR}/vol${VICTIM_IDX}"/ectest_${ECVOL}.ec[0-9]* 2>/d
 info "Simulating shard loss: killing vol${VICTIM_IDX} (port $VICTIM_PORT) and deleting $DELETED_SHARDS shard files"
 
 VICTIM_PID=$(cat "${DATA_DIR}/vol${VICTIM_IDX}.pid")
-kill "$VICTIM_PID" 2>/dev/null || true
-# Wait for the process to fully exit (volume servers take up to 10s for graceful shutdown)
-for _i in $(seq 1 15); do
-    kill -0 "$VICTIM_PID" 2>/dev/null || break
-    sleep 1
-done
-# Force-kill if still alive
-kill -9 "$VICTIM_PID" 2>/dev/null || true
+if [ -n "$VICTIM_PID" ] && kill -0 "$VICTIM_PID" 2>/dev/null; then
+    kill "$VICTIM_PID" 2>/dev/null || true
+    # Wait for the process to fully exit (volume servers take up to 10s for graceful shutdown)
+    for _i in $(seq 1 15); do
+        kill -0 "$VICTIM_PID" 2>/dev/null || break
+        sleep 1
+    done
+    # Force-kill if still alive, verifying it is still a weed process
+    if kill -0 "$VICTIM_PID" 2>/dev/null && ps -p "$VICTIM_PID" -o args= 2>/dev/null | grep -q "weed"; then
+        kill -9 "$VICTIM_PID" 2>/dev/null || true
+    fi
+fi
 sleep 1
 
 # Delete EC shard data files (keep .ecx/.ecj so the node doesn't re-report old shards)

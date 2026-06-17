@@ -267,15 +267,16 @@ stop_all() {
     for component in mq s3 filer volume master; do
         if [ -f "$DATA_DIR/$component.pid" ]; then
             local pid=$(cat "$DATA_DIR/$component.pid")
-            if kill -0 $pid 2>/dev/null; then
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 log_info "Stopping $component (PID: $pid)"
-                kill -TERM $pid 2>/dev/null || true
+                kill -TERM "$pid" 2>/dev/null || true
                 # Wait a bit for graceful shutdown
                 sleep 2
-                # Force kill if still running (re-check: the PID may have exited
-                # during the sleep and been reused by an unrelated process)
-                if kill -0 $pid 2>/dev/null; then
-                    kill -9 $pid 2>/dev/null || true
+                # Force kill if still running, verifying it is still a weed
+                # process (the PID may have exited during the sleep and been
+                # reused by an unrelated process)
+                if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o args= 2>/dev/null | grep -q "weed"; then
+                    kill -9 "$pid" 2>/dev/null || true
                 fi
             fi
             rm -f "$DATA_DIR/$component.pid"
@@ -283,7 +284,7 @@ stop_all() {
     done
     
     # Clean up any remaining weed processes
-    pkill -f "weed.*master\|weed.*volume\|weed.*filer\|weed.*s3\|weed.*mq" 2>/dev/null || true
+    pkill -f "weed.*(master|volume|filer|s3|mq)" 2>/dev/null || true
 }
 
 # Function to show usage
