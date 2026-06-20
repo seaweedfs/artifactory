@@ -37,6 +37,11 @@ VERSION=$(curl -fsSL "https://api.github.com/repos/seaweedfs/artifactory/release
   | grep -o '[0-9][0-9.]*' | head -1) || true
 [ -n "$VERSION" ] || die "could not detect package version from release ${RELEASE}"
 
+# nfpm stamps RPMs with a release number (its default is "1"), so the assets are
+# e.g. seaweedfs-vfs-0.5.0-1.x86_64.rpm; DEBs carry no release. Bump this if the
+# nfpm specs ever set a non-default RPM release (override: SEAWEEDFS_VFS_RPM_REL).
+RPM_REL="${SEAWEEDFS_VFS_RPM_REL:-1}"
+
 case "$(uname -m)" in
   x86_64|amd64) DEB_ARCH=amd64; RPM_ARCH=x86_64 ;;
   aarch64|arm64) DEB_ARCH=arm64; RPM_ARCH=aarch64 ;;
@@ -113,7 +118,7 @@ case "$PM" in
     apt-get update -qq || echo ">> warning: apt-get update failed, continuing..."
     if [ -n "$KMOD" ]; then
       apt-get install -y psmisc
-      fetch "${BASE_URL}/seaweedfs-vfs-kmod-${KVER}_${DEB_ARCH}.deb" "$tmp/mod.deb"
+      fetch "${BASE_URL}/seaweedfs-vfs-kmod-${KVER}_${VERSION}_${DEB_ARCH}.deb" "$tmp/mod.deb"
     else
       apt-get install -y dkms make gcc psmisc "linux-headers-${KVER}" \
         || apt-get install -y dkms make gcc psmisc linux-headers-generic \
@@ -126,26 +131,26 @@ case "$PM" in
   dnf|yum)
     if [ -n "$KMOD" ]; then
       $PM install -y psmisc
-      fetch "${BASE_URL}/seaweedfs-vfs-kmod-${KVER}.${RPM_ARCH}.rpm" "$tmp/mod.rpm"
+      fetch "${BASE_URL}/seaweedfs-vfs-kmod-${KVER}-${VERSION}-${RPM_REL}.${RPM_ARCH}.rpm" "$tmp/mod.rpm"
     else
       $PM install -y dkms make gcc psmisc "kernel-devel-${KVER}" \
         || $PM install -y dkms make gcc psmisc kernel-devel \
         || die "could not install kernel-devel for ${KVER}"
-      fetch "${BASE_URL}/seaweedfs-vfs-dkms-${VERSION}.noarch.rpm" "$tmp/mod.rpm"
+      fetch "${BASE_URL}/seaweedfs-vfs-dkms-${VERSION}-${RPM_REL}.noarch.rpm" "$tmp/mod.rpm"
     fi
-    fetch "${BASE_URL}/seaweedfs-vfs-${VERSION}.${RPM_ARCH}.rpm" "$tmp/daemon.rpm"
+    fetch "${BASE_URL}/seaweedfs-vfs-${VERSION}-${RPM_REL}.${RPM_ARCH}.rpm" "$tmp/daemon.rpm"
     $PM install -y "$tmp/mod.rpm" "$tmp/daemon.rpm"
     ;;
   zypper)
     if [ -n "$KMOD" ]; then
       zypper --non-interactive install psmisc
-      fetch "${BASE_URL}/seaweedfs-vfs-kmod-${KVER}.${RPM_ARCH}.rpm" "$tmp/mod.rpm"
+      fetch "${BASE_URL}/seaweedfs-vfs-kmod-${KVER}-${VERSION}-${RPM_REL}.${RPM_ARCH}.rpm" "$tmp/mod.rpm"
     else
       zypper --non-interactive install dkms make gcc psmisc kernel-default-devel \
         || die "could not install kernel-default-devel"
-      fetch "${BASE_URL}/seaweedfs-vfs-dkms-${VERSION}.noarch.rpm" "$tmp/mod.rpm"
+      fetch "${BASE_URL}/seaweedfs-vfs-dkms-${VERSION}-${RPM_REL}.noarch.rpm" "$tmp/mod.rpm"
     fi
-    fetch "${BASE_URL}/seaweedfs-vfs-${VERSION}.${RPM_ARCH}.rpm" "$tmp/daemon.rpm"
+    fetch "${BASE_URL}/seaweedfs-vfs-${VERSION}-${RPM_REL}.${RPM_ARCH}.rpm" "$tmp/daemon.rpm"
     zypper --non-interactive install --allow-unsigned-rpm "$tmp/mod.rpm" "$tmp/daemon.rpm"
     ;;
 esac
