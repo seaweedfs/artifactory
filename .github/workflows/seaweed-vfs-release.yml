@@ -154,3 +154,97 @@ jobs:
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  kmod:
+    # Precompiled seaweedvfs.ko per EXACT kernel, for fleets / hardened hosts that
+    # can't run DKMS. A .ko only loads on the kernel whose headers it was built
+    # against (vermagic must match), so the matrix entries below are examples —
+    # add a container with your golden-image kernel's headers for real fleet use.
+    # (rhel10 is best-effort: RHEL backports may diverge from upstream 6.12.
+    # fail-fast is off so one distro can't block the others.) Signing is applied
+    # only when the MODULE_SIGN_KEY / MODULE_SIGN_CERT secrets are set.
+    name: "precompiled .ko (${{ matrix.label }})"
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: debian-trixie
+            image: debian:trixie
+            arch: amd64
+            install: apt-get update && apt-get install -y build-essential kmod linux-headers-amd64
+            kdir_glob: /usr/src/linux-headers-*-amd64
+          - label: rhel10
+            image: rockylinux:10
+            arch: amd64
+            install: dnf install -y gcc make kmod kernel-devel
+            kdir_glob: /usr/src/kernels/*
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          REF="${MONO_REF}"
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
+          git clone -b "$REF" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git src
+
+      - name: Stage module-signing material (no-op if secrets unset)
+        env:
+          KEY: ${{ secrets.MODULE_SIGN_KEY }}
+          CERT_B64: ${{ secrets.MODULE_SIGN_CERT }}
+        run: |
+          printf '%s' "$KEY" > sign_key.pem
+          printf '%s' "$CERT_B64" | base64 -d > sign_cert.der 2>/dev/null || : > sign_cert.der
+
+      - name: Build (+ optionally sign) seaweedvfs.ko in ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work/src/seaweed-vfs ${{ matrix.image }} \
+            bash -euxc '
+              ${{ matrix.install }}
+              KDIR=$(ls -d ${{ matrix.kdir_glob }} | grep -vi common | sort -V | tail -1)
+              test -d "$KDIR"
+              make -C kernel KDIR="$KDIR"
+              if [ -s /work/sign_key.pem ] && [ -s /work/sign_cert.der ]; then
+                "$KDIR/scripts/sign-file" sha256 /work/sign_key.pem /work/sign_cert.der kernel/seaweedvfs.ko
+                echo "module signed"
+              fi
+              cat "$KDIR/include/config/kernel.release" > /work/KVER.txt
+              cp kernel/seaweedvfs.ko /work/seaweedvfs.ko
+            '
+          echo "KVER=$(cat KVER.txt)" >> "$GITHUB_ENV"
+          echo "Built for kernel: $(cat KVER.txt)"
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Package seaweedfs-vfs-kmod
+        working-directory: src/seaweed-vfs/packaging/nfpm
+        env:
+          KVER: ${{ env.KVER }}
+          KMOD_ARCH: ${{ matrix.arch }}
+          KO_PATH: ${{ github.workspace }}/seaweedvfs.ko
+        run: |
+          KMOD_VERSION=$(sed -n 's/.*SEAWEEDVFS_VERSION "\(.*\)".*/\1/p' ../../kernel/seaweedvfs.c | head -1)
+          export KMOD_VERSION
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: Checksums
+        run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
