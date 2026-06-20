@@ -56,7 +56,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git src
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config
@@ -96,8 +96,11 @@ jobs:
         run: |
           mkdir -p target/release "$GITHUB_WORKSPACE/dist"
           cp "target/${{ matrix.target }}/release/sw-kd" target/release/sw-kd
-          # nfpm reads arch from the spec; patch it for this matrix arch.
-          sed -i "s/^arch: amd64/arch: ${{ matrix.deb_arch }}/" packaging/nfpm/seaweedfs-vfs.yaml
+          # nfpm reads arch from the spec; patch it for this matrix arch and
+          # verify the substitution actually took (don't ship wrong-arch metadata).
+          sed -i "s/^arch: .*/arch: ${{ matrix.deb_arch }}/" packaging/nfpm/seaweedfs-vfs.yaml
+          grep -q "^arch: ${{ matrix.deb_arch }}$" packaging/nfpm/seaweedfs-vfs.yaml \
+            || { echo "failed to set arch in nfpm spec" >&2; exit 1; }
           cd packaging/nfpm
           nfpm pkg -f seaweedfs-vfs.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
           nfpm pkg -f seaweedfs-vfs.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
@@ -129,7 +132,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git src
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Install nfpm
         run: |
@@ -191,7 +194,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git src
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Stage module-signing material (no-op if secrets unset)
         env:
@@ -232,6 +235,7 @@ jobs:
           KO_PATH: ${{ github.workspace }}/seaweedvfs.ko
         run: |
           KMOD_VERSION=$(sed -n 's/.*SEAWEEDVFS_VERSION "\(.*\)".*/\1/p' ../../kernel/seaweedvfs.c | head -1)
+          [ -n "$KMOD_VERSION" ] || { echo "could not derive SEAWEEDVFS_VERSION from seaweedvfs.c" >&2; exit 1; }
           export KMOD_VERSION
           mkdir -p "$GITHUB_WORKSPACE/dist"
           nfpm pkg -f seaweedfs-vfs-kmod.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
