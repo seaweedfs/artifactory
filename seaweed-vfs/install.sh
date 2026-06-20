@@ -7,17 +7,24 @@
 #
 # It installs prerequisites, fetches the two packages (the GPL module + the
 # closed-source daemon) from this repo's release, and DKMS builds the module for
-# THIS kernel. Override: SEAWEEDFS_VFS_VERSION, SEAWEEDFS_VFS_BASE_URL,
-# SEAWEEDFS_VFS_KMOD=1 (use a precompiled module instead of DKMS — no toolchain).
+# THIS kernel. Override: SEAWEEDFS_VFS_RELEASE (default: vfs-latest),
+# SEAWEEDFS_VFS_BASE_URL, SEAWEEDFS_VFS_KMOD=1 (use a precompiled module
+# instead of DKMS — no toolchain).
 set -euo pipefail
 
-VERSION="${SEAWEEDFS_VFS_VERSION:-0.5.0}"
-BASE_URL="${SEAWEEDFS_VFS_BASE_URL:-https://github.com/seaweedfs/artifactory/releases/download/vfs-${VERSION}}"
+RELEASE="${SEAWEEDFS_VFS_RELEASE:-vfs-latest}"
+BASE_URL="${SEAWEEDFS_VFS_BASE_URL:-https://github.com/seaweedfs/artifactory/releases/download/${RELEASE}}"
 FILER="${FILER:-}"
 
 die() { echo "install.sh: error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
 command -v curl >/dev/null || die "curl is required"
+
+# Detect the package version from the release assets (the dkms deb name embeds it).
+VERSION=$(curl -fsSL "https://api.github.com/repos/seaweedfs/artifactory/releases/tags/${RELEASE}" \
+  | grep -o '"seaweedfs-vfs-dkms_[0-9][0-9.]*_all\.deb"' \
+  | grep -o '[0-9][0-9.]*' | head -1) || true
+[ -n "$VERSION" ] || die "could not detect package version from release ${RELEASE}"
 
 case "$(uname -m)" in
   x86_64|amd64) DEB_ARCH=amd64; RPM_ARCH=x86_64 ;;

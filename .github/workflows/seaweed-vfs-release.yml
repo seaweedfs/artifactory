@@ -248,12 +248,10 @@ jobs:
           KMOD_VERSION=$(sed -n 's/.*SEAWEEDVFS_VERSION "\(.*\)".*/\1/p' ../../kernel/seaweedvfs.c | head -1)
           [ -n "$KMOD_VERSION" ] || { echo "could not derive SEAWEEDVFS_VERSION from seaweedvfs.c" >&2; exit 1; }
           export KMOD_VERSION
-          # nfpm does NOT expand ${...} env vars in the spec, so substitute them
-          # ourselves into a concrete spec before packaging.
-          envsubst '$KVER $KMOD_ARCH $KMOD_VERSION $KO_PATH' < seaweedfs-vfs-kmod.yaml > kmod.gen.yaml
+          # nfpm expands {{ .Env.VAR }} natively — pass vars in the environment.
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          nfpm pkg -f kmod.gen.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
-          nfpm pkg -f kmod.gen.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
 
       - name: Checksums
