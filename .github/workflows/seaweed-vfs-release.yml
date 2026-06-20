@@ -1,0 +1,254 @@
+name: "seaweed-vfs: build + publish release packages"
+
+# Builds the SeaweedFS kernel VFS distribution from seaweed-mono and publishes
+# the deb/rpm packages as assets on this repo's GitHub Release:
+#   * seaweedfs-vfs-dkms  (GPL kernel module source, noarch) -- built once
+#   * seaweedfs-vfs       (closed sw-kd daemon)              -- per arch (amd64, arm64)
+# The .ko is NOT shipped as a binary; DKMS rebuilds it per kernel on the box.
+# Package version comes from the nfpm specs in seaweed-mono (keep them in sync
+# with SEAWEEDVFS_VERSION); the Release tag is independent.
+
+on:
+  push:
+    tags:
+      - 'vfs-*'           # e.g. tag this repo vfs-0.5.0
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to publish assets to'
+        required: true
+        default: 'vfs-latest'
+      mono_ref:
+        description: 'seaweed-mono ref to build from'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: read
+
+env:
+  MONO_REF: ${{ github.event.inputs.mono_ref || 'main' }}
+  TAG: ${{ github.event.inputs.tag_name || github.ref_name }}
+
+jobs:
+  daemon:
+    name: "daemon package (${{ matrix.asset }})"
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            asset: linux_amd64
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            asset: linux_arm64
+            cross: true
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          REF="${MONO_REF}"
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cross-compile tools (arm64)
+        if: matrix.cross
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/seaweed-vfs/target
+          key: vfs-${{ matrix.target }}-${{ hashFiles('src/seaweed-vfs/Cargo.lock') }}
+          restore-keys: vfs-${{ matrix.target }}-
+
+      - name: Build sw-kd daemon
+        working-directory: src/seaweed-vfs
+        run: cargo build --release --locked -p sw-kd --target ${{ matrix.target }}
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build deb + rpm
+        working-directory: src/seaweed-vfs
+        run: |
+          mkdir -p target/release "$GITHUB_WORKSPACE/dist"
+          cp "target/${{ matrix.target }}/release/sw-kd" target/release/sw-kd
+          # nfpm reads arch from the spec; patch it for this matrix arch and
+          # verify the substitution actually took (don't ship wrong-arch metadata).
+          sed -i "s/^arch: .*/arch: ${{ matrix.deb_arch }}/" packaging/nfpm/seaweedfs-vfs.yaml
+          grep -q "^arch: ${{ matrix.deb_arch }}$" packaging/nfpm/seaweedfs-vfs.yaml \
+            || { echo "failed to set arch in nfpm spec" >&2; exit 1; }
+          cd packaging/nfpm
+          nfpm pkg -f seaweedfs-vfs.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: Checksums
+        run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dkms:
+    name: "dkms source package"
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          REF="${MONO_REF}"
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build dkms package (deb + rpm, noarch)
+        working-directory: src/seaweed-vfs/packaging/nfpm
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          nfpm pkg -f seaweedfs-vfs-dkms.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-dkms.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: Checksums
+        run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  kmod:
+    # Precompiled seaweedvfs.ko per EXACT kernel, for fleets / hardened hosts that
+    # can't run DKMS. A .ko only loads on the kernel whose headers it was built
+    # against (vermagic must match), so the matrix entries below are examples —
+    # add a container with your golden-image kernel's headers for real fleet use.
+    # (rhel10 is best-effort: RHEL backports may diverge from upstream 6.12.
+    # fail-fast is off so one distro can't block the others.) Signing is applied
+    # only when the MODULE_SIGN_KEY / MODULE_SIGN_CERT secrets are set.
+    name: "precompiled .ko (${{ matrix.label }})"
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: debian-trixie
+            image: debian:trixie
+            arch: amd64
+            install: apt-get update && apt-get install -y build-essential kmod linux-headers-amd64
+            kdir_glob: /usr/src/linux-headers-*-amd64
+          - label: rhel10
+            image: rockylinux:10
+            arch: amd64
+            install: dnf install -y gcc make kmod kernel-devel
+            kdir_glob: /usr/src/kernels/*
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          REF="${MONO_REF}"
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+
+      - name: Stage module-signing material (no-op if secrets unset)
+        env:
+          KEY: ${{ secrets.MODULE_SIGN_KEY }}
+          CERT_B64: ${{ secrets.MODULE_SIGN_CERT }}
+        run: |
+          printf '%s' "$KEY" > sign_key.pem
+          printf '%s' "$CERT_B64" | base64 -d > sign_cert.der 2>/dev/null || : > sign_cert.der
+
+      - name: Build (+ optionally sign) seaweedvfs.ko in ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work/src/seaweed-vfs ${{ matrix.image }} \
+            bash -euxc '
+              ${{ matrix.install }}
+              KDIR=$(ls -d ${{ matrix.kdir_glob }} | grep -vi common | sort -V | tail -1)
+              test -d "$KDIR"
+              make -C kernel KDIR="$KDIR"
+              if [ -s /work/sign_key.pem ] && [ -s /work/sign_cert.der ]; then
+                "$KDIR/scripts/sign-file" sha256 /work/sign_key.pem /work/sign_cert.der kernel/seaweedvfs.ko
+                echo "module signed"
+              fi
+              cat "$KDIR/include/config/kernel.release" > /work/KVER.txt
+              cp kernel/seaweedvfs.ko /work/seaweedvfs.ko
+            '
+          echo "KVER=$(cat KVER.txt)" >> "$GITHUB_ENV"
+          echo "Built for kernel: $(cat KVER.txt)"
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Package seaweedfs-vfs-kmod
+        working-directory: src/seaweed-vfs/packaging/nfpm
+        env:
+          KVER: ${{ env.KVER }}
+          KMOD_ARCH: ${{ matrix.arch }}
+          KO_PATH: ${{ github.workspace }}/seaweedvfs.ko
+        run: |
+          KMOD_VERSION=$(sed -n 's/.*SEAWEEDVFS_VERSION "\(.*\)".*/\1/p' ../../kernel/seaweedvfs.c | head -1)
+          [ -n "$KMOD_VERSION" ] || { echo "could not derive SEAWEEDVFS_VERSION from seaweedvfs.c" >&2; exit 1; }
+          export KMOD_VERSION
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: Checksums
+        run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
