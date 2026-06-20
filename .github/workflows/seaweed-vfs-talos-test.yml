@@ -1,0 +1,102 @@
+name: "seaweed-vfs: Talos boot-and-load test"
+
+# Tier 2 integration test for the Talos system extension: boot a REAL Talos
+# kernel in QEMU and assert seaweedvfs.ko actually loads. This is the only check
+# that proves the extension loads on Talos (Tier 1 — vermagic/signature/layout —
+# runs in the release workflow's talos-extension job and needs no VM).
+#
+# Needs KVM. Standard GitHub-hosted runners' /dev/kvm is unofficial and flaky, so
+# run this on EITHER a self-hosted runner with KVM (e.g. swdev) OR a GitHub larger
+# runner with nested virtualization. The job is gated off until you register such
+# a runner and set the TALOS_BOOT_TEST_ENABLED repo variable, so the nightly cron
+# is a no-op (skipped, not failed) until then.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ext_image:
+        description: "Extension image ref (ghcr.io/seaweedfs/seaweedvfs:<tag>)"
+        required: true
+        default: "ghcr.io/seaweedfs/seaweedvfs:latest"
+      talos_version:
+        description: "Talos version for imager + installer (e.g. v1.10.0)"
+        required: true
+        default: "v1.10.0"
+  schedule:
+    - cron: "0 7 * * *"        # nightly 07:00 UTC; uses the env defaults below
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  EXT_IMAGE: ${{ github.event.inputs.ext_image || 'ghcr.io/seaweedfs/seaweedvfs:latest' }}
+  TALOS_VERSION: ${{ github.event.inputs.talos_version || 'v1.10.0' }}
+  NODE_IP: "10.5.0.2"          # first node IP talosctl's qemu provisioner assigns
+
+jobs:
+  boot-load:
+    name: "boot Talos (qemu) + assert seaweedvfs loads"
+    # Enable once a KVM-capable runner is registered. For a self-hosted swdev
+    # runner keep the labels below; for a GitHub larger runner swap in its label
+    # and uncomment the "Enable KVM" step.
+    if: ${{ vars.TALOS_BOOT_TEST_ENABLED == 'true' }}
+    runs-on: [self-hosted, linux, kvm]
+    steps:
+      # - name: Enable KVM (GitHub larger runners only; self-hosted already has it)
+      #   run: |
+      #     echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+      #       | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+      #     sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Preflight — KVM present
+        run: test -e /dev/kvm || { echo "::error::no /dev/kvm — this runner can't accelerate QEMU"; exit 1; }
+
+      - name: Install talosctl
+        run: |
+          curl -sSLo talosctl "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+          sudo install talosctl /usr/local/bin/talosctl
+          talosctl version --client
+          # qemu-system-x86 + bridge tooling are assumed present on the KVM runner;
+          # install if your runner image lacks them:
+          #   sudo apt-get update && sudo apt-get install -y qemu-system-x86 bridge-utils
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build an installer image with the extension baked in
+        run: |
+          docker run --rm -t -v /dev:/dev -v "$PWD/_out:/out" --privileged \
+            "ghcr.io/siderolabs/imager:${TALOS_VERSION}" installer \
+            --system-extension-image "${EXT_IMAGE}"
+          # imager writes an installer OCI image under _out/. The QEMU VM must be
+          # able to PULL it, so push it to a registry the runner's VMs can reach
+          # (on swdev, a localhost:5000 registry bridged to the qemu network):
+          #   crane push _out/installer.tar localhost:5000/installer:test
+          # then set INSTALLER_REF. Left as a TODO — it's runner-environment specific.
+          echo "INSTALLER_REF=${INSTALLER_REF:-localhost:5000/seaweedvfs-installer:test}" >> "$GITHUB_ENV"
+
+      - name: Boot a 1-node cluster, load the module, assert it's present
+        run: |
+          # 1 control plane, no workers, --wait=false: the module loads in early
+          # boot (before k8s), so poll /proc/modules instead of waiting for health.
+          talosctl cluster create --provisioner qemu \
+            --controlplanes 1 --workers 0 --wait=false \
+            --install-image "${INSTALLER_REF}" \
+            --config-patch '[{"op":"add","path":"/machine/kernel","value":{"modules":[{"name":"seaweedvfs"}]}}]'
+          ok=
+          for _ in $(seq 1 60); do
+            if talosctl -n "$NODE_IP" read /proc/modules 2>/dev/null | grep -q seaweedvfs; then ok=1; break; fi
+            sleep 5
+          done
+          [ -n "$ok" ] || { echo "::error::seaweedvfs not in /proc/modules after timeout"; talosctl -n "$NODE_IP" dmesg | tail -50; exit 1; }
+          echo "=== loaded ===" ; talosctl -n "$NODE_IP" read /proc/modules | grep seaweedvfs
+          echo "=== extension ===" ; talosctl -n "$NODE_IP" get extensions | grep seaweedvfs
+          talosctl -n "$NODE_IP" dmesg | grep -i seaweedvfs || true
+
+      - name: Teardown
+        if: always()
+        run: talosctl cluster destroy --provisioner qemu || true

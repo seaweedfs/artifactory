@@ -414,6 +414,23 @@ jobs:
           make seaweedvfs PKGS="$PKGS" PKGS_PREFIX="$PKGS_PREFIX" \
             USERNAME="$USERNAME" PUSH="$PUSH" REGISTRY=ghcr.io
 
+      # Tier 1 (no boot, no KVM): pull the just-built extension and inspect the
+      # .ko. bldr already runs extensions-validator (layout/manifest) and the
+      # signature grep inside the build; this adds the vermagic check and fails
+      # hard if the module came out unsigned (Secure Boot would reject it). The
+      # image ref + digest come from the bldr metadata file (ARTIFACTS=_out).
+      - name: Static checks — vermagic + signature
+        working-directory: ext
+        run: |
+          ref=$(jq -r '."image.name"' _out/seaweedvfs.metadata.json | cut -d, -f1)
+          echo "extension image: $ref"
+          go install github.com/google/go-containerregistry/cmd/crane@latest
+          "$(go env GOPATH)/bin/crane" export "$ref" - \
+            | tar -xO --wildcards '*/seaweedvfs.ko' > seaweedvfs.ko
+          modinfo seaweedvfs.ko | grep -E '^(name|vermagic|sig_id|signer):'
+          modinfo seaweedvfs.ko | grep -q '^sig_id:' \
+            || { echo "::error::extension .ko is unsigned — Secure Boot would reject it"; exit 1; }
+
       - name: Sign the extension image (cosign, keyless)
         if: ${{ vars.COSIGN_ENABLED == 'true' }}
         run: |
