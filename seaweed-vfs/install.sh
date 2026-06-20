@@ -10,11 +10,17 @@
 # THIS kernel. Override: SEAWEEDFS_VFS_RELEASE (default: vfs-latest),
 # SEAWEEDFS_VFS_BASE_URL, SEAWEEDFS_VFS_KMOD=1 (use a precompiled module
 # instead of DKMS — no toolchain).
+#
+# Upgrade an existing install in place with SEAWEEDFS_VFS_UPGRADE=1: it unmounts
+# the seaweedvfs mounts, stops the daemon, swaps the packages, reloads the new
+# module, then restarts the daemon and remounts — a brief mount blip, no reboot:
+#   curl -fsSL .../install.sh | sudo SEAWEEDFS_VFS_UPGRADE=1 bash
 set -euo pipefail
 
 RELEASE="${SEAWEEDFS_VFS_RELEASE:-vfs-latest}"
 BASE_URL="${SEAWEEDFS_VFS_BASE_URL:-https://github.com/seaweedfs/artifactory/releases/download/${RELEASE}}"
 FILER="${FILER:-}"
+UPGRADE="${SEAWEEDFS_VFS_UPGRADE:-}"
 
 die() { echo "install.sh: error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
@@ -41,6 +47,37 @@ else die "no supported package manager (apt/dnf/yum/zypper)"; fi
 
 fetch() { curl -fsSL "$1" -o "$2" || die "download failed: $1"; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+
+# --- upgrade: quiesce the running install before swapping the module ---
+# Reloading a kernel module needs zero users, so unmount the seaweedvfs mounts
+# and stop the daemon first, then rmmod. We record source|mountpoint|options and
+# the running units so the resume step can restore them after the new .ko lands.
+RESUME_MOUNTS=""
+RESUME_UNITS=""
+if [ -n "$UPGRADE" ]; then
+  echo ">> upgrade: quiescing the running install (unmount, stop daemon, rmmod)"
+  # Deepest mountpoint first, so nested paths unmount before their parents.
+  RESUME_MOUNTS=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
+    /proc/self/mounts | sort -rn | cut -f2)
+  while IFS='|' read -r _src mp _opts; do
+    [ -n "$mp" ] || continue
+    echo "   umount $mp"
+    umount "$mp" || umount -l "$mp" || die "could not unmount $mp (open files?)"
+  done <<< "$RESUME_MOUNTS"
+  if [ -d /run/systemd/system ]; then
+    RESUME_UNITS=$(systemctl list-units --no-legend --state=running \
+      'seaweed-vfs*' 2>/dev/null | awk '{print $1}')
+    for u in $RESUME_UNITS; do
+      echo "   systemctl stop $u"
+      systemctl stop "$u" || true
+    done
+  fi
+  pkill -x sw-kd 2>/dev/null || true          # any daemon not under systemd
+  if lsmod | grep -q '^seaweedvfs\b'; then
+    echo "   rmmod seaweedvfs"
+    rmmod seaweedvfs || die "rmmod failed — module still busy"
+  fi
+fi
 
 # Module source: DKMS (rebuilds per kernel; needs a toolchain) by default, or a
 # precompiled .ko for THIS exact kernel when SEAWEEDFS_VFS_KMOD=1 (fleets /
@@ -101,7 +138,24 @@ modinfo seaweedvfs >/dev/null 2>&1 || die "module not available — $(
                  || echo "check 'dkms status' and that headers for ${KVER} are present")"
 echo ">> seaweedvfs module v$(modinfo -F version seaweedvfs 2>/dev/null) ready for ${KVER}"
 
-if [ -n "$FILER" ]; then
+if [ -n "$UPGRADE" ]; then
+  # --- upgrade: reload the new module, then restore daemon + mounts ---
+  echo ">> upgrade: reloading module and restoring daemon + mounts"
+  modprobe seaweedvfs || die "modprobe seaweedvfs failed after upgrade"
+  for u in $RESUME_UNITS; do
+    echo "   systemctl start $u"
+    systemctl start "$u" || echo ">> warning: could not start $u"
+  done
+  # Shallowest mountpoint first (reverse of the unmount order).
+  while IFS='|' read -r src mp opts; do
+    [ -n "$mp" ] || continue
+    echo "   mount $mp"
+    mount "$mp" 2>/dev/null \
+      || mount -t seaweedvfs -o "$opts" "$src" "$mp" \
+      || echo ">> warning: could not remount $mp — remount it by hand"
+  done <<< "$(echo "$RESUME_MOUNTS" | tac)"
+  echo ">> upgrade complete: v${VERSION} active on ${KVER}"
+elif [ -n "$FILER" ]; then
   echo ">> configuring filer ${FILER} and starting the daemon"
   mkdir -p /etc/seaweedfs-vfs
   touch /etc/seaweedfs-vfs/config
