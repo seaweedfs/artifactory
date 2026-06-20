@@ -78,10 +78,13 @@ esac
 OLD_SRCVERSION=""
 [ -r /sys/module/seaweedvfs/srcversion ] && OLD_SRCVERSION=$(cat /sys/module/seaweedvfs/srcversion)
 
-# Snapshot live mounts (source|mountpoint|options, deepest first) + running
-# daemon units, for whichever restore path we take.
+# Snapshot live mounts (source|mountpoint|options) + running daemon units, for
+# whichever restore path we take. Keep both orderings up front so we never need
+# the non-POSIX `tac`: deepest-first to unmount, shallowest-first to remount.
 RESUME_MOUNTS=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
   /proc/self/mounts 2>/dev/null | sort -rn | cut -f2)
+RESUME_MOUNTS_SHALLOW=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
+  /proc/self/mounts 2>/dev/null | sort -n | cut -f2)
 RESUME_UNITS=""
 [ -d /run/systemd/system ] && RESUME_UNITS=$(systemctl list-units --no-legend \
   --state=running 'seaweed-vfs*' 2>/dev/null | awk '{print $1}')
@@ -175,7 +178,7 @@ if [ -n "$UPGRADE" ]; then
       systemctl stop "$u" || true
     done
     pkill -x sw-kd 2>/dev/null || true          # any daemon not under systemd
-    if lsmod | grep -q '^seaweedvfs\b'; then
+    if grep -q '^seaweedvfs\b' /proc/modules 2>/dev/null; then
       echo "   rmmod seaweedvfs"
       rmmod seaweedvfs || die "rmmod failed — module still busy"
     fi
@@ -184,14 +187,14 @@ if [ -n "$UPGRADE" ]; then
       echo "   systemctl start $u"
       systemctl start "$u" || echo ">> warning: could not start $u"
     done
-    # Shallowest mountpoint first (reverse of the unmount order).
+    # Shallowest mountpoint first (parents before nested children).
     while IFS='|' read -r src mp opts; do
       [ -n "$mp" ] || continue
       echo "   mount $mp"
       mount "$mp" 2>/dev/null \
         || mount -t seaweedvfs -o "$opts" "$src" "$mp" \
         || echo ">> warning: could not remount $mp — remount it by hand"
-    done <<< "$(echo "$RESUME_MOUNTS" | tac)"
+    done <<< "$RESUME_MOUNTS_SHALLOW"
     echo ">> upgrade complete: v${VERSION} active on ${KVER}"
   fi
 elif [ -n "$FILER" ]; then
