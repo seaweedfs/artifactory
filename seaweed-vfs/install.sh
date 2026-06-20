@@ -39,8 +39,8 @@ VERSION=$(curl -fsSL "https://api.github.com/repos/seaweedfs/artifactory/release
 
 # nfpm stamps RPMs with a release number (its default is "1"), so the assets are
 # e.g. seaweedfs-vfs-0.5.0-1.x86_64.rpm; DEBs carry no release. Bump this if the
-# nfpm specs ever set a non-default RPM release.
-RPM_REL="1"
+# nfpm specs ever set a non-default RPM release (override: SEAWEEDFS_VFS_RPM_REL).
+RPM_REL="${SEAWEEDFS_VFS_RPM_REL:-1}"
 
 case "$(uname -m)" in
   x86_64|amd64) DEB_ARCH=amd64; RPM_ARCH=x86_64 ;;
