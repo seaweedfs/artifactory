@@ -11,16 +11,21 @@
 # SEAWEEDFS_VFS_BASE_URL, SEAWEEDFS_VFS_KMOD=1 (use a precompiled module
 # instead of DKMS — no toolchain).
 #
-# Upgrade an existing install in place with SEAWEEDFS_VFS_UPGRADE=1: it unmounts
-# the seaweedvfs mounts, stops the daemon, swaps the packages, reloads the new
-# module, then restarts the daemon and remounts — a brief mount blip, no reboot:
-#   curl -fsSL .../install.sh | sudo SEAWEEDFS_VFS_UPGRADE=1 bash
+# Re-running over an existing install upgrades it in place automatically, and
+# reloads only what changed:
+#   * only the daemon changed  -> restart the daemon under the live mounts; the
+#     module completes in-flight requests with -ENOTCONN and the daemon
+#     transparently re-attaches (no unmount, just a brief I/O pause).
+#   * the kernel module changed -> full reload (unmount, rmmod, modprobe,
+#     remount) because a loaded module can't be swapped with users on it.
+# Force the choice with SEAWEEDFS_VFS_UPGRADE=1 (always upgrade) or =0 (treat as
+# a fresh install).
 set -euo pipefail
 
 RELEASE="${SEAWEEDFS_VFS_RELEASE:-vfs-latest}"
 BASE_URL="${SEAWEEDFS_VFS_BASE_URL:-https://github.com/seaweedfs/artifactory/releases/download/${RELEASE}}"
 FILER="${FILER:-}"
-UPGRADE="${SEAWEEDFS_VFS_UPGRADE:-}"
+UPGRADE_REQ="${SEAWEEDFS_VFS_UPGRADE:-auto}"
 
 die() { echo "install.sh: error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
@@ -48,36 +53,48 @@ else die "no supported package manager (apt/dnf/yum/zypper)"; fi
 fetch() { curl -fsSL "$1" -o "$2" || die "download failed: $1"; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
-# --- upgrade: quiesce the running install before swapping the module ---
-# Reloading a kernel module needs zero users, so unmount the seaweedvfs mounts
-# and stop the daemon first, then rmmod. We record source|mountpoint|options and
-# the running units so the resume step can restore them after the new .ko lands.
-RESUME_MOUNTS=""
+# --- upgrade detection + state snapshot ---
+# Decide upgrade mode (auto-detect an existing install unless forced) and record
+# what we might have to restore. We install the new packages FIRST — that only
+# stages the new .ko on disk and replaces the daemon binary, leaving the running
+# module and mounts untouched — then compare the module's srcversion to decide
+# whether a disruptive module reload is actually needed.
+have_install() {
+  [ -e /sys/module/seaweedvfs ] && return 0
+  awk '$3=="seaweedvfs"{f=1} END{exit !f}' /proc/self/mounts 2>/dev/null && return 0
+  [ -d /run/systemd/system ] \
+    && systemctl list-units --all --no-legend 'seaweed-vfs*' 2>/dev/null | grep -q . \
+    && return 0
+  return 1
+}
+case "$UPGRADE_REQ" in
+  1|yes|true)  UPGRADE=1 ;;
+  0|no|false)  UPGRADE= ;;
+  *)           if have_install; then UPGRADE=1; else UPGRADE=; fi ;;
+esac
+
+# srcversion of the currently loaded module (empty if not loaded) — compared to
+# the freshly installed .ko after the package swap.
+OLD_SRCVERSION=""
+[ -r /sys/module/seaweedvfs/srcversion ] && OLD_SRCVERSION=$(cat /sys/module/seaweedvfs/srcversion)
+
+# Snapshot live mounts (source|mountpoint|options) + running daemon units, for
+# whichever restore path we take. Keep both orderings up front so we never need
+# the non-POSIX `tac`: deepest-first to unmount, shallowest-first to remount.
+RESUME_MOUNTS=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
+  /proc/self/mounts 2>/dev/null | sort -rn | cut -f2)
+RESUME_MOUNTS_SHALLOW=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
+  /proc/self/mounts 2>/dev/null | sort -n | cut -f2)
 RESUME_UNITS=""
-if [ -n "$UPGRADE" ]; then
-  echo ">> upgrade: quiescing the running install (unmount, stop daemon, rmmod)"
-  # Deepest mountpoint first, so nested paths unmount before their parents.
-  RESUME_MOUNTS=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
-    /proc/self/mounts | sort -rn | cut -f2)
-  while IFS='|' read -r _src mp _opts; do
-    [ -n "$mp" ] || continue
-    echo "   umount $mp"
-    umount "$mp" || umount -l "$mp" || die "could not unmount $mp (open files?)"
-  done <<< "$RESUME_MOUNTS"
-  if [ -d /run/systemd/system ]; then
-    RESUME_UNITS=$(systemctl list-units --no-legend --state=running \
-      'seaweed-vfs*' 2>/dev/null | awk '{print $1}')
-    for u in $RESUME_UNITS; do
-      echo "   systemctl stop $u"
-      systemctl stop "$u" || true
-    done
-  fi
-  pkill -x sw-kd 2>/dev/null || true          # any daemon not under systemd
-  if lsmod | grep -q '^seaweedvfs\b'; then
-    echo "   rmmod seaweedvfs"
-    rmmod seaweedvfs || die "rmmod failed — module still busy"
-  fi
+if [ -d /run/systemd/system ]; then
+  # || true: systemctl exits non-zero if it can't reach systemd (e.g. inside a
+  # container, or a fresh install with SEAWEEDFS_VFS_UPGRADE=0); under
+  # set -euo pipefail that would otherwise abort the whole installer here.
+  RESUME_UNITS=$(systemctl list-units --no-legend --state=running \
+    'seaweed-vfs*' 2>/dev/null | awk '{print $1}') || true
 fi
+
+[ -n "$UPGRADE" ] && echo ">> existing install detected — upgrading in place"
 
 # Module source: DKMS (rebuilds per kernel; needs a toolchain) by default, or a
 # precompiled .ko for THIS exact kernel when SEAWEEDFS_VFS_KMOD=1 (fleets /
@@ -139,22 +156,58 @@ modinfo seaweedvfs >/dev/null 2>&1 || die "module not available — $(
 echo ">> seaweedvfs module v$(modinfo -F version seaweedvfs 2>/dev/null) ready for ${KVER}"
 
 if [ -n "$UPGRADE" ]; then
-  # --- upgrade: reload the new module, then restore daemon + mounts ---
-  echo ">> upgrade: reloading module and restoring daemon + mounts"
-  modprobe seaweedvfs || die "modprobe seaweedvfs failed after upgrade"
-  for u in $RESUME_UNITS; do
-    echo "   systemctl start $u"
-    systemctl start "$u" || echo ">> warning: could not start $u"
-  done
-  # Shallowest mountpoint first (reverse of the unmount order).
-  while IFS='|' read -r src mp opts; do
-    [ -n "$mp" ] || continue
-    echo "   mount $mp"
-    mount "$mp" 2>/dev/null \
-      || mount -t seaweedvfs -o "$opts" "$src" "$mp" \
-      || echo ">> warning: could not remount $mp — remount it by hand"
-  done <<< "$(echo "$RESUME_MOUNTS" | tac)"
-  echo ">> upgrade complete: v${VERSION} active on ${KVER}"
+  NEW_SRCVERSION=$(modinfo -F srcversion seaweedvfs 2>/dev/null || true)
+  if [ -n "$OLD_SRCVERSION" ] && [ "$OLD_SRCVERSION" = "$NEW_SRCVERSION" ]; then
+    # --- module unchanged: restart the daemon only, mounts stay up ---
+    echo ">> kernel module unchanged (srcversion ${NEW_SRCVERSION}) — restarting daemon only"
+    if [ -n "$RESUME_UNITS" ]; then
+      for u in $RESUME_UNITS; do
+        echo "   systemctl restart $u"
+        systemctl restart "$u" || echo ">> warning: could not restart $u"
+      done
+      echo ">> upgrade complete: daemon v${VERSION} active, mounts preserved"
+    elif [ -n "$RESUME_MOUNTS" ]; then
+      # Active mounts but no systemd unit: an unmanaged sw-kd is still serving
+      # them from the OLD binary, and we don't know how it was launched so we
+      # can't restart it. The new binary is staged but NOT live — don't claim
+      # success. (A full reload would be no better: it can't start the daemon
+      # either, and would leave the remount with nothing serving it.)
+      die "active seaweedvfs mounts are served by an unmanaged sw-kd daemon; the new v${VERSION} binary is installed but the running daemon is unchanged. Restart your daemon by hand (or unmount and re-run) to finish the upgrade."
+    else
+      echo ">> new daemon binary v${VERSION} installed; no running daemon to restart"
+    fi
+  else
+    # --- module changed: full reload (needs zero users on the module) ---
+    echo ">> kernel module changed — full reload (brief unmount)"
+    while IFS='|' read -r _src mp _opts; do
+      [ -n "$mp" ] || continue
+      echo "   umount $mp"
+      umount "$mp" || umount -l "$mp" || die "could not unmount $mp (open files?)"
+    done <<< "$RESUME_MOUNTS"
+    for u in $RESUME_UNITS; do
+      echo "   systemctl stop $u"
+      systemctl stop "$u" || true
+    done
+    pkill -x sw-kd 2>/dev/null || true          # any daemon not under systemd
+    if grep -q '^seaweedvfs\b' /proc/modules 2>/dev/null; then
+      echo "   rmmod seaweedvfs"
+      rmmod seaweedvfs || die "rmmod failed — module still busy"
+    fi
+    modprobe seaweedvfs || die "modprobe seaweedvfs failed after upgrade"
+    for u in $RESUME_UNITS; do
+      echo "   systemctl start $u"
+      systemctl start "$u" || echo ">> warning: could not start $u"
+    done
+    # Shallowest mountpoint first (parents before nested children).
+    while IFS='|' read -r src mp opts; do
+      [ -n "$mp" ] || continue
+      echo "   mount $mp"
+      mount "$mp" 2>/dev/null \
+        || mount -t seaweedvfs -o "$opts" "$src" "$mp" \
+        || echo ">> warning: could not remount $mp — remount it by hand"
+    done <<< "$RESUME_MOUNTS_SHALLOW"
+    echo ">> upgrade complete: v${VERSION} active on ${KVER}"
+  fi
 elif [ -n "$FILER" ]; then
   echo ">> configuring filer ${FILER} and starting the daemon"
   mkdir -p /etc/seaweedfs-vfs
