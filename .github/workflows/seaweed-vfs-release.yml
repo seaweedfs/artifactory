@@ -182,6 +182,13 @@ jobs:
             arch: amd64
             install: apt-get update && apt-get install -y build-essential kmod linux-headers-amd64
             kdir_glob: /usr/src/linux-headers-*-amd64
+          # Debian "cloud" kernel flavour — what most cloud VMs (AWS/GCP/Azure
+          # Debian images) actually run, distinct from the generic -amd64 above.
+          - label: debian-trixie-cloud
+            image: debian:trixie
+            arch: amd64
+            install: apt-get update && apt-get install -y build-essential kmod linux-headers-cloud-amd64
+            kdir_glob: /usr/src/linux-headers-*-cloud-amd64
           - label: rhel10
             image: almalinux:10
             arch: amd64
