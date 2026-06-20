@@ -86,8 +86,13 @@ RESUME_MOUNTS=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
 RESUME_MOUNTS_SHALLOW=$(awk '$3=="seaweedvfs"{print length($2)"\t"$1"|"$2"|"$4}' \
   /proc/self/mounts 2>/dev/null | sort -n | cut -f2)
 RESUME_UNITS=""
-[ -d /run/systemd/system ] && RESUME_UNITS=$(systemctl list-units --no-legend \
-  --state=running 'seaweed-vfs*' 2>/dev/null | awk '{print $1}')
+if [ -d /run/systemd/system ]; then
+  # || true: systemctl exits non-zero if it can't reach systemd (e.g. inside a
+  # container, or a fresh install with SEAWEEDFS_VFS_UPGRADE=0); under
+  # set -euo pipefail that would otherwise abort the whole installer here.
+  RESUME_UNITS=$(systemctl list-units --no-legend --state=running \
+    'seaweed-vfs*' 2>/dev/null | awk '{print $1}') || true
+fi
 
 [ -n "$UPGRADE" ] && echo ">> existing install detected — upgrading in place"
 
@@ -160,11 +165,17 @@ if [ -n "$UPGRADE" ]; then
         echo "   systemctl restart $u"
         systemctl restart "$u" || echo ">> warning: could not restart $u"
       done
+      echo ">> upgrade complete: daemon v${VERSION} active, mounts preserved"
+    elif [ -n "$RESUME_MOUNTS" ]; then
+      # Active mounts but no systemd unit: an unmanaged sw-kd is still serving
+      # them from the OLD binary, and we don't know how it was launched so we
+      # can't restart it. The new binary is staged but NOT live — don't claim
+      # success. (A full reload would be no better: it can't start the daemon
+      # either, and would leave the remount with nothing serving it.)
+      die "active seaweedvfs mounts are served by an unmanaged sw-kd daemon; the new v${VERSION} binary is installed but the running daemon is unchanged. Restart your daemon by hand (or unmount and re-run) to finish the upgrade."
     else
-      echo ">> warning: no running systemd daemon unit — restart your sw-kd daemon"
-      echo "   by hand to pick up the new binary"
+      echo ">> new daemon binary v${VERSION} installed; no running daemon to restart"
     fi
-    echo ">> upgrade complete: daemon v${VERSION} active, mounts preserved"
   else
     # --- module changed: full reload (needs zero users on the module) ---
     echo ">> kernel module changed — full reload (brief unmount)"
