@@ -170,6 +170,9 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-22.04
+    # Entries flagged `optional` (best-effort distros like rhel10) don't fail the
+    # run; the golden-image / debian entry stays required.
+    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -180,10 +183,11 @@ jobs:
             install: apt-get update && apt-get install -y build-essential kmod linux-headers-amd64
             kdir_glob: /usr/src/linux-headers-*-amd64
           - label: rhel10
-            image: rockylinux:10
+            image: almalinux:10
             arch: amd64
             install: dnf install -y gcc make kmod kernel-devel
             kdir_glob: /usr/src/kernels/*
+            optional: true   # RHEL backports may diverge from upstream 6.12
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -237,9 +241,12 @@ jobs:
           KMOD_VERSION=$(sed -n 's/.*SEAWEEDVFS_VERSION "\(.*\)".*/\1/p' ../../kernel/seaweedvfs.c | head -1)
           [ -n "$KMOD_VERSION" ] || { echo "could not derive SEAWEEDVFS_VERSION from seaweedvfs.c" >&2; exit 1; }
           export KMOD_VERSION
+          # nfpm does NOT expand ${...} env vars in the spec, so substitute them
+          # ourselves into a concrete spec before packaging.
+          envsubst '$KVER $KMOD_ARCH $KMOD_VERSION $KO_PATH' < seaweedfs-vfs-kmod.yaml > kmod.gen.yaml
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
-          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f kmod.gen.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f kmod.gen.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
 
       - name: Checksums
