@@ -1,0 +1,84 @@
+name: "seaweed-vfs: cut release (one click)"
+
+# One-button release for the SeaweedFS kernel VFS. Given a version, it:
+#   1. bumps + tags the GPL module source in seaweedfs/seaweedvfs-kmod
+#   2. bumps the vendored module + the nfpm specs in seaweedfs/seaweed-mono (main)
+#   3. tags THIS repo `vfs-<version>`, which triggers seaweed-vfs-release.yml to
+#      build, sign, and publish the deb/rpm + images.
+#
+# So a release is: Actions -> "cut release (one click)" -> type 1.0.0 -> Run.
+#
+# Requires a RELEASE_TOKEN secret: a PAT with Contents:write on all three repos
+# (seaweed-mono, seaweedvfs-kmod, artifactory). It must be a PAT, not the default
+# GITHUB_TOKEN — a tag pushed with GITHUB_TOKEN would NOT trigger the release
+# workflow (GitHub blocks that to prevent recursion). The build/publish step then
+# reads the usual MONO_TOKEN / MODULE_SIGN_* / GPG_SIGNING_KEY secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version X.Y.Z (no 'v', no 'vfs-'), e.g. 1.0.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cut:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      V: ${{ github.event.inputs.version }}
+    steps:
+      - name: Validate input + token
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo "RELEASE_TOKEN secret is required (Contents:write on seaweed-mono, seaweedvfs-kmod, artifactory)" >&2; exit 1; }
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version must be X.Y.Z, got: '$V'" >&2; exit 1; }
+          git config --global user.name  "seaweedfs-release-bot"
+          git config --global user.email "release-bot@users.noreply.github.com"
+
+      - name: Bump + tag kmod (GPL source of truth)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/seaweedvfs-kmod.git" kmod
+          cd kmod
+          perl -pi -e "s/SEAWEEDVFS_VERSION \"[0-9.]+\"/SEAWEEDVFS_VERSION \"$V\"/" seaweedvfs.c
+          perl -pi -e "s/PACKAGE_VERSION=\"[0-9.]+\"/PACKAGE_VERSION=\"$V\"/"        dkms.conf
+          grep -q "SEAWEEDVFS_VERSION \"$V\"" seaweedvfs.c || { echo "kmod seaweedvfs.c bump failed" >&2; exit 1; }
+          grep -q "PACKAGE_VERSION=\"$V\""    dkms.conf    || { echo "kmod dkms.conf bump failed"    >&2; exit 1; }
+          git diff --quiet || git commit -am "release $V"
+          git tag -f "$V"
+          git push origin HEAD:main
+          git push -f origin "$V"
+
+      - name: Bump mono (vendored module + nfpm specs) on main
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/seaweed-mono.git" mono
+          cd mono
+          perl -pi -e "s/SEAWEEDVFS_VERSION \"[0-9.]+\"/SEAWEEDVFS_VERSION \"$V\"/" seaweed-vfs/kernel/seaweedvfs.c
+          perl -pi -e "s/PACKAGE_VERSION=\"[0-9.]+\"/PACKAGE_VERSION=\"$V\"/"        seaweed-vfs/kernel/dkms.conf
+          perl -pi -e "s/^version: \"[0-9.]+\"/version: \"$V\"/" \
+            seaweed-vfs/packaging/nfpm/seaweedfs-vfs.yaml \
+            seaweed-vfs/packaging/nfpm/seaweedfs-vfs-dkms.yaml
+          grep -q "version: \"$V\"" seaweed-vfs/packaging/nfpm/seaweedfs-vfs.yaml || { echo "mono nfpm bump failed" >&2; exit 1; }
+          if git diff --quiet; then
+            echo "mono already at $V — nothing to commit"
+          else
+            git commit -am "seaweed-vfs: release $V"
+            git push origin HEAD:main
+          fi
+
+      - name: Tag artifactory -> triggers build + publish
+        run: |
+          set -euo pipefail
+          # Push the tag with the PAT (not GITHUB_TOKEN) so seaweed-vfs-release.yml fires.
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" art
+          cd art
+          git tag -f "vfs-$V"
+          git push -f origin "vfs-$V"
+          echo "### Cut \`vfs-$V\` :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build + publish: https://github.com/seaweedfs/artifactory/actions/workflows/seaweed-vfs-release.yml" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release assets:  https://github.com/seaweedfs/artifactory/releases/tag/vfs-$V" >> "$GITHUB_STEP_SUMMARY"
