@@ -36,6 +36,8 @@ runs:
         sudo apt-get update
         sudo apt-get install -y rpm gnupg
         GNUPGHOME="$(mktemp -d)"; export GNUPGHOME
+        # Wipe the imported private key from disk on exit (matters on self-hosted runners).
+        trap 'rm -rf "$GNUPGHOME"' EXIT
         printf '%s' "$GPG_KEY" | gpg --batch --import
         KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
         [ -n "$KEYID" ] || { echo "no key imported" >&2; exit 1; }
