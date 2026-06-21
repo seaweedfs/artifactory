@@ -259,11 +259,19 @@ jobs:
         run: |
           KMOD_VERSION=$(sed -n 's/.*SEAWEEDVFS_VERSION "\(.*\)".*/\1/p' ../../kernel/seaweedvfs.c | head -1)
           [ -n "$KMOD_VERSION" ] || { echo "could not derive SEAWEEDVFS_VERSION from seaweedvfs.c" >&2; exit 1; }
-          export KMOD_VERSION
-          # nfpm expands {{ .Env.VAR }} natively — pass vars in the environment.
+          test -f "$KO_PATH" || { echo "built .ko not found at $KO_PATH" >&2; exit 1; }
+          # nfpm does NOT expand {{ .Env.VAR }} in contents.src globs (it globs the
+          # literal template and fails), so render the placeholders ourselves.
+          # Keep the rendered file in this directory so the spec's relative paths
+          # (e.g. postinstall ../scripts/kmod-postinst.sh) still resolve.
+          sed -e "s|{{ .Env.KVER }}|$KVER|g" \
+              -e "s|{{ .Env.KMOD_ARCH }}|$KMOD_ARCH|g" \
+              -e "s|{{ .Env.KMOD_VERSION }}|$KMOD_VERSION|g" \
+              -e "s|{{ .Env.KO_PATH }}|$KO_PATH|g" \
+              seaweedfs-vfs-kmod.yaml > seaweedfs-vfs-kmod.rendered.yaml
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
-          nfpm pkg -f seaweedfs-vfs-kmod.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-kmod.rendered.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-kmod.rendered.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
 
       - name: Checksums
