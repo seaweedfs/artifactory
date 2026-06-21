@@ -117,6 +117,11 @@ jobs:
           nfpm pkg -f seaweedfs-vfs.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
 
+      - name: GPG-sign packages
+        uses: ./.github/actions/gpg-sign-dist
+        with:
+          gpg_key: ${{ secrets.GPG_SIGNING_KEY }}
+
       - name: Checksums
         run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
 
@@ -157,6 +162,13 @@ jobs:
           nfpm pkg -f seaweedfs-vfs-dkms.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
           nfpm pkg -f seaweedfs-vfs-dkms.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
+
+      # Sign here AND publish the public key (single noarch job => no duplicate-upload race).
+      - name: GPG-sign packages
+        uses: ./.github/actions/gpg-sign-dist
+        with:
+          gpg_key: ${{ secrets.GPG_SIGNING_KEY }}
+          publish_pubkey: "true"
 
       - name: Checksums
         run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
@@ -273,6 +285,11 @@ jobs:
           nfpm pkg -f seaweedfs-vfs-kmod.rendered.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
           nfpm pkg -f seaweedfs-vfs-kmod.rendered.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: GPG-sign packages
+        uses: ./.github/actions/gpg-sign-dist
+        with:
+          gpg_key: ${{ secrets.GPG_SIGNING_KEY }}
 
       - name: Checksums
         run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
