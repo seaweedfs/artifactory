@@ -1,0 +1,59 @@
+name: "GPG-sign dist packages"
+description: >
+  rpm --addsign every .rpm and write a detached .asc for every .deb/.rpm in the
+  dist dir, for the hosted apt/yum repo path. Optionally export the public key.
+  No-op when no key is provided, so the release still runs without GPG_SIGNING_KEY.
+
+inputs:
+  gpg_key:
+    description: "ASCII-armored GPG private key. Empty => skip (no-op)."
+    required: false
+    default: ""
+  dist:
+    description: "Directory of packages to sign."
+    required: false
+    default: "dist"
+  publish_pubkey:
+    description: "Also export the public key into the dist dir. Enable in ONE job only (avoids duplicate uploads)."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: GPG-sign packages
+      shell: bash
+      env:
+        GPG_KEY: ${{ inputs.gpg_key }}
+        DIST: ${{ inputs.dist }}
+        PUBKEY: ${{ inputs.publish_pubkey }}
+      run: |
+        set -euo pipefail
+        if [ -z "${GPG_KEY:-}" ]; then
+          echo "GPG_SIGNING_KEY not set — skipping package signing"
+          exit 0
+        fi
+        sudo apt-get update
+        sudo apt-get install -y rpm gnupg
+        GNUPGHOME="$(mktemp -d)"; export GNUPGHOME
+        printf '%s' "$GPG_KEY" | gpg --batch --import
+        KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
+        [ -n "$KEYID" ] || { echo "no key imported" >&2; exit 1; }
+        echo "signing with $KEYID"
+        # rpm --addsign macros: key has no passphrase (%no-protection), so loopback
+        # pinentry signs non-interactively.
+        cat > "$HOME/.rpmmacros" <<EOF
+        %_gpg_name $KEYID
+        %__gpg_sign_cmd %{__gpg} gpg --no-verbose --no-armor --pinentry-mode loopback --no-secmem-warning -u "%{_gpg_name}" -sbo %{__signature_filename} --digest-algo sha256 %{__plaintext_filename}
+        EOF
+        shopt -s nullglob
+        for r in "$DIST"/*.rpm; do echo "addsign $r"; rpmsign --addsign "$r"; done
+        # Detached ASCII signatures for every package (deb + rpm) — repo-agnostic.
+        for f in "$DIST"/*.deb "$DIST"/*.rpm; do
+          gpg --batch --yes --armor --detach-sign -u "$KEYID" -o "$f.asc" "$f"
+        done
+        if [ "${PUBKEY:-false}" = "true" ]; then
+          gpg --armor --export "$KEYID" > "$DIST/seaweedfs-pubkey.asc"
+          echo "exported public key to $DIST/seaweedfs-pubkey.asc"
+        fi
+        ls -l "$DIST"
