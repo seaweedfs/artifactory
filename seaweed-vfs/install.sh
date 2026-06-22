@@ -36,10 +36,13 @@ API="https://api.github.com/repos/seaweedfs/artifactory"
 # the GitHub API (this repo also holds the 4.xx server builds, so filter to
 # vfs-* and version-sort). Pin one with SEAWEEDFS_VFS_RELEASE=vfs-0.0.9.
 if [ -z "$RELEASE" ]; then
-  RELEASE=$(curl -fsSL "${API}/releases?per_page=100" \
-    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"vfs-[0-9][0-9.]*"' \
-    | grep -o 'vfs-[0-9][0-9.]*' | sort -V | tail -1) \
+  # Keep the network fetch separate from the parse: under pipefail an empty
+  # grep would otherwise mask a successful query as a network error.
+  RELEASES=$(curl -fsSL "${API}/releases?per_page=100") \
     || die "could not query GitHub releases (network / rate limit?)"
+  RELEASE=$(printf '%s\n' "$RELEASES" \
+    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"vfs-[0-9][0-9.]*"' \
+    | grep -o 'vfs-[0-9][0-9.]*' | sort -V | tail -1) || true
   [ -n "$RELEASE" ] || die "no vfs-* release found in seaweedfs/artifactory"
   echo ">> latest release: ${RELEASE}"
 fi
