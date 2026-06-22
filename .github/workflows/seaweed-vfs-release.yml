@@ -323,12 +323,17 @@ jobs:
         if: ${{ hashFiles('seaweedvfs.ko') != '' }}
         run: |
           VERSION="${TAG#vfs-}"                       # vfs-0.5.0 -> 0.5.0
+          # A Docker tag allows only [A-Za-z0-9_.-]; Debian kernel releases carry a
+          # '+' (e.g. 6.12.94+deb13-amd64) that's illegal there. Sanitize any such
+          # char to '-' for the tag only — the kmod deb/rpm keep the raw $KVER so
+          # the /lib/modules/<kver> path still matches the host's `uname -r`.
+          KTAG=$(printf '%s' "$KVER" | tr -c 'A-Za-z0-9.-' '-')
           cp "$GITHUB_WORKSPACE/seaweedvfs.ko" \
              src/seaweed-vfs/packaging/k8s/baked/seaweedvfs.ko
           docker build -f src/seaweed-vfs/packaging/k8s/Dockerfile \
-            -t "${IMAGE}:${VERSION}-k${KVER}" src/seaweed-vfs
-          docker push "${IMAGE}:${VERSION}-k${KVER}"
-          echo "Pushed ${IMAGE}:${VERSION}-k${KVER} (kernel ${KVER})"
+            -t "${IMAGE}:${VERSION}-k${KTAG}" src/seaweed-vfs
+          docker push "${IMAGE}:${VERSION}-k${KTAG}"
+          echo "Pushed ${IMAGE}:${VERSION}-k${KTAG} (kernel ${KVER})"
 
   node-image:
     # Generic node-agent image for the DaemonSet (packaging/k8s/daemonset.yaml).
