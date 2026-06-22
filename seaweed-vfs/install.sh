@@ -7,7 +7,7 @@
 #
 # It installs prerequisites, fetches the two packages (the GPL module + the
 # closed-source daemon) from this repo's release, and DKMS builds the module for
-# THIS kernel. Override: SEAWEEDFS_VFS_RELEASE (default: vfs-latest),
+# THIS kernel. Override: SEAWEEDFS_VFS_RELEASE (default: newest vfs-* release),
 # SEAWEEDFS_VFS_BASE_URL, SEAWEEDFS_VFS_KMOD=1 (use a precompiled module
 # instead of DKMS — no toolchain).
 #
@@ -22,8 +22,7 @@
 # a fresh install).
 set -euo pipefail
 
-RELEASE="${SEAWEEDFS_VFS_RELEASE:-vfs-latest}"
-BASE_URL="${SEAWEEDFS_VFS_BASE_URL:-https://github.com/seaweedfs/artifactory/releases/download/${RELEASE}}"
+RELEASE="${SEAWEEDFS_VFS_RELEASE:-}"
 FILER="${FILER:-}"
 UPGRADE_REQ="${SEAWEEDFS_VFS_UPGRADE:-auto}"
 
@@ -31,8 +30,23 @@ die() { echo "install.sh: error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
 command -v curl >/dev/null || die "curl is required"
 
+API="https://api.github.com/repos/seaweedfs/artifactory"
+
+# Resolve the release tag. Default: auto-discover the newest vfs-* release via
+# the GitHub API (this repo also holds the 4.xx server builds, so filter to
+# vfs-* and version-sort). Pin one with SEAWEEDFS_VFS_RELEASE=vfs-0.0.9.
+if [ -z "$RELEASE" ]; then
+  RELEASE=$(curl -fsSL "${API}/releases?per_page=100" \
+    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"vfs-[0-9][0-9.]*"' \
+    | grep -o 'vfs-[0-9][0-9.]*' | sort -V | tail -1) \
+    || die "could not query GitHub releases (network / rate limit?)"
+  [ -n "$RELEASE" ] || die "no vfs-* release found in seaweedfs/artifactory"
+  echo ">> latest release: ${RELEASE}"
+fi
+BASE_URL="${SEAWEEDFS_VFS_BASE_URL:-https://github.com/seaweedfs/artifactory/releases/download/${RELEASE}}"
+
 # Detect the package version from the release assets (the dkms deb name embeds it).
-VERSION=$(curl -fsSL "https://api.github.com/repos/seaweedfs/artifactory/releases/tags/${RELEASE}" \
+VERSION=$(curl -fsSL "${API}/releases/tags/${RELEASE}" \
   | grep -o '"seaweedfs-vfs-dkms_[0-9][0-9.]*_all\.deb"' \
   | grep -o '[0-9][0-9.]*' | head -1) || true
 [ -n "$VERSION" ] || die "could not detect package version from release ${RELEASE}"
