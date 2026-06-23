@@ -240,7 +240,7 @@ elif [ -n "$FILER" ]; then
   if mount -t seaweedvfs "$FILER" "$MNT"; then
     echo ">> mounted ${FILER} at ${MNT}"
     echo ">> persist across reboots by adding to /etc/fstab:"
-    echo "     none ${MNT} seaweedvfs filer=${FILER},_netdev 0 0"
+    echo "     ${FILER} ${MNT} seaweedvfs _netdev 0 0"
   else
     echo ">> warning: could not mount (is the filer reachable? is systemd available?)"
     echo "     retry with:  mount -t seaweedvfs ${FILER} ${MNT}"
@@ -249,7 +249,7 @@ else
   echo ">> next: mount your filer — this starts the daemon on demand:"
   echo "     mkdir -p /mnt/seaweed && mount -t seaweedvfs HOST:18888 /mnt/seaweed"
   echo "   or persist it in /etc/fstab:"
-  echo "     none /mnt/seaweed seaweedvfs filer=HOST:18888,_netdev 0 0"
+  echo "     HOST:18888 /mnt/seaweed seaweedvfs _netdev 0 0"
 fi
 
 if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
