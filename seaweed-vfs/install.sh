@@ -2,7 +2,7 @@
 # SeaweedFS kernel VFS — one-shot installer. Run as root:
 #
 #   curl -fsSL https://raw.githubusercontent.com/seaweedfs/artifactory/main/seaweed-vfs/install.sh | sudo bash
-#   # or, to also point at a filer, start the daemon and be ready to mount:
+#   # or, to mount a filer at /mnt/seaweed right after install (MNT overrides the path):
 #   curl -fsSL https://raw.githubusercontent.com/seaweedfs/artifactory/main/seaweed-vfs/install.sh | sudo FILER=10.0.0.1:18888 bash
 #
 # It installs prerequisites, fetches the two packages (the GPL module + the
@@ -231,24 +231,25 @@ if [ -n "$UPGRADE" ]; then
     echo ">> upgrade complete: v${VERSION} active on ${KVER}"
   fi
 elif [ -n "$FILER" ]; then
-  echo ">> configuring filer ${FILER} and starting the daemon"
-  mkdir -p /etc/seaweedfs-vfs
-  touch /etc/seaweedfs-vfs/config
-  # awk with a literal -v value (sed would mangle & or \ in the filer address).
-  awk -v new="FILER=${FILER}" '
-    /^FILER=/ { print new; found=1; next }
-    { print }
-    END { if (!found) print new }
-  ' /etc/seaweedfs-vfs/config > "$tmp/config" && cp "$tmp/config" /etc/seaweedfs-vfs/config
-  systemctl enable seaweed-vfs.service || true
-  if [ -d /run/systemd/system ]; then
-    systemctl start seaweed-vfs.service \
-      || echo ">> warning: could not start seaweed-vfs.service (is the filer reachable?)"
+  # Mount-first: naming the filer at mount starts the per-filer
+  # seaweed-vfs@<filer> daemon on demand — no global default config, no standalone
+  # daemon. (For a boot-time daemon with no mount, see the operations guide.)
+  MNT="${MNT:-/mnt/seaweed}"
+  echo ">> mounting filer ${FILER} at ${MNT}"
+  mkdir -p "$MNT"
+  if mount -t seaweedvfs "$FILER" "$MNT"; then
+    echo ">> mounted ${FILER} at ${MNT}"
+    echo ">> persist across reboots by adding to /etc/fstab:"
+    echo "     none ${MNT} seaweedvfs filer=${FILER},_netdev 0 0"
+  else
+    echo ">> warning: could not mount (is the filer reachable? is systemd available?)"
+    echo "     retry with:  mount -t seaweedvfs ${FILER} ${MNT}"
   fi
-  echo ">> Mount with:  mkdir -p /mnt/seaweed && mount -t seaweedvfs none /mnt/seaweed"
 else
-  echo ">> next: set FILER in /etc/seaweedfs-vfs/config, then"
-  echo "   systemctl enable --now seaweed-vfs.service && mount -t seaweedvfs none /mnt/seaweed"
+  echo ">> next: mount your filer — this starts the daemon on demand:"
+  echo "     mkdir -p /mnt/seaweed && mount -t seaweedvfs HOST:18888 /mnt/seaweed"
+  echo "   or persist it in /etc/fstab:"
+  echo "     none /mnt/seaweed seaweedvfs filer=HOST:18888,_netdev 0 0"
 fi
 
 if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
