@@ -1,0 +1,183 @@
+name: "RDMA SoftRoCE Tests (seaweed-mono)"
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}/rdma-softroce-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast gate: the enterprise/rust workspace builds and its unit tests pass with
+  # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
+  rdma-off-build:
+    name: RDMA-off build + unit tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/rust/target
+          key: rust-rdma-${{ hashFiles('seaweedfs-source/enterprise/rust/Cargo.lock') }}
+          restore-keys: |
+            rust-rdma-
+
+      # Lib/bin build pulls no dev-deps, so the volume-server `rdma` feature and
+      # rdma-sys are never compiled here — this stays a pure RDMA-off check.
+      - name: Build enterprise/rust workspace (no RDMA)
+        run: cd seaweedfs-source/enterprise/rust && cargo build --workspace
+
+      - name: Unit tests (volume server, no RDMA)
+        run: cd seaweedfs-source/enterprise/rust && cargo test -p seaweedfs-volume-server
+
+  # Full-wire RDMA datapath over SoftRoCE (rdma_rxe): the read + write e2e tests
+  # drive a real volume server + gRPC + one-sided RDMA. Needs the rxe kernel
+  # module and root for verbs/rdma_cm.
+  rdma-softroce-e2e:
+    name: SoftRoCE e2e (read + staged write)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      # Build deps: protoc (tonic-build), clang/libclang (rdma-sys bindgen),
+      # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`/`ibv_devices`) and the
+      # userspace rxe provider (ibverbs-providers).
+      - name: Install build + RDMA userspace deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler clang libclang-dev \
+            libibverbs-dev librdmacm-dev rdma-core ibverbs-providers
+
+      - name: Bring up SoftRoCE (rdma_rxe)
+        run: |
+          set -euxo pipefail
+          # The rxe module ships in modules-extra on the runner kernel.
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || \
+            echo "linux-modules-extra not available; relying on in-tree rdma_rxe"
+          sudo modprobe rdma_rxe || { echo "::error::rdma_rxe module unavailable on $(uname -r)"; exit 1; }
+          NETDEV=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+          RXE_IP=$(ip -4 -o addr show "$NETDEV" | awk '{print $4}' | cut -d/ -f1)
+          echo "netdev=$NETDEV rxe_ip=$RXE_IP"
+          sudo rdma link add rxe0 type rxe netdev "$NETDEV"
+          rdma link
+          ibv_devices
+          # Fail loudly (not silently skip) if rxe didn't come up on this kernel.
+          rdma link show rxe0 >/dev/null 2>&1 || { echo "::error::SoftRoCE rxe0 unavailable on this runner kernel"; exit 1; }
+          echo "RXE_IP=$RXE_IP" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/rust/target
+          key: rust-rdma-${{ hashFiles('seaweedfs-source/enterprise/rust/Cargo.lock') }}
+          restore-keys: |
+            rust-rdma-
+
+      - name: Build RDMA e2e tests (real-rdma)
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma \
+            --test rdma_transport_e2e --test rdma_write_e2e --no-run
+
+      - name: Run RDMA e2e over SoftRoCE (sudo)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -uxo pipefail
+          cd seaweedfs-source/enterprise/rust
+          rc=0
+          for t in rdma_transport_e2e rdma_write_e2e; do
+            BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
+            if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
+            echo "== running $t :: $BIN =="
+            # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
+            if ! sudo -E env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+              bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
+              echo "::error::$t failed"; rc=1
+            fi
+          done
+          exit $rc
+
+      - name: Test summary
+        if: always()
+        run: |
+          {
+            echo "## RDMA SoftRoCE e2e summary"
+            echo "- Layer: SoftRoCE (rdma_rxe) over the runner NIC"
+            echo "- Tests: rdma_transport_e2e (read), rdma_write_e2e (staged write)"
+            echo "- Build: cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma"
+          } >> "$GITHUB_STEP_SUMMARY"
