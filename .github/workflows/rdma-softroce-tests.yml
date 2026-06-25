@@ -1,4 +1,4 @@
-name: "RDMA SoftRoCE Tests (seaweed-mono)"
+name: "RDMA software (siw) Tests (seaweed-mono)"
 run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
 
 on:
@@ -77,11 +77,11 @@ jobs:
       - name: Unit tests (volume server, no RDMA)
         run: cd seaweedfs-source/enterprise/rust && cargo test -p seaweedfs-volume-server
 
-  # Full-wire RDMA datapath over SoftRoCE (rdma_rxe): the read + write e2e tests
-  # drive a real volume server + gRPC + one-sided RDMA. Needs the rxe kernel
+  # Full-wire RDMA datapath over software RDMA (siw): the read + write e2e tests
+  # drive a real volume server + gRPC + one-sided RDMA. Needs the siw kernel
   # module and root for verbs/rdma_cm.
   rdma-softroce-e2e:
-    name: SoftRoCE e2e (read + staged write)
+    name: software RDMA e2e (read + staged write)
     runs-on: ubuntu-22.04
     timeout-minutes: 40
 
@@ -107,31 +107,36 @@ jobs:
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
 
       # Build deps: protoc (tonic-build), clang/libclang (rdma-sys bindgen),
-      # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`/`ibv_devices`) and the
-      # userspace rxe provider (ibverbs-providers).
+      # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`), ibverbs-utils
+      # (`ibv_devices`) and the userspace siw provider, libsiw (ibverbs-providers).
       - name: Install build + RDMA userspace deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             protobuf-compiler clang libclang-dev \
-            libibverbs-dev librdmacm-dev rdma-core ibverbs-providers
+            libibverbs-dev librdmacm-dev rdma-core ibverbs-providers ibverbs-utils
 
-      - name: Bring up SoftRoCE (rdma_rxe)
+      - name: Bring up software RDMA (siw / Soft-iWARP)
         run: |
           set -euxo pipefail
-          # The rxe module ships in modules-extra on the runner kernel.
+          # GitHub's ubuntu-22.04 runners boot the linux-azure kernel, which ships
+          # siw (Soft-iWARP) but NOT rdma_rxe (SoftRoCE) in modules-extra. siw drives
+          # the same RC verbs + rdma_cm (RDMA_PS_TCP) path these one-sided read/write
+          # e2e tests use, so it is a drop-in software RDMA transport here.
           sudo apt-get install -y "linux-modules-extra-$(uname -r)" || \
-            echo "linux-modules-extra not available; relying on in-tree rdma_rxe"
-          sudo modprobe rdma_rxe || { echo "::error::rdma_rxe module unavailable on $(uname -r)"; exit 1; }
+            echo "linux-modules-extra not available; relying on in-tree siw"
+          sudo modprobe siw || { echo "::error::siw module unavailable on $(uname -r)"; exit 1; }
           NETDEV=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
-          RXE_IP=$(ip -4 -o addr show "$NETDEV" | awk '{print $4}' | cut -d/ -f1)
-          echo "netdev=$NETDEV rxe_ip=$RXE_IP"
-          sudo rdma link add rxe0 type rxe netdev "$NETDEV"
+          RDMA_IP=$(ip -4 -o addr show "$NETDEV" | awk '{print $4}' | cut -d/ -f1)
+          echo "netdev=$NETDEV rdma_ip=$RDMA_IP"
+          sudo rdma link add siw0 type siw netdev "$NETDEV"
           rdma link
           ibv_devices
-          # Fail loudly (not silently skip) if rxe didn't come up on this kernel.
-          rdma link show rxe0 >/dev/null 2>&1 || { echo "::error::SoftRoCE rxe0 unavailable on this runner kernel"; exit 1; }
-          echo "RXE_IP=$RXE_IP" >> "$GITHUB_ENV"
+          # Fail loudly (not silently skip) if siw didn't come up on this kernel.
+          # `rdma link` names the link "<dev>/<port>" (e.g. siw0/1), so match by device.
+          rdma link | grep -q 'siw0' || { echo "::error::software RDMA siw0 unavailable on this runner kernel"; exit 1; }
+          # The e2e tests read the target IP from RXE_IP (kept as the test's contract).
+          echo "RXE_IP=$RDMA_IP" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -147,13 +152,21 @@ jobs:
           restore-keys: |
             rust-rdma-
 
+      # Explicitly compile the RDMA-gated volume server (staged write, commit,
+      # and the volume-to-volume RDMA replicator) so a compile error surfaces
+      # here rather than buried in the e2e test build below.
+      - name: Build volume server (RDMA)
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          cargo build -p seaweedfs-volume-server --features rdma
+
       - name: Build RDMA e2e tests (real-rdma)
         run: |
           cd seaweedfs-source/enterprise/rust
           cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma \
             --test rdma_transport_e2e --test rdma_write_e2e --no-run
 
-      - name: Run RDMA e2e over SoftRoCE (sudo)
+      - name: Run RDMA e2e over software RDMA (sudo)
         env:
           RUST_BACKTRACE: 1
         run: |
@@ -176,8 +189,8 @@ jobs:
         if: always()
         run: |
           {
-            echo "## RDMA SoftRoCE e2e summary"
-            echo "- Layer: SoftRoCE (rdma_rxe) over the runner NIC"
+            echo "## RDMA software (siw) e2e summary"
+            echo "- Layer: Soft-iWARP (siw) over the runner NIC"
             echo "- Tests: rdma_transport_e2e (read), rdma_write_e2e (staged write)"
             echo "- Build: cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma"
           } >> "$GITHUB_STEP_SUMMARY"
