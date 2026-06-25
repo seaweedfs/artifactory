@@ -152,6 +152,14 @@ jobs:
           restore-keys: |
             rust-rdma-
 
+      # Explicitly compile the RDMA-gated volume server (staged write, commit,
+      # and the volume-to-volume RDMA replicator) so a compile error surfaces
+      # here rather than buried in the e2e test build below.
+      - name: Build volume server (RDMA)
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          cargo build -p seaweedfs-volume-server --features rdma
+
       - name: Build RDMA e2e tests (real-rdma)
         run: |
           cd seaweedfs-source/enterprise/rust
