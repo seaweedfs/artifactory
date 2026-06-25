@@ -160,15 +160,16 @@ jobs:
           cd seaweedfs-source/enterprise/rust
           cargo build -p seaweedfs-volume-server --features rdma
 
-      # Build whichever e2e tests exist on the dispatched mono branch (read,
-      # staged write, volume-to-volume replication), so adding a test on a branch
-      # doesn't require touching this workflow and main stays green.
+      # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
+      # branch (read, staged write, replication, volume move, ...), so adding a
+      # test on a branch needs no workflow change and main stays green.
       - name: Build RDMA e2e tests (real-rdma)
         run: |
           cd seaweedfs-source/enterprise/rust
           TESTS=""
-          for t in rdma_transport_e2e rdma_write_e2e rdma_replicate_e2e; do
-            [ -f "sw-rdma-vfs/tests/$t.rs" ] && TESTS="$TESTS --test $t"
+          for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do
+            [ -e "$f" ] || continue
+            TESTS="$TESTS --test $(basename "$f" .rs)"
           done
           echo "building e2e tests:$TESTS"
           cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma $TESTS --no-run
@@ -180,8 +181,9 @@ jobs:
           set -uxo pipefail
           cd seaweedfs-source/enterprise/rust
           rc=0
-          for t in rdma_transport_e2e rdma_write_e2e rdma_replicate_e2e; do
-            [ -f "sw-rdma-vfs/tests/$t.rs" ] || continue
+          for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do
+            [ -e "$f" ] || continue
+            t=$(basename "$f" .rs)
             BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
