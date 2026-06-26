@@ -167,6 +167,15 @@ jobs:
           cd seaweedfs-source/enterprise/rust
           cargo build -p seaweedfs-volume-server --features rdma
 
+      # The shipped weed-volume (enterprise/seaweed-volume) now carries the native
+      # RDMA read path behind the same `rdma` feature / PrepareRdmaRead wire
+      # contract. The release builds it with --features rdma, so compile it here
+      # to surface breakage in the shipped server's RDMA path.
+      - name: Build shipped volume server (seaweed-volume, RDMA)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo build --features rdma
+
       # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
       # branch (read, staged write, replication, volume move, ...), so adding a
       # test on a branch needs no workflow change and main stays green.
