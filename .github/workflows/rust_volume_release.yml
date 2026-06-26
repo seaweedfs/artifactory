@@ -47,8 +47,10 @@ jobs:
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install build dependencies
+        # protobuf for tonic-build; clang/libclang for rdma-sys bindgen;
+        # ibverbs/rdmacm dev headers so the volume server links the rdma feature.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler clang libclang-dev libibverbs-dev librdmacm-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -63,11 +65,13 @@ jobs:
           echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64
+          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64 libibverbs-dev:arm64 librdmacm-dev:arm64
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "OPENSSL_DIR=/usr" >> "$GITHUB_ENV"
           echo "OPENSSL_INCLUDE_DIR=/usr/include" >> "$GITHUB_ENV"
           echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"
+          # rdma-sys runs bindgen; target arm64 so struct layouts match the .so.
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--target=aarch64-linux-gnu" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry and target
         uses: actions/cache@v5
@@ -80,6 +84,7 @@ jobs:
           restore-keys: |
             rust-enterprise-${{ matrix.target }}-
 
+      # Non-RDMA assets: no libibverbs linkage, run on any host. Default download.
       - name: Build Rust volume server (large disk)
         env:
           SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
@@ -94,22 +99,45 @@ jobs:
           cd seaweedfs-enterprise-source/enterprise/seaweed-volume
           cargo build --release --target ${{ matrix.target }} --no-default-features --target-dir target/normal
 
+      # RDMA assets: --features rdma links libibverbs/librdmacm, so these REQUIRE
+      # rdma-core at runtime even when RDMA is disabled. Published as separate
+      # -rdma binaries for RDMA-capable hosts.
+      - name: Build Rust volume server (large disk, RDMA)
+        env:
+          SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
+        run: |
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
+          cargo build --release --target ${{ matrix.target }} --features rdma --target-dir target/large-disk-rdma
+
+      - name: Build Rust volume server (normal, RDMA)
+        env:
+          SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
+        run: |
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
+          cargo build --release --target ${{ matrix.target }} --no-default-features --features rdma --target-dir target/normal-rdma
+
       - name: Package binaries
         run: |
-          # Build each variant into its own --target-dir so the second build
-          # doesn't overwrite the first at the shared release path.
+          # Each variant builds into its own --target-dir so they don't clobber
+          # the shared release path.
           root=seaweedfs-enterprise-source/enterprise/seaweed-volume/target
-          cp "$root/large-disk/${{ matrix.target }}/release/weed-volume" weed-volume-large-disk
-          tar czf weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz weed-volume-large-disk
-          rm weed-volume-large-disk
-
-          cp "$root/normal/${{ matrix.target }}/release/weed-volume" weed-volume-normal
-          tar czf weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz weed-volume-normal
-          rm weed-volume-normal
+          pkg() { # <target-dir> <inner-binary-name> <tar-basename>
+            cp "$root/$1/${{ matrix.target }}/release/weed-volume" "$2"
+            tar czf "$3.tar.gz" "$2"
+            rm "$2"
+          }
+          pkg large-disk      weed-volume-large-disk      weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}
+          pkg normal          weed-volume-normal          weed-volume-enterprise_${{ matrix.asset_suffix }}
+          pkg large-disk-rdma weed-volume-large-disk-rdma weed-volume-enterprise-rdma_large_disk_${{ matrix.asset_suffix }}
+          pkg normal-rdma     weed-volume-normal-rdma     weed-volume-enterprise-rdma_${{ matrix.asset_suffix }}
 
       - name: Generate md5 checksums
         run: |
-          for f in weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz; do
+          for f in \
+            weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz \
+            weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz \
+            weed-volume-enterprise-rdma_large_disk_${{ matrix.asset_suffix }}.tar.gz \
+            weed-volume-enterprise-rdma_${{ matrix.asset_suffix }}.tar.gz; do
             md5sum "$f" > "$f.md5"
           done
 
@@ -122,5 +150,9 @@ jobs:
             weed-volume-enterprise_large_disk_${{ matrix.asset_suffix }}.tar.gz.md5
             weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz
             weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
+            weed-volume-enterprise-rdma_large_disk_${{ matrix.asset_suffix }}.tar.gz
+            weed-volume-enterprise-rdma_large_disk_${{ matrix.asset_suffix }}.tar.gz.md5
+            weed-volume-enterprise-rdma_${{ matrix.asset_suffix }}.tar.gz
+            weed-volume-enterprise-rdma_${{ matrix.asset_suffix }}.tar.gz.md5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

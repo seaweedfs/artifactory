@@ -4,6 +4,7 @@ name: "seaweed-vfs: build + publish release packages"
 # the deb/rpm packages as assets on this repo's GitHub Release:
 #   * seaweedfs-vfs-dkms  (GPL kernel module source, noarch) -- built once
 #   * seaweedfs-vfs       (closed sw-kd daemon)              -- per arch (amd64, arm64)
+#   * seaweedfs-vfs-rdma  (RDMA sw-rdma-kd daemon)           -- per arch; needs rdma-core
 #   * seaweedfs-vfs-kmod  (precompiled .ko per exact kernel) -- fleets / hardened hosts
 # The .ko is NOT shipped in the daemon package; DKMS rebuilds it per kernel on the box.
 # Package version comes from the nfpm specs in seaweed-mono (keep them in sync
@@ -115,6 +116,105 @@ jobs:
           cd packaging/nfpm
           nfpm pkg -f seaweedfs-vfs.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
           nfpm pkg -f seaweedfs-vfs.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: GPG-sign packages
+        uses: ./.github/actions/gpg-sign-dist
+        with:
+          gpg_key: ${{ secrets.GPG_SIGNING_KEY }}
+
+      - name: Checksums
+        run: cd dist && for f in *.deb *.rpm; do md5sum "$f" > "$f.md5"; done
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  daemon-rdma:
+    name: "RDMA daemon package (${{ matrix.asset }})"
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            asset: linux_amd64
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            asset: linux_arm64
+            cross: true
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          REF="${MONO_REF}"
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+
+      - name: Install build deps
+        # protobuf (tonic-build), clang/libclang (rdma-sys bindgen), and the
+        # ibverbs/rdmacm dev headers the RDMA daemon links.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config clang libclang-dev libibverbs-dev librdmacm-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cross-compile tools (arm64)
+        if: matrix.cross
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libibverbs-dev:arm64 librdmacm-dev:arm64
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--target=aarch64-linux-gnu" >> "$GITHUB_ENV"
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/enterprise/rust/target
+          key: vfs-rdma-${{ matrix.target }}-${{ hashFiles('src/enterprise/rust/Cargo.lock') }}
+          restore-keys: vfs-rdma-${{ matrix.target }}-
+
+      - name: Build sw-rdma-kd daemon
+        working-directory: src/enterprise/rust
+        run: cargo build --release --features daemon -p seaweedfs-sw-rdma-vfs --bin sw-rdma-kd --target ${{ matrix.target }}
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build deb + rpm
+        working-directory: src/seaweed-vfs
+        run: |
+          mkdir -p target/release "$GITHUB_WORKSPACE/dist"
+          # The nfpm spec expects the daemon at target/release/sw-kd; drop the RDMA
+          # binary there so the mount/systemd glue is reused unchanged.
+          cp "$GITHUB_WORKSPACE/src/enterprise/rust/target/${{ matrix.target }}/release/sw-rdma-kd" target/release/sw-kd
+          sed -i "s/^arch: .*/arch: ${{ matrix.deb_arch }}/" packaging/nfpm/seaweedfs-vfs-rdma.yaml
+          grep -q "^arch: ${{ matrix.deb_arch }}$" packaging/nfpm/seaweedfs-vfs-rdma.yaml \
+            || { echo "failed to set arch in nfpm spec" >&2; exit 1; }
+          cd packaging/nfpm
+          nfpm pkg -f seaweedfs-vfs-rdma.yaml -p deb -t "$GITHUB_WORKSPACE/dist/"
+          nfpm pkg -f seaweedfs-vfs-rdma.yaml -p rpm -t "$GITHUB_WORKSPACE/dist/"
           ls -l "$GITHUB_WORKSPACE/dist/"
 
       - name: GPG-sign packages
