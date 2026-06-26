@@ -17,7 +17,7 @@ on:
         default: 'main'
 
 concurrency:
-  group: ${{ github.head_ref || github.run_id }}/rdma-softroce-tests
+  group: ${{ github.head_ref || github.run_id }}/rdma-software-tests
   cancel-in-progress: true
 
 permissions:
@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   # Fast gate: the enterprise/rust workspace builds and its unit tests pass with
-  # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
+  # RDMA OFF (the default, macOS-buildable path). No software RDMA required.
   rdma-off-build:
     name: RDMA-off build + unit tests
     runs-on: ubuntu-22.04
@@ -80,7 +80,7 @@ jobs:
   # Full-wire RDMA datapath over software RDMA (siw): the read + write e2e tests
   # drive a real volume server + gRPC + one-sided RDMA. Needs the siw kernel
   # module and root for verbs/rdma_cm.
-  rdma-softroce-e2e:
+  rdma-software-e2e:
     name: software RDMA e2e (read + staged write)
     runs-on: ubuntu-22.04
     timeout-minutes: 40
