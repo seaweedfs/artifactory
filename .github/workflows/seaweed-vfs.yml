@@ -174,3 +174,58 @@ jobs:
         run: |
           echo "=== weed.log ==="; tail -100 "$RUNNER_TEMP/weed.log" 2>/dev/null || true
           echo "=== swvfs.log ==="; tail -100 "$RUNNER_TEMP/swvfs.log" 2>/dev/null || true
+
+  # Full pjdfstest POSIX compliance suite against an sw-fuse mount — the VFS
+  # analogue of the Go mount's enterprise/test/pjdfstest. The harness starts a
+  # weed mini cluster, mounts sw-fuse, builds pjdfstest, and runs it under prove;
+  # ops sw-fuse does not implement yet are listed in
+  # seaweed-vfs/tests/pjdfstest/known_failures.txt and skipped.
+  pjdfstest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
+
+      - name: Install weed
+        run: |
+          curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin weed
+          weed version
+
+      - name: Enable FUSE allow_other
+        run: echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
+
+      - name: Build sw-fuse
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: cargo build --release -p sw-fuse --locked
+
+      - name: Run pjdfstest
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: bash tests/pjdfstest/run.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== pjdfstest logs ==="
+          tail -200 /tmp/sw-vfs-pjdfstest-logs/*.log 2>/dev/null || true
