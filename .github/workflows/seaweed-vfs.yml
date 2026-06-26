@@ -149,7 +149,8 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "$RUNNER_TEMP/mnt"
-          RUST_LOG=info ./target/debug/sw-fuse "$RUNNER_TEMP/mnt" --filer 127.0.0.1:18888 \
+          # weed server carries no enterprise license, so disable the gate for the test mount.
+          SEAWEED_DISABLE_ENTERPRISE_MODE=1 RUST_LOG=info ./target/debug/sw-fuse "$RUNNER_TEMP/mnt" --filer 127.0.0.1:18888 \
             > "$RUNNER_TEMP/swvfs.log" 2>&1 &
           SW=$!
           sleep 3
