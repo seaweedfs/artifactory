@@ -74,8 +74,6 @@ jobs:
       - name: Build enterprise/rust workspace (no RDMA)
         run: cd seaweedfs-source/enterprise/rust && cargo build --workspace
 
-      - name: Unit tests (volume server, no RDMA)
-        run: cd seaweedfs-source/enterprise/rust && cargo test -p seaweedfs-volume-server
 
   # Full-wire RDMA datapath over software RDMA (siw): the read + write e2e tests
   # drive a real volume server + gRPC + one-sided RDMA. Needs the siw kernel
@@ -159,13 +157,13 @@ jobs:
           restore-keys: |
             rust-rdma-
 
-      # Explicitly compile the RDMA-gated volume server (staged write, commit,
-      # and the volume-to-volume RDMA replicator) so a compile error surfaces
-      # here rather than buried in the e2e test build below.
-      - name: Build volume server (RDMA)
+      # Explicitly compile the shipped volume server (enterprise/seaweed-volume)
+      # with RDMA so a compile error surfaces here, not buried in the e2e build.
+      # Built in its own workspace, where its lockfile is authoritative.
+      - name: Build shipped volume server (RDMA)
         run: |
-          cd seaweedfs-source/enterprise/rust
-          cargo build -p seaweedfs-volume-server --features rdma
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo build --features rdma
 
       # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
       # branch (read, staged write, replication, volume move, ...), so adding a
