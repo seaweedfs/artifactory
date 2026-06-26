@@ -126,17 +126,24 @@ jobs:
           sudo apt-get install -y "linux-modules-extra-$(uname -r)" || \
             echo "linux-modules-extra not available; relying on in-tree siw"
           sudo modprobe siw || { echo "::error::siw module unavailable on $(uname -r)"; exit 1; }
-          NETDEV=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
-          RDMA_IP=$(ip -4 -o addr show "$NETDEV" | awk '{print $4}' | cut -d/ -f1)
-          echo "netdev=$NETDEV rdma_ip=$RDMA_IP"
-          sudo rdma link add siw0 type siw netdev "$NETDEV"
+          # Give siw its own dummy netdev with a private IP. eth0 also carries
+          # Azure's hardware RDMA device (mana_0), which hijacks rdma_cm IP->device
+          # resolution and fails create_ep with ENODEV; and rdma_cm refuses to bind
+          # a device to a loopback (127.0.0.1) address ("no device context"). A
+          # private IP on a dummy interface maps only to siw0 and is a real
+          # (non-loopback) device context; same-host connects deliver locally.
+          sudo modprobe dummy || true
+          sudo ip link add swrdma0 type dummy
+          sudo ip addr add 10.99.0.1/24 dev swrdma0
+          sudo ip link set swrdma0 up
+          sudo rdma link add siw0 type siw netdev swrdma0
           rdma link
           ibv_devices
           # Fail loudly (not silently skip) if siw didn't come up on this kernel.
           # `rdma link` names the link "<dev>/<port>" (e.g. siw0/1), so match by device.
           rdma link | grep -q 'siw0' || { echo "::error::software RDMA siw0 unavailable on this runner kernel"; exit 1; }
           # The e2e tests read the target IP from RXE_IP (kept as the test's contract).
-          echo "RXE_IP=$RDMA_IP" >> "$GITHUB_ENV"
+          echo "RXE_IP=10.99.0.1" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -160,11 +167,19 @@ jobs:
           cd seaweedfs-source/enterprise/rust
           cargo build -p seaweedfs-volume-server --features rdma
 
+      # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
+      # branch (read, staged write, replication, volume move, ...), so adding a
+      # test on a branch needs no workflow change and main stays green.
       - name: Build RDMA e2e tests (real-rdma)
         run: |
           cd seaweedfs-source/enterprise/rust
-          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma \
-            --test rdma_transport_e2e --test rdma_write_e2e --no-run
+          TESTS=""
+          for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do
+            [ -e "$f" ] || continue
+            TESTS="$TESTS --test $(basename "$f" .rs)"
+          done
+          echo "building e2e tests:$TESTS"
+          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma $TESTS --no-run
 
       - name: Run RDMA e2e over software RDMA (sudo)
         env:
@@ -173,7 +188,9 @@ jobs:
           set -uxo pipefail
           cd seaweedfs-source/enterprise/rust
           rc=0
-          for t in rdma_transport_e2e rdma_write_e2e; do
+          for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do
+            [ -e "$f" ] || continue
+            t=$(basename "$f" .rs)
             BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
