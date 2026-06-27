@@ -200,12 +200,50 @@ jobs:
           done
           exit $rc
 
+      # The shipped volume server (enterprise/seaweed-volume) is a separate crate
+      # with its own RDMA e2e tests (volume move over one-sided RDMA), built with
+      # the `rdma` + `test-support` features. Auto-discovered like the sw-rdma-vfs
+      # set so adding a test on a branch needs no workflow change.
+      - name: Build shipped volume server RDMA e2e tests (rdma)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          TESTS=""
+          for f in tests/rdma_*_e2e.rs; do
+            [ -e "$f" ] || continue
+            TESTS="$TESTS --test $(basename "$f" .rs)"
+          done
+          if [ -z "$TESTS" ]; then echo "no shipped-volume RDMA e2e tests"; exit 0; fi
+          echo "building shipped-volume e2e tests:$TESTS"
+          cargo test --features rdma,test-support $TESTS --no-run
+
+      - name: Run shipped volume server RDMA e2e over software RDMA (sudo)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -uxo pipefail
+          cd seaweedfs-source/enterprise/seaweed-volume
+          rc=0
+          for f in tests/rdma_*_e2e.rs; do
+            [ -e "$f" ] || continue
+            t=$(basename "$f" .rs)
+            BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
+            if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
+            echo "== running $t :: $BIN =="
+            # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
+            if ! sudo -E env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+              bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
+              echo "::error::$t failed"; rc=1
+            fi
+          done
+          exit $rc
+
       - name: Test summary
         if: always()
         run: |
           {
             echo "## RDMA software (siw) e2e summary"
             echo "- Layer: Soft-iWARP (siw) over the runner NIC"
-            echo "- Tests: rdma_transport_e2e (read), rdma_write_e2e (staged write)"
-            echo "- Build: cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma"
+            echo "- sw-rdma-vfs: rdma_transport_e2e (read), rdma_write_e2e (staged write)"
+            echo "- seaweed-volume: rdma_copy_e2e (volume move)"
+            echo "- Build: sw-rdma-vfs (real-rdma) + seaweed-volume (rdma,test-support)"
           } >> "$GITHUB_STEP_SUMMARY"
