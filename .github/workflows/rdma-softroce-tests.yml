@@ -74,6 +74,18 @@ jobs:
       - name: Build enterprise/rust workspace (no RDMA)
         run: cd seaweedfs-source/enterprise/rust && cargo build --workspace
 
+      # `cargo build` skips #[cfg(test)] code, so the unit tests were compiled
+      # nowhere. Run them here (real-rdma still off ⇒ no rdma-sys) so the RDMA-off
+      # logic (parse_fid length bounds, etc.) is actually exercised.
+      - name: enterprise/rust workspace unit tests (no RDMA)
+        run: cd seaweedfs-source/enterprise/rust && cargo test --workspace --lib
+
+      # The shipped volume server's RDMA-off runtime contract: every control-plane
+      # RPC must degrade (prepare ok=false / commit Unimplemented / finish ok) so
+      # the VFS client falls back to HTTP. Gated cfg(not(rdma)); belongs on this job.
+      - name: Shipped volume server RDMA-off contract test
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo test --features test-support --test rdma_disabled_contract
+
 
   # Full-wire RDMA datapath over software RDMA (siw): the read + write e2e tests
   # drive a real volume server + gRPC + one-sided RDMA. Needs the siw kernel
@@ -168,6 +180,14 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo build --features rdma
+
+      # The shipped volume server's lib unit tests cover the RDMA gates (deleted/
+      # TTL needle rejection, EC shard path/locate/needle-info) and runtime ABA
+      # detection — pure logic, no device — so run them with rdma on (no sudo).
+      - name: Shipped volume server unit tests (RDMA on)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test --features rdma --lib
 
       # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
       # branch (read, staged write, replication, volume move, ...), so adding a
