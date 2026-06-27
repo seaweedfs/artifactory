@@ -15,6 +15,7 @@ on:
   workflow_run:
     workflows:
       - "go: build binary (seaweed-mono)"
+      - "RDMA software (siw) Tests (seaweed-mono)"
       - "End to End (seaweed-mono)"
       - "EC Integration Tests (seaweed-mono)"
       - "EC Repair Plugin Worker (seaweed-mono)"
