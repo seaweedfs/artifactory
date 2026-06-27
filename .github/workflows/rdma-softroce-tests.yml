@@ -146,6 +146,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Caches both the enterprise/rust workspace and the separate shipped
+      # volume-server (enterprise/seaweed-volume) target dirs — this job builds
+      # both — keyed off both lockfiles so a change to either invalidates.
       - name: Cache cargo registry and target
         uses: actions/cache@v5
         with:
@@ -153,7 +156,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             seaweedfs-source/enterprise/rust/target
-          key: rust-rdma-${{ hashFiles('seaweedfs-source/enterprise/rust/Cargo.lock') }}
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-rdma-${{ hashFiles('seaweedfs-source/enterprise/rust/Cargo.lock', 'seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
           restore-keys: |
             rust-rdma-
 
@@ -240,10 +244,13 @@ jobs:
       - name: Test summary
         if: always()
         run: |
+          # Derive the listed tests from the same glob the build/run steps use, so
+          # a newly added rdma_*_e2e.rs shows up here with no workflow change.
+          vfs=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
+          vol=$(cd seaweedfs-source/enterprise/seaweed-volume 2>/dev/null && for f in tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           {
             echo "## RDMA software (siw) e2e summary"
             echo "- Layer: Soft-iWARP (siw) over the runner NIC"
-            echo "- sw-rdma-vfs: rdma_transport_e2e (read), rdma_write_e2e (staged write)"
-            echo "- seaweed-volume: rdma_copy_e2e (volume move)"
-            echo "- Build: sw-rdma-vfs (real-rdma) + seaweed-volume (rdma,test-support)"
+            echo "- sw-rdma-vfs (real-rdma): ${vfs:-none}"
+            echo "- seaweed-volume (rdma,test-support): ${vol:-none}"
           } >> "$GITHUB_STEP_SUMMARY"
