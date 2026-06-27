@@ -74,6 +74,15 @@ jobs:
       - name: Build enterprise/rust workspace (no RDMA)
         run: cd seaweedfs-source/enterprise/rust && cargo build --workspace
 
+      # The shipped volume server's RDMA-off runtime contract: every control-plane
+      # RPC must degrade (prepare ok=false / commit Unimplemented / finish ok) so
+      # the VFS client falls back to HTTP. Gated cfg(not(rdma)). seaweed-volume has
+      # no rdma-sys dependency, so this builds without libibverbs (unlike the
+      # enterprise/rust workspace, whose dev-deps drag in rdma-sys under `cargo
+      # test` — those unit tests run on the SoftRoCE job below instead).
+      - name: Shipped volume server RDMA-off contract test
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo test --features test-support --test rdma_disabled_contract
+
 
   # Full-wire RDMA datapath over software RDMA (siw): the read + write e2e tests
   # drive a real volume server + gRPC + one-sided RDMA. Needs the siw kernel
@@ -168,6 +177,20 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo build --features rdma
+
+      # The shipped volume server's lib unit tests cover the RDMA gates (deleted/
+      # TTL needle rejection, EC shard path/locate/needle-info) and runtime ABA
+      # detection — pure logic, no device — so run them with rdma on (no sudo).
+      - name: Shipped volume server unit tests (RDMA on)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test --features rdma --lib
+
+      # sw-rdma-vfs lib unit tests (e.g. parse_fid length bounds). cargo test pulls
+      # rdma-sys via dev-deps, so these run on this job (libibverbs installed),
+      # reusing the real-rdma build from the e2e step above.
+      - name: sw-rdma-vfs unit tests (real-rdma)
+        run: cd seaweedfs-source/enterprise/rust && cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma --lib
 
       # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
       # branch (read, staged write, replication, volume move, ...), so adding a
