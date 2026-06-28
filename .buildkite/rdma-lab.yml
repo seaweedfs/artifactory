@@ -1,0 +1,15 @@
+agents:
+  queue: "m01-rdma"
+
+env:
+  RDMA_CI_PROFILE: "${RDMA_CI_PROFILE:-unified}"
+  RDMA_CI_MONO_REF: "${BUILDKITE_BRANCH:-main}"
+
+steps:
+  - label: "RDMA lab: ${RDMA_CI_PROFILE}"
+    key: "rdma-lab"
+    timeout_in_minutes: 120
+    command:
+      - "bash rdma-lab-ci/run-mono-rdma-lab.sh --ref \"$RDMA_CI_MONO_REF\" --profile \"$RDMA_CI_PROFILE\""
+    artifact_paths:
+      - "rdma-lab-runs/**/*"
