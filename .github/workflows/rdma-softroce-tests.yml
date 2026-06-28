@@ -192,6 +192,15 @@ jobs:
       - name: sw-rdma-vfs unit tests (real-rdma)
         run: cd seaweedfs-source/enterprise/rust && cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma --lib
 
+      # Build the shared RDMA loader/object surface with real RDMA enabled. This
+      # catches libibverbs/rdma_cm link breakage in the code used by object/S3
+      # coordinator paths without making a hardware performance claim.
+      - name: Build RDMA loader/object clients (real-rdma)
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          cargo test -p seaweedfs-sw-rdma-loader -p seaweedfs-sw-rdma-object --features real-rdma --lib --no-run
+          cargo build -p seaweedfs-sw-rdma-object --features real-rdma --bins
+
       # Build every sw-rdma-vfs/tests/rdma_*_e2e.rs present on the dispatched mono
       # branch (read, staged write, replication, volume move, ...), so adding a
       # test on a branch needs no workflow change and main stays green.
@@ -224,6 +233,45 @@ jobs:
               bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
               echo "::error::$t failed"; rc=1
             fi
+          done
+          exit $rc
+
+      # Optional object/loader e2e tests. These are auto-discovered from the
+      # dispatched seaweed-mono branch, so adding an RDMA object correctness test
+      # in mono next month does not require another artifactory workflow change.
+      - name: Build object/loader RDMA e2e tests (real-rdma)
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          for root in sw-rdma-loader sw-rdma-object; do
+            TESTS=""
+            for f in "$root"/tests/rdma_*_e2e.rs; do
+              [ -e "$f" ] || continue
+              TESTS="$TESTS --test $(basename "$f" .rs)"
+            done
+            [ -n "$TESTS" ] || { echo "no $root RDMA e2e tests"; continue; }
+            echo "building $root e2e tests:$TESTS"
+            cargo test -p seaweedfs-${root} --features real-rdma $TESTS --no-run
+          done
+
+      - name: Run object/loader RDMA e2e over software RDMA (sudo)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -uxo pipefail
+          cd seaweedfs-source/enterprise/rust
+          rc=0
+          for root in sw-rdma-loader sw-rdma-object; do
+            for f in "$root"/tests/rdma_*_e2e.rs; do
+              [ -e "$f" ] || continue
+              t=$(basename "$f" .rs)
+              BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
+              if [ -z "$BIN" ]; then echo "::error::test binary for $root/$t not found"; exit 1; fi
+              echo "== running $root/$t :: $BIN =="
+              if ! sudo -E env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+                bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
+                echo "::error::$root/$t failed"; rc=1
+              fi
+            done
           done
           exit $rc
 
@@ -270,10 +318,14 @@ jobs:
           # Derive the listed tests from the same glob the build/run steps use, so
           # a newly added rdma_*_e2e.rs shows up here with no workflow change.
           vfs=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
+          loader=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-loader/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
+          object=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-object/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           vol=$(cd seaweedfs-source/enterprise/seaweed-volume 2>/dev/null && for f in tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           {
             echo "## RDMA software (siw) e2e summary"
             echo "- Layer: Soft-iWARP (siw) over the runner NIC"
+            echo "- sw-rdma-loader (real-rdma): ${loader:-none}"
+            echo "- sw-rdma-object (real-rdma): ${object:-none}"
             echo "- sw-rdma-vfs (real-rdma): ${vfs:-none}"
             echo "- seaweed-volume (rdma,test-support): ${vol:-none}"
           } >> "$GITHUB_STEP_SUMMARY"
