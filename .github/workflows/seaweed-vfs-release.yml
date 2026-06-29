@@ -21,7 +21,7 @@ name: "seaweed-vfs: build + publish release packages"
 on:
   push:
     tags:
-      - 'vfs-*'           # e.g. tag this repo vfs-0.5.0
+      - 'vfs-*'           # e.g. tag this repo vfs-0.1.2
   workflow_dispatch:
     inputs:
       tag_name:
@@ -322,7 +322,7 @@ jobs:
       - name: Bake + push node image (:<ver>-k<kver>)
         if: ${{ hashFiles('seaweedvfs.ko') != '' }}
         run: |
-          VERSION="${TAG#vfs-}"                       # vfs-0.5.0 -> 0.5.0
+          VERSION="${TAG#vfs-}"                       # vfs-0.1.2 -> 0.1.2
           # A Docker tag allows only [A-Za-z0-9_.-]; Debian kernel releases carry a
           # '+' (e.g. 6.12.94+deb13-amd64) that's illegal there. Sanitize any such
           # char to '-' for the tag only — the kmod deb/rpm keep the raw $KVER so
@@ -369,7 +369,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute image version
-        run: echo "VERSION=${TAG#vfs-}" >> "$GITHUB_ENV"   # vfs-0.5.0 -> 0.5.0
+        run: echo "VERSION=${TAG#vfs-}" >> "$GITHUB_ENV"   # vfs-0.1.2 -> 0.1.2
 
       - name: Build + push generic node image
         uses: docker/build-push-action@v6

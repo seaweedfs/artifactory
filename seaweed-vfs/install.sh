@@ -55,7 +55,7 @@ VERSION=$(curl -fsSL "${API}/releases/tags/${RELEASE}" \
 [ -n "$VERSION" ] || die "could not detect package version from release ${RELEASE}"
 
 # nfpm stamps RPMs with a release number (its default is "1"), so the assets are
-# e.g. seaweedfs-vfs-0.5.0-1.x86_64.rpm; DEBs carry no release. Bump this if the
+# e.g. seaweedfs-vfs-0.1.2-1.x86_64.rpm; DEBs carry no release. Bump this if the
 # nfpm specs ever set a non-default RPM release (override: SEAWEEDFS_VFS_RPM_REL).
 RPM_REL="${SEAWEEDFS_VFS_RPM_REL:-1}"
 
