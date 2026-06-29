@@ -72,6 +72,51 @@ http://M01:8091/
 Each run directory contains `index.html`, `run.log`, `provenance.txt`, and
 `summary.env`.
 
+## Polling Mode on M01
+
+The M01 lab can run without GitHub Actions or Buildkite. A systemd timer polls a
+configured mono branch and runs the hardware gate only when the branch SHA
+changes.
+
+Installed paths on M01:
+
+```text
+/opt/rdma-lab-ci/poller.sh
+/etc/rdma-lab-ci/poller.env
+/var/lib/rdma-lab-ci/
+/var/log/rdma-lab-ci/
+```
+
+Systemd units:
+
+```bash
+sudo systemctl status rdma-lab-poller.timer
+sudo systemctl status rdma-lab-poller.service
+```
+
+Current config shape:
+
+```bash
+MONO_REPO=git@github.com:seaweedfs/seaweed-mono.git
+MONO_REF=rdma/transfer-context-v2-ci
+PROFILE=unified
+RUNNER=/opt/rdma-lab-ci/artifactory/rdma-lab-ci/run-mono-rdma-lab.sh
+ARTIFACT_DIR=/opt/rdma-lab-ci/artifacts
+ARTIFACT_BASE_URL=http://192.168.1.181:8091
+NOTIFY_EMAIL=
+ENABLE_DC=0
+SKIP_UNCHANGED=1
+```
+
+Email is optional. Set `NOTIFY_EMAIL` in `/etc/rdma-lab-ci/poller.env` and make
+sure M01's `mail` command can deliver externally:
+
+```bash
+echo test | mail -s "RDMA lab email test" you@example.com
+```
+
+When `NOTIFY_EMAIL` is empty, the poller prints `MAIL_SKIPPED`.
+
 ## Pass Criteria
 
 The run must print:
