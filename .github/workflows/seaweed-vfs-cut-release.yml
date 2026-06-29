@@ -63,7 +63,17 @@ jobs:
           perl -pi -e "s/^version: \"[0-9.]+\"/version: \"$V\"/" \
             seaweed-vfs/packaging/nfpm/seaweedfs-vfs.yaml \
             seaweed-vfs/packaging/nfpm/seaweedfs-vfs-dkms.yaml
+          # The dkms spec also hardcodes the DKMS source dir /usr/src/seaweedfs-vfs-<V>/
+          # (nfpm can't template a contents dst), so bump it too — otherwise the
+          # package version and the installed source dir drift apart (this is what
+          # produced the old 0.5.0-vs-0.1.2 mismatch). The install scriptlets derive
+          # their version from that dir at runtime, so they need no bump.
+          perl -pi -e "s{/usr/src/seaweedfs-vfs-[0-9.]+/}{/usr/src/seaweedfs-vfs-$V/}g" \
+            seaweed-vfs/packaging/nfpm/seaweedfs-vfs-dkms.yaml
           grep -q "version: \"$V\"" seaweed-vfs/packaging/nfpm/seaweedfs-vfs.yaml || { echo "mono nfpm bump failed" >&2; exit 1; }
+          grep -q "/usr/src/seaweedfs-vfs-$V/" seaweed-vfs/packaging/nfpm/seaweedfs-vfs-dkms.yaml || { echo "mono dkms dst-dir bump failed" >&2; exit 1; }
+          # Fail the release if any version reference is still out of sync.
+          bash seaweed-vfs/tests/check_pkg_versions.sh
           if git diff --quiet; then
             echo "mono already at $V — nothing to commit"
           else

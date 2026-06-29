@@ -16,6 +16,13 @@ on:
         required: false
         default: 'main'
 
+  # Nightly against main — catches distro kernel bumps that break the shipped
+  # module source even when nothing in seaweed-mono changed (the reported issue:
+  # a 7.0 point release moved a VFS API under unchanged 0.1.2 source). On a
+  # schedule trigger the clone step falls back to the main branch.
+  schedule:
+    - cron: '0 4 * * *'
+
 concurrency:
   group: ${{ github.head_ref || github.run_id }}/seaweed-vfs
   cancel-in-progress: true
@@ -31,6 +38,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -48,6 +57,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libfuse3-dev pkg-config
@@ -67,6 +79,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -84,6 +98,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Build seaweedvfs.ko in debian:trixie
         run: |
@@ -98,13 +115,43 @@ jobs:
               ls -l kernel/seaweedvfs.ko
             '
 
-  # End-to-end FUSE smoke test against a real single-node SeaweedFS cluster.
-  fuse-smoke:
+  # Regression guard for the reported issue: the *packaged* DKMS source (what
+  # `apt/dnf install seaweedfs-vfs-dkms` drops in /usr/src and DKMS builds against
+  # the running kernel) failed to compile on a newer kernel after a VFS API change.
+  # The `kernel` job above only builds the in-tree source against one kernel
+  # (trixie 6.12), so it missed it. Here we build the real package and compile its
+  # source against a span of kernels — crucially 7.0 (sid) and rawhide, NEWER than
+  # the deploy kernel — and assert the package version is internally consistent.
+  dkms-package:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # rawhide is a non-blocking canary; the fixed-kernel entries are required.
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "6.12 · Debian trixie"
+            image: debian:trixie
+            pkg: deb
+            install: apt-get update && apt-get install -y build-essential linux-headers-amd64
+            kdir_glob: /usr/src/linux-headers-*-amd64
+          - label: "7.0 · Debian sid"
+            image: debian:sid
+            pkg: deb
+            install: apt-get update && apt-get install -y build-essential linux-headers-amd64
+            kdir_glob: /usr/src/linux-headers-*-amd64
+          - label: "newest · Fedora rawhide"
+            image: fedora:rawhide
+            pkg: rpm
+            install: dnf install -y gcc make kernel-devel cpio rpm
+            kdir_glob: /usr/src/kernels/*
+            optional: true
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -122,6 +169,66 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducibility (match the release path)
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build the seaweedfs-vfs-dkms package
+        working-directory: seaweedfs-source/seaweed-vfs/packaging/nfpm
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          nfpm pkg -f seaweedfs-vfs-dkms.yaml -p ${{ matrix.pkg }} -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: Check package version consistency
+        working-directory: seaweedfs-source/seaweed-vfs
+        run: bash tests/check_pkg_versions.sh
+
+      - name: Build packaged source against ${{ matrix.label }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work ${{ matrix.image }} \
+            bash -euxc '
+              ${{ matrix.install }}
+              KDIR=$(ls -d ${{ matrix.kdir_glob }} | grep -vi common | sort -V | tail -1)
+              test -d "$KDIR"
+              PKG=$(ls /work/dist/seaweedfs-vfs-dkms*.${{ matrix.pkg }} | sort -V | tail -1)
+              bash /work/seaweedfs-source/seaweed-vfs/tests/dkms_pkg_build.sh "$PKG" "$KDIR"
+            '
+
+  # End-to-end FUSE smoke test against a real single-node SeaweedFS cluster.
+  fuse-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+          if [ "$BRANCH" = "null" ]; then
+            BRANCH="main"
+          fi
+          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
@@ -187,6 +294,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -204,6 +313,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
