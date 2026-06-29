@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -55,6 +57,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libfuse3-dev pkg-config
@@ -74,6 +79,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -91,6 +98,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Build seaweedvfs.ko in debian:trixie
         run: |
@@ -140,6 +150,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -157,10 +169,13 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install nfpm
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducibility (match the release path)
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build the seaweedfs-vfs-dkms package
@@ -192,6 +207,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -209,6 +226,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
@@ -274,6 +294,8 @@ jobs:
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
       - name: Clone seaweed-mono source
         env:
@@ -291,6 +313,9 @@ jobs:
           if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
           echo "Cloning branch: $BRANCH"
           git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+          # Drop the embedded token from .git/config: the workspace is bind-mounted
+          # into the build containers, so the remote URL must not carry the secret.
+          git -C seaweedfs-source remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential

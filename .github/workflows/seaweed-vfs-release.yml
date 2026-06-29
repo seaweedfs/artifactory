@@ -99,7 +99,7 @@ jobs:
 
       - name: Install nfpm
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducible release packaging
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build deb + rpm
@@ -152,7 +152,7 @@ jobs:
 
       - name: Install nfpm
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducible release packaging
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build dkms package (deb + rpm, noarch)
@@ -259,7 +259,7 @@ jobs:
 
       - name: Install nfpm
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducible release packaging
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Package seaweedfs-vfs-kmod
