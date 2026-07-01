@@ -42,7 +42,87 @@ env:
   IMAGE: ghcr.io/seaweedfs/seaweedfs-vfs
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # RELEASE GATE — compile the ACTUAL shipped DKMS package before anything is
+  # published. The seaweedfs-vfs-dkms 0.1.2 deb reached users un-compiled: this
+  # publish workflow only *packaged* the source, so a VFS API change that broke
+  # the module on a 7.0 kernel shipped anyway. This job builds the real package
+  # and compiles its /usr/src source against the deploy kernel (6.12) AND the
+  # next one (7.0 sid, plus a rawhide canary), and checks version consistency —
+  # reusing the seaweed-mono guards (tests/dkms_pkg_build.sh,
+  # tests/check_pkg_versions.sh). Every publish job below `needs: verify`, so a
+  # build break blocks the release instead of shipping. Mirrors the per-push
+  # dkms-package job in seaweed-vfs.yml, but as a required release gate.
+  verify:
+    name: "verify DKMS source compiles (${{ matrix.label }})"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    continue-on-error: ${{ matrix.optional || false }}   # rawhide = non-blocking canary
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "6.12 · Debian trixie"
+            image: debian:trixie
+            pkg: deb
+            install: apt-get update && apt-get install -y build-essential linux-headers-amd64
+            kdir_glob: /usr/src/linux-headers-*-amd64
+          - label: "7.0 · Debian sid"
+            image: debian:sid
+            pkg: deb
+            install: apt-get update && apt-get install -y build-essential linux-headers-amd64
+            kdir_glob: /usr/src/linux-headers-*-amd64
+          - label: "newest · Fedora rawhide"
+            image: fedora:rawhide
+            pkg: rpm
+            install: dnf install -y gcc make kernel-devel cpio rpm
+            kdir_glob: /usr/src/kernels/*
+            optional: true
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a token in .git/config (bind-mounted into the container)
+
+      - name: Clone seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          REF="${MONO_REF}"
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
+          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          # Drop the embedded token: the workspace is bind-mounted into the build container.
+          git -C src remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
+
+      - name: Install nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned (match the publish jobs)
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build the seaweedfs-vfs-dkms package
+        working-directory: src/seaweed-vfs/packaging/nfpm
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          nfpm pkg -f seaweedfs-vfs-dkms.yaml -p ${{ matrix.pkg }} -t "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist/"
+
+      - name: Check package version consistency
+        working-directory: src/seaweed-vfs
+        run: bash tests/check_pkg_versions.sh
+
+      - name: Compile the packaged source against ${{ matrix.label }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work ${{ matrix.image }} \
+            bash -euxc '
+              ${{ matrix.install }}
+              KDIR=$(ls -d ${{ matrix.kdir_glob }} | grep -vi common | sort -V | tail -1)
+              test -d "$KDIR"
+              PKG=$(ls /work/dist/seaweedfs-vfs-dkms*.${{ matrix.pkg }} | sort -V | tail -1)
+              bash /work/src/seaweed-vfs/tests/dkms_pkg_build.sh "$PKG" "$KDIR"
+            '
+
   daemon:
+    needs: verify
     name: "daemon package (${{ matrix.asset }})"
     permissions:
       contents: write
@@ -134,6 +214,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   dkms:
+    needs: verify
     name: "dkms source package"
     permissions:
       contents: write
@@ -182,6 +263,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   kmod:
+    needs: verify
     # Precompiled seaweedvfs.ko per EXACT kernel, for fleets / hardened hosts that
     # can't run DKMS. A .ko only loads on the kernel whose headers it was built
     # against (vermagic must match), so the matrix entries below are examples —
@@ -336,6 +418,7 @@ jobs:
           echo "Pushed ${IMAGE}:${VERSION}-k${KTAG} (kernel ${KVER})"
 
   node-image:
+    needs: verify
     # Generic node-agent image for the DaemonSet (packaging/k8s/daemonset.yaml).
     # No .ko baked in: it loads the module from the host's /lib/modules (DKMS or
     # the seaweedfs-vfs-kmod package on the node). This is the image the daemonset
@@ -381,6 +464,7 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ env.VERSION }}
 
   talos-extension:
+    needs: verify
     # Host-native, SecureBoot-capable path for Talos Linux (what Cozystack runs).
     #
     # A Talos host has no package manager and no kernel headers, so neither DKMS
