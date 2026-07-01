@@ -36,6 +36,28 @@ jobs:
           set -euo pipefail
           [ -n "${GH_TOKEN:-}" ] || { echo "RELEASE_TOKEN secret is required (Contents:write on seaweed-mono, seaweedvfs-kmod, artifactory)" >&2; exit 1; }
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version must be X.Y.Z, got: '$V'" >&2; exit 1; }
+          # Refuse to re-cut an already-released version. DKMS and apt key on the
+          # version string, so re-shipping the same X.Y.Z never upgrades the broken
+          # copy already on a host — exactly why the fixed 0.1.2 could not reach
+          # users (the fix kept the version). Force a bump instead of overwriting.
+          #
+          # `git ls-remote --exit-code`: 0 = tag exists, 2 = no such ref, any other
+          # code = a real failure (auth expiry, network/DNS). Distinguish them — a
+          # transient error must NOT be read as "tag absent, safe to proceed", or
+          # the later kmod/mono bump+push steps would run and leave a half-cut
+          # release across three repos. Don't suppress output, so the log shows why.
+          set +e
+          ls_out=$(git ls-remote --exit-code --tags \
+            "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" \
+            "refs/tags/vfs-$V" 2>&1)
+          ls_rc=$?
+          set -e
+          case "$ls_rc" in
+            0) echo "refusing: vfs-$V is already released (tag exists in artifactory) — bump to a new version" >&2; exit 1 ;;
+            2) : ;;  # no such tag — good, this version is new
+            *) echo "error: could not verify vfs-$V tag status against artifactory (git ls-remote rc=$ls_rc):" >&2
+               echo "$ls_out" >&2; exit 1 ;;
+          esac
           git config --global user.name  "seaweedfs-release-bot"
           git config --global user.email "release-bot@users.noreply.github.com"
 
@@ -49,9 +71,11 @@ jobs:
           grep -q "SEAWEEDVFS_VERSION \"$V\"" seaweedvfs.c || { echo "kmod seaweedvfs.c bump failed" >&2; exit 1; }
           grep -q "PACKAGE_VERSION=\"$V\""    dkms.conf    || { echo "kmod dkms.conf bump failed"    >&2; exit 1; }
           git diff --quiet || git commit -am "release $V"
-          git tag -f "$V"
+          # Non-force: the preflight already refused a pre-existing version, so a
+          # tag collision here means something is wrong — fail loudly, don't clobber.
+          git tag "$V"
           git push origin HEAD:main
-          git push -f origin "$V"
+          git push origin "$V"
 
       - name: Bump mono (vendored module + nfpm specs) on main
         run: |
@@ -87,8 +111,8 @@ jobs:
           # Push the tag with the PAT (not GITHUB_TOKEN) so seaweed-vfs-release.yml fires.
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" art
           cd art
-          git tag -f "vfs-$V"
-          git push -f origin "vfs-$V"
+          git tag "vfs-$V"
+          git push origin "vfs-$V"
           echo "### Cut \`vfs-$V\` :rocket:" >> "$GITHUB_STEP_SUMMARY"
           echo "Build + publish: https://github.com/seaweedfs/artifactory/actions/workflows/seaweed-vfs-release.yml" >> "$GITHUB_STEP_SUMMARY"
           echo "Release assets:  https://github.com/seaweedfs/artifactory/releases/tag/vfs-$V" >> "$GITHUB_STEP_SUMMARY"
