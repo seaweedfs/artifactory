@@ -95,9 +95,7 @@ jobs:
           git -C src remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
       - name: Install nfpm
-        run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned (match the publish jobs)
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-nfpm   # pinned version lives in the composite action
 
       - name: Build the seaweedfs-vfs-dkms package
         working-directory: src/seaweed-vfs/packaging/nfpm
@@ -178,9 +176,7 @@ jobs:
         run: cargo build --release --locked -p sw-kd --target ${{ matrix.target }}
 
       - name: Install nfpm
-        run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducible release packaging
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-nfpm   # pinned version lives in the composite action
 
       - name: Build deb + rpm
         working-directory: src/seaweed-vfs
@@ -232,9 +228,7 @@ jobs:
           git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Install nfpm
-        run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducible release packaging
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-nfpm   # pinned version lives in the composite action
 
       - name: Build dkms package (deb + rpm, noarch)
         working-directory: src/seaweed-vfs/packaging/nfpm
@@ -340,9 +334,7 @@ jobs:
           echo "Built for kernel: $(cat KVER.txt)"
 
       - name: Install nfpm
-        run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0   # pinned for reproducible release packaging
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-nfpm   # pinned version lives in the composite action
 
       - name: Package seaweedfs-vfs-kmod
         working-directory: src/seaweed-vfs/packaging/nfpm

@@ -1,0 +1,23 @@
+name: "Install nfpm"
+description: >
+  Install a pinned nfpm and add it to PATH, for reproducible deb/rpm packaging.
+  Centralizes the version pin so the release jobs (verify/daemon/dkms/kmod)
+  can't drift apart. Requires Go on PATH (present on the GitHub-hosted runners).
+
+inputs:
+  version:
+    description: "nfpm version to install (the go-module @version)."
+    required: false
+    default: "v2.47.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install nfpm
+      shell: bash
+      env:
+        NFPM_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"

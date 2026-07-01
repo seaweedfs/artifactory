@@ -40,12 +40,24 @@ jobs:
           # version string, so re-shipping the same X.Y.Z never upgrades the broken
           # copy already on a host — exactly why the fixed 0.1.2 could not reach
           # users (the fix kept the version). Force a bump instead of overwriting.
-          if git ls-remote --exit-code --tags \
-               "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" \
-               "refs/tags/vfs-$V" >/dev/null 2>&1; then
-            echo "refusing: vfs-$V is already released (tag exists in artifactory) — bump to a new version" >&2
-            exit 1
-          fi
+          #
+          # `git ls-remote --exit-code`: 0 = tag exists, 2 = no such ref, any other
+          # code = a real failure (auth expiry, network/DNS). Distinguish them — a
+          # transient error must NOT be read as "tag absent, safe to proceed", or
+          # the later kmod/mono bump+push steps would run and leave a half-cut
+          # release across three repos. Don't suppress output, so the log shows why.
+          set +e
+          ls_out=$(git ls-remote --exit-code --tags \
+            "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" \
+            "refs/tags/vfs-$V" 2>&1)
+          ls_rc=$?
+          set -e
+          case "$ls_rc" in
+            0) echo "refusing: vfs-$V is already released (tag exists in artifactory) — bump to a new version" >&2; exit 1 ;;
+            2) : ;;  # no such tag — good, this version is new
+            *) echo "error: could not verify vfs-$V tag status against artifactory (git ls-remote rc=$ls_rc):" >&2
+               echo "$ls_out" >&2; exit 1 ;;
+          esac
           git config --global user.name  "seaweedfs-release-bot"
           git config --global user.email "release-bot@users.noreply.github.com"
 
