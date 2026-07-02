@@ -65,13 +65,27 @@ jobs:
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
+    # Branches predating the degraded-read test have no such directory; skip
+    # rather than fail so the guard only runs where the test actually exists.
+    - name: Check for degraded-read test
+      id: check
+      run: |
+        if [ -d seaweedfs-source/enterprise/test/volume_server/degraded ]; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Branch has no enterprise/test/volume_server/degraded; skipping EC degraded-read tests."
+        fi
+
     - name: Set up Go
+      if: steps.check.outputs.present == 'true'
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Build Go weed binary
+      if: steps.check.outputs.present == 'true'
       working-directory: seaweedfs-source/enterprise/weed
       run: |
         go build -o weed .
@@ -79,6 +93,7 @@ jobs:
         ./weed version
 
     - name: Run EC degraded-read tests (Go volume server)
+      if: steps.check.outputs.present == 'true'
       working-directory: seaweedfs-source/enterprise
       env:
         WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
@@ -136,19 +151,35 @@ jobs:
         echo "Cloned commit: $(git rev-parse HEAD)"
         echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
+    # Branches predating the degraded-read test have no such directory; skip
+    # rather than fail so the guard only runs where the test actually exists.
+    - name: Check for degraded-read test
+      id: check
+      run: |
+        if [ -d seaweedfs-source/enterprise/test/volume_server/degraded ]; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Branch has no enterprise/test/volume_server/degraded; skipping EC degraded-read tests."
+        fi
+
     - name: Set up Go
+      if: steps.check.outputs.present == 'true'
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Install protobuf compiler
+      if: steps.check.outputs.present == 'true'
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
     - name: Install Rust toolchain
+      if: steps.check.outputs.present == 'true'
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache cargo registry and target
+      if: steps.check.outputs.present == 'true'
       uses: actions/cache@v5
       with:
         path: |
@@ -160,6 +191,7 @@ jobs:
           rust-
 
     - name: Build Go weed binary (master)
+      if: steps.check.outputs.present == 'true'
       working-directory: seaweedfs-source/enterprise/weed
       run: |
         go build -tags 5BytesOffset -o weed .
@@ -167,9 +199,11 @@ jobs:
         ./weed version
 
     - name: Build Rust volume binary
+      if: steps.check.outputs.present == 'true'
       run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
 
     - name: Run EC degraded-read tests (Rust volume server)
+      if: steps.check.outputs.present == 'true'
       working-directory: seaweedfs-source/enterprise
       env:
         WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
