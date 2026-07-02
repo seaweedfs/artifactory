@@ -493,7 +493,7 @@ jobs:
           done
 
           echo "All SeaweedFS components are ready!"
-          cd ../../s3-tests
+          cd "$GITHUB_WORKSPACE/s3-tests"
           sed -i "s/assert prefixes == \['foo%2B1\/', 'foo\/', 'quux%20ab\/'\]/assert prefixes == \['foo\/', 'foo%2B1\/', 'quux%20ab\/'\]/" s3tests/functional/test_s3.py
           # Create and update s3tests.conf to use port 8001
           cp "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests.conf" "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-versioning.conf"
@@ -681,7 +681,7 @@ jobs:
           done
 
           echo "All SeaweedFS components are ready!"
-          cd ../../s3-tests
+          cd "$GITHUB_WORKSPACE/s3-tests"
           sed -i "s/assert prefixes == \['foo%2B1\/', 'foo\/', 'quux%20ab\/'\]/assert prefixes == \['foo\/', 'foo%2B1\/', 'quux%20ab\/'\]/" s3tests/functional/test_s3.py
           # Create and update s3tests.conf to use port 8002
           cp "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests.conf" "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-cors.conf"
@@ -1070,7 +1070,7 @@ jobs:
           done
 
           echo "All SeaweedFS components are ready!"
-          cd ../../s3-tests
+          cd "$GITHUB_WORKSPACE/s3-tests"
           sed -i "s/assert prefixes == \['foo%2B1\/', 'foo\/', 'quux%20ab\/'\]/assert prefixes == \['foo\/', 'foo%2B1\/', 'quux%20ab\/'\]/" s3tests/functional/test_s3.py
           # Create and update s3tests.conf to use port 8004
           cp "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests.conf" "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-sql.conf"
