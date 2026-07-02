@@ -93,6 +93,25 @@ jobs:
     timeout-minutes: 40
 
     steps:
+      # The stock ubuntu-22.04 runner ships only ~14 GB free on /, but this job
+      # compiles two debug Rust target dirs (enterprise/rust + seaweed-volume)
+      # plus a dozen --no-run e2e test binaries, which overflowed the disk
+      # ("No space left on device"). Reclaim the tens of GB of preinstalled
+      # toolchains this job never touches before building.
+      - name: Free up disk space
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/lib/jvm || true
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
 
