@@ -1,0 +1,221 @@
+name: "EC Degraded Read Tests (seaweed-mono)"
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+
+# End-to-end regression guard for distributed EC *degraded reads*
+# (reconstruct-on-read after shard/disk loss), extended to custom EC ratios.
+# The same Go test (enterprise/test/volume_server/degraded) runs against BOTH
+# volume server implementations: the Go server (reference behaviour) and the
+# Rust weed-volume server (VOLUME_SERVER_IMPL=rust), which had returned empty on
+# degraded reads.
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
+  # dispatched mono ref (or the manual branch input) to actually dedupe runs.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/ec-degraded-read
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Reference behaviour: the Go volume server already reconstructs on degraded
+  # reads, so this job proves the test itself is correct (it must stay green).
+  go-degraded-read-tests:
+    name: EC Degraded Read (Go volume server)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Build Go weed binary
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        go build -o weed .
+        chmod +x weed
+        ./weed version
+
+    - name: Run EC degraded-read tests (Go volume server)
+      working-directory: seaweedfs-source/enterprise
+      env:
+        WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+      run: |
+        echo "Running distributed EC degraded reconstruct-on-read tests against the Go volume server..."
+        echo "  ratios: 10+4, 4+2, 6+3, 9+3"
+        echo "  each: distribute shards one-per-server, lose 'parity' data shards, read must reconstruct; lose one more -> read must fail"
+        go test -v -count=1 -timeout=30m ./test/volume_server/degraded/...
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        mkdir -p /tmp/ec-degraded-read-logs
+        find /tmp -maxdepth 1 -type d -name "seaweedfs_volume_server_it_*" -print -exec cp -r {} /tmp/ec-degraded-read-logs/ \; || true
+
+    - name: Archive logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-degraded-read-go-logs-${{ env.COMMIT_SHA }}
+        path: /tmp/ec-degraded-read-logs/
+        if-no-files-found: warn
+        retention-days: 7
+
+  # The primary guard: the same test driven against the Rust weed-volume
+  # server, whose distributed reconstruct-on-read path
+  # (read_ec_shard_needle_distributed) had returned empty after disk loss.
+  rust-degraded-read-tests:
+    name: EC Degraded Read (Rust volume server)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Clone seaweed-mono (enterprise) source
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
+      run: |
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
+        if [ "$BRANCH" = "null" ]; then
+          BRANCH="main"
+        fi
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
+        echo "Cloning branch: $BRANCH"
+        git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        cd seaweedfs-source
+        echo "Cloned commit: $(git rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Install protobuf compiler
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry and target
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          seaweedfs-source/enterprise/seaweed-volume/target
+        key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+        restore-keys: |
+          rust-
+
+    - name: Build Go weed binary (master)
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        go build -tags 5BytesOffset -o weed .
+        chmod +x weed
+        ./weed version
+
+    - name: Build Rust volume binary
+      run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
+
+    - name: Run EC degraded-read tests (Rust volume server)
+      working-directory: seaweedfs-source/enterprise
+      env:
+        WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+        RUST_VOLUME_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+        VOLUME_SERVER_IMPL: rust
+      run: |
+        echo "Running distributed EC degraded reconstruct-on-read tests against the Rust weed-volume server..."
+        echo "  ratios: 10+4, 4+2, 6+3, 9+3 — custom ratios have had no distributed-degraded-read coverage until now"
+        go test -v -count=1 -tags 5BytesOffset -timeout=30m ./test/volume_server/degraded/...
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        mkdir -p /tmp/ec-degraded-read-logs
+        find /tmp -maxdepth 1 -type d -name "seaweedfs_volume_server_it_*" -print -exec cp -r {} /tmp/ec-degraded-read-logs/ \; || true
+
+    - name: Archive logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-degraded-read-rust-logs-${{ env.COMMIT_SHA }}
+        path: /tmp/ec-degraded-read-logs/
+        if-no-files-found: warn
+        retention-days: 7
+
+  ec-degraded-read-summary:
+    name: EC Degraded Read Summary
+    runs-on: ubuntu-22.04
+    needs: [go-degraded-read-tests, rust-degraded-read-tests]
+    if: always()
+    steps:
+    - name: Summary
+      run: |
+        echo "## EC Degraded Read Test Summary" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "Regression guard for distributed EC reconstruct-on-read after disk loss, extended to custom EC ratios." >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Test: \`test/volume_server/degraded\` (TestEcDistributedDegradedRead)" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Distributes a volume's shards one-per-server, drops the reader's normal volume so reads take the EC path." >> "$GITHUB_STEP_SUMMARY"
+        echo "- Loses \`parity\` data shards (unmount + delete) -> read must Reed-Solomon reconstruct the missing data from the surviving remote shards and return the exact bytes." >> "$GITHUB_STEP_SUMMARY"
+        echo "- Negative control: loses one more shard (below the data-shard floor) -> read must fail." >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Ratios covered" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **10+4** — default RS(10,4)" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **4+2**, **6+3**, **9+3** — custom ratios (the enterprise feature; previously untested in the degraded-read path)" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Implementations" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Go volume server** (reference): \`go-degraded-read-tests\` = ${{ needs.go-degraded-read-tests.result }}" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Rust weed-volume** (VOLUME_SERVER_IMPL=rust): \`rust-degraded-read-tests\` = ${{ needs.rust-degraded-read-tests.result }}" >> "$GITHUB_STEP_SUMMARY"
