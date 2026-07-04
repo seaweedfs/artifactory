@@ -27,6 +27,28 @@ RDMA_CI_LOADER_ROWS=9
 	assertKV(t, got, "perf_vfs_write_latest_mib_s", "201.89")
 }
 
+func TestParseNixlProviderOutput(t *testing.T) {
+	out := `
+NIXL_PROVIDER_GET_GATE_PASS
+NIXL_PROVIDER_READ_BENCH_RESULT mib_s=6815.6 floor_mib_s=5120
+NIXL_PROVIDER_READ_BENCH_GATE_PASS
+NIXL_PROVIDER_PUT_NORMAL_GET bytes=20971520 sha=abc123 expected=abc123
+NIXL_PROVIDER_PUT_GATE_PASS
+NIXL_PROVIDER_CPU_GATE_PASS
+`
+	got := parseNixlProviderOutput(out)
+	assertKV(t, got, "pass", "1")
+	assertKV(t, got, "get_pass", "1")
+	assertKV(t, got, "bench_pass", "1")
+	assertKV(t, got, "put_pass", "1")
+	assertKV(t, got, "read_mib_s", "6815.6")
+	assertKV(t, got, "read_floor_mib_s", "5120")
+	assertKV(t, got, "put_bytes", "20971520")
+	assertKV(t, got, "put_sha", "abc123")
+	assertKV(t, got, "put_expected_sha", "abc123")
+	assertKV(t, got, "put_sha_match", "1")
+}
+
 func assertKV(t *testing.T, got map[string]string, key, want string) {
 	t.Helper()
 	if got[key] != want {

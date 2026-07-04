@@ -42,7 +42,9 @@ jobs:
 
       - name: Validate RDMA gate scenario
         working-directory: testops
-        run: go run ./cmd/sweedrdma validate scenarios/rdma-unified-lab-gate.yaml
+        run: |
+          go run ./cmd/sweedrdma validate scenarios/rdma-unified-lab-gate.yaml
+          go run ./cmd/sweedrdma validate scenarios/nixl-provider-cpu-gate.yaml
 
       - name: Build docs
         working-directory: testops

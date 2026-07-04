@@ -25,6 +25,8 @@ var (
 	vfsReadPattern     = regexp.MustCompile(`UNIFIED_VFS_READ_MATRIX label=([a-z0-9-]+).* mib_s=([0-9.]+)`)
 	vfsWritePattern    = regexp.MustCompile(`UNIFIED_VFS_WRITE name=\S+ .* mib_s=([0-9.]+)`)
 	objectBenchPattern = regexp.MustCompile(`SW-RDMA-OBJECT-BENCH-SUCCESS .* mib_s=([0-9.]+)`)
+	nixlBenchPattern   = regexp.MustCompile(`NIXL_PROVIDER_READ_BENCH_RESULT mib_s=([0-9.]+) floor_mib_s=([0-9.]+)`)
+	nixlPutPattern     = regexp.MustCompile(`NIXL_PROVIDER_PUT_NORMAL_GET bytes=([0-9]+) sha=([a-f0-9]+) expected=([a-f0-9]+)`)
 )
 
 func runMonoGate(ctx context.Context, actx *tr.ActionContext, act tr.Action) (map[string]string, error) {
@@ -118,6 +120,146 @@ func parseGateOutput(output string) map[string]string {
 		result["perf_object_bench_mib_s"] = match[1]
 	}
 	return result
+}
+
+func runNixlProviderGate(ctx context.Context, actx *tr.ActionContext, act tr.Action) (map[string]string, error) {
+	node, err := actions.GetNode(actx, act.Node)
+	if err != nil {
+		return nil, fmt.Errorf("rdma_run_nixl_provider_gate: %w", err)
+	}
+
+	cmd := strings.TrimSpace(act.Params["command"])
+	if cmd == "" {
+		cmd = buildNixlProviderCommand(act.Params)
+	}
+
+	stdout, stderr, code, err := node.Run(ctx, cmd)
+	combined := strings.TrimSpace(stdout + "\n" + stderr)
+	if err != nil {
+		return nil, fmt.Errorf("rdma_run_nixl_provider_gate: run error: %w", err)
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("rdma_run_nixl_provider_gate: exit=%d output=%s", code, tail(combined, 4096))
+	}
+
+	parsed := parseNixlProviderOutput(combined)
+	if parsed["pass"] != "1" {
+		return nil, fmt.Errorf("rdma_run_nixl_provider_gate: pass witness missing output=%s", tail(combined, 4096))
+	}
+
+	ref := strings.TrimSpace(act.Params["ref"])
+	sha := strings.TrimSpace(act.Params["tested_sha"])
+	if sha == "" {
+		sha = strings.TrimSpace(act.Params["mono_sha"])
+	}
+
+	out := map[string]string{
+		"value":                             nixlSummary(parsed),
+		"__product":                         "rdma",
+		"__gate_pass":                       "1",
+		"__rdma_gate_pass":                  "1",
+		"__rdma_nixl_provider_gate_pass":    "1",
+		"__rdma_nixl_provider_get_pass":     parsed["get_pass"],
+		"__rdma_nixl_provider_bench_pass":   parsed["bench_pass"],
+		"__rdma_nixl_provider_put_pass":     parsed["put_pass"],
+		"__rdma_nixl_provider_read_mib_s":   parsed["read_mib_s"],
+		"__rdma_nixl_provider_read_floor":   parsed["read_floor_mib_s"],
+		"__rdma_nixl_provider_put_bytes":    parsed["put_bytes"],
+		"__rdma_nixl_provider_put_sha":      parsed["put_sha"],
+		"__rdma_nixl_provider_put_expected": parsed["put_expected_sha"],
+	}
+	if ref != "" {
+		out["__tested_ref"] = ref
+		out["__rdma_mono_ref"] = ref
+	}
+	if sha != "" {
+		out["__tested_sha"] = sha
+		out["__rdma_mono_sha"] = sha
+	}
+	runID := strings.TrimSpace(act.Params["lab_run_id"])
+	if runID == "" {
+		runID = actx.Vars["run_id"]
+	}
+	if runID != "" {
+		out["__lab_run_id"] = runID
+		out["__rdma_run_id"] = runID
+	}
+	return out, nil
+}
+
+func buildNixlProviderCommand(params map[string]string) string {
+	runner := strings.TrimSpace(params["runner"])
+	powershell := paramOr(params, "powershell", "powershell.exe")
+	args := []string{
+		shellQuote(powershell),
+		"-NoProfile",
+		"-ExecutionPolicy", "Bypass",
+		"-File", shellQuote(runner),
+	}
+	if v := strings.TrimSpace(params["mono_source_root"]); v != "" {
+		args = append(args, "-MonoSourceRoot", shellQuote(v))
+	}
+	if v := strings.TrimSpace(params["nixl_source_root"]); v != "" {
+		args = append(args, "-NixlSourceRoot", shellQuote(v))
+	}
+	if v := strings.TrimSpace(params["nixl_read_floor_mib_s"]); v != "" {
+		args = append(args, "-NixlReadFloorMibS", shellQuote(v))
+	}
+	if boolParam(params["skip_mono_build"], false) {
+		args = append(args, "-SkipMonoBuild")
+	}
+	if boolParam(params["skip_nixl_build"], false) {
+		args = append(args, "-SkipNixlBuild")
+	}
+	if boolParam(params["keep_running"], false) {
+		args = append(args, "-KeepRunning")
+	}
+	return strings.Join(args, " ")
+}
+
+func parseNixlProviderOutput(output string) map[string]string {
+	result := map[string]string{}
+	if strings.Contains(output, "NIXL_PROVIDER_CPU_GATE_PASS") {
+		result["pass"] = "1"
+	}
+	if strings.Contains(output, "NIXL_PROVIDER_GET_GATE_PASS") {
+		result["get_pass"] = "1"
+	}
+	if strings.Contains(output, "NIXL_PROVIDER_READ_BENCH_GATE_PASS") {
+		result["bench_pass"] = "1"
+	}
+	if strings.Contains(output, "NIXL_PROVIDER_PUT_GATE_PASS") {
+		result["put_pass"] = "1"
+	}
+	if match := nixlBenchPattern.FindStringSubmatch(output); len(match) == 3 {
+		result["read_mib_s"] = match[1]
+		result["read_floor_mib_s"] = match[2]
+	}
+	if match := nixlPutPattern.FindStringSubmatch(output); len(match) == 4 {
+		result["put_bytes"] = match[1]
+		result["put_sha"] = match[2]
+		result["put_expected_sha"] = match[3]
+		if match[2] == match[3] {
+			result["put_sha_match"] = "1"
+		}
+	}
+	return result
+}
+
+func nixlSummary(parsed map[string]string) string {
+	keys := []string{
+		"read_mib_s",
+		"read_floor_mib_s",
+		"put_bytes",
+		"put_sha_match",
+	}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value := parsed[key]; value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func gateSummary(parsed map[string]string) string {

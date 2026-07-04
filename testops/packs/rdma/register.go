@@ -14,4 +14,6 @@ const Tier = "rdma"
 func RegisterPack(r *tr.Registry) {
 	r.RegisterFunc("rdma_run_mono_gate", Tier, runMonoGate)
 	r.SetRequiredParams("rdma_run_mono_gate", []string{"ref"})
+	r.RegisterFunc("rdma_run_nixl_provider_gate", Tier, runNixlProviderGate)
+	r.SetRequiredParams("rdma_run_nixl_provider_gate", []string{"runner"})
 }

@@ -62,5 +62,6 @@ nav:
       - S3 Gateway: wiki/guides/s3.md
       - VFS (POSIX / shared-data): wiki/guides/vfs.md
       - RDMA lab gate (object / VFS): wiki/guides/rdma.md
+      - NIXL / KVCache Testbed: nixl-kvcache-testbed.md
   - Scenarios: wiki/scenario-catalog.md
   - Live Dashboard: wiki/dashboard.md
