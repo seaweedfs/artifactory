@@ -1,0 +1,145 @@
+name: v3-g9g-l2
+# First V3 pack scenario — exercises v3_apply_cluster_spec, v3_start_blockmaster,
+# v3_start_blockvolume (×2), v3_wait_primary (log mode), v3_status (log mode),
+# v3_assert_no_authority_leak, plus core actions (exec, assert_equal).
+#
+# Equivalent to V3 in-process L2 test:
+#   cmd/blockvolume/g9g_l2_product_loop_test.go::TestG9G_L2ProductLoopPublishesAssignmentToBlockvolume
+# but driven through V2 testrunner sequencing on a real Linux host.
+#
+# Pre-conditions on target node:
+#   - V3 binaries pre-built at {{ bin_dir }}/blockmaster, blockvolume, blockcsi
+#     (use scripts/build-g15b-images.sh OR `go build` against seaweed_block)
+#   - Ports 9333, 19101, 19102, 19201, 19202 free
+#   - /tmp writable
+
+timeout: 3m
+
+env:
+  bin_dir: "/tmp/g15b/bin"
+  master_listen: "127.0.0.1:9333"
+  authority_dir: "/tmp/v3-g9g-l2/authority"
+  lifecycle_dir: "/tmp/v3-g9g-l2/lifecycle"
+  cluster_spec_path: "/tmp/v3-g9g-l2/cluster-spec.yaml"
+  r1_root: "/tmp/v3-g9g-l2/r1"
+  r2_root: "/tmp/v3-g9g-l2/r2"
+  master_log: "/tmp/v3-g9g-l2/blockmaster.log"
+  r1_log: "/tmp/v3-g9g-l2/blockvolume-r1.log"
+  r2_log: "/tmp/v3-g9g-l2/blockvolume-r2.log"
+
+topology:
+  nodes:
+    target_node:
+      host: "127.0.0.1"
+      is_local: true
+
+phases:
+  - name: pre_cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          pkill -9 blockmaster 2>/dev/null || true
+          pkill -9 blockvolume 2>/dev/null || true
+          rm -rf /tmp/v3-g9g-l2
+          mkdir -p /tmp/v3-g9g-l2
+
+  - name: cluster_spec
+    actions:
+      - action: v3_apply_cluster_spec
+        node: target_node
+        path: "{{ cluster_spec_path }}"
+        content: |
+          volumes:
+            - id: v1
+              size_bytes: 1048576
+              replication_factor: 2
+              placements:
+                - server_id: s1
+                  replica_id: r1
+                  source: existing_replica
+                - server_id: s2
+                  replica_id: r2
+                  source: existing_replica
+
+  - name: start_master
+    actions:
+      - action: v3_start_blockmaster
+        node: target_node
+        bin: "{{ bin_dir }}/blockmaster"
+        listen: "{{ master_listen }}"
+        authority_dir: "{{ authority_dir }}"
+        cluster_spec: "{{ cluster_spec_path }}"
+        lifecycle_store: "{{ lifecycle_dir }}"
+        product_loop_interval: "100ms"
+        expected_slots: "2"
+        log_path: "{{ master_log }}"
+        ready_timeout: "20"
+        save_as: master
+
+  - name: start_volumes
+    actions:
+      - action: v3_start_blockvolume
+        node: target_node
+        bin: "{{ bin_dir }}/blockvolume"
+        master: "{{ master_listen }}"
+        server_id: s1
+        replica_id: r1
+        volume_id: v1
+        data_addr: "127.0.0.1:19101"
+        ctrl_addr: "127.0.0.1:19102"
+        durable_root: "{{ r1_root }}"
+        log_path: "{{ r1_log }}"
+        ready_timeout: "20"
+        save_as: r1
+      - action: v3_start_blockvolume
+        node: target_node
+        bin: "{{ bin_dir }}/blockvolume"
+        master: "{{ master_listen }}"
+        server_id: s2
+        replica_id: r2
+        volume_id: v1
+        data_addr: "127.0.0.1:19201"
+        ctrl_addr: "127.0.0.1:19202"
+        durable_root: "{{ r2_root }}"
+        log_path: "{{ r2_log }}"
+        ready_timeout: "20"
+        save_as: r2
+
+  - name: wait_primary
+    actions:
+      - action: v3_wait_primary
+        node: target_node
+        log_path: "{{ r1_log }}"
+        volume_id: v1
+        expected_replica_id: r1
+        timeout_seconds: "30"
+
+  - name: verify_status
+    actions:
+      - action: v3_status
+        node: target_node
+        log_path: "{{ r1_log }}"
+        volume_id: v1
+        save_as: status
+      - action: assert_equal
+        actual: "{{ status_primary }}"
+        expected: "r1"
+
+  - name: assert_no_authority_leak
+    actions:
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ master_log }}"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ r1_log }}"
+
+  - name: cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          kill {{ master_pid }} {{ r1_pid }} {{ r2_pid }} 2>/dev/null || true
+          sleep 1
+          true
