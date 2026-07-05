@@ -109,13 +109,16 @@ The run must print:
 For `lmcache-nixl`, the run must print:
 
 - `SEAWEEDKV_LMCACHE_CONNECTOR_GATE_PASS` for both configured sizes;
-- `SEAWEEDKV_LMCACHE_NIXL_CPU_CALLER`;
-- `SEAWEEDKV_LMCACHE_NIXL_RUNTIME_CPU`;
 - `SEAWEEDKV_LMCACHE_WORKLOAD_PASS` with nonzero `batch_saves` and
   `batch_loads` when `LMCACHE_WORKLOAD_SECONDS` is enabled;
-- `LMCACHE_CONNECTOR_NIXL_RUNTIME_SIZE_PASS`;
 - `UNIFIED_COMMIT_WITNESS_OK`;
 - `LMCACHE_NIXL_RUNTIME_GATE_PASS`.
+
+When `LMCACHE_REQUIRE_NIXL_RUNTIME=1`, the run must also print:
+
+- `SEAWEEDKV_LMCACHE_NIXL_CPU_CALLER`;
+- `SEAWEEDKV_LMCACHE_NIXL_RUNTIME_CPU`;
+- `LMCACHE_CONNECTOR_NIXL_RUNTIME_SIZE_PASS`.
 
 For the current object hot path, the PR evidence should also record:
 

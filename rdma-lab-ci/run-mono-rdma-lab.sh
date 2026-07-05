@@ -358,8 +358,11 @@ write_summary() {
       fi
       ;;
     lmcache-nixl)
-      if grep -q 'LMCACHE_NIXL_RUNTIME_GATE_PASS' "$log" && grep -q 'SEAWEEDKV_LMCACHE_NIXL_RUNTIME_CPU ' "$log"; then
+      if grep -q 'LMCACHE_CONNECTOR_GATE_PASS' "$log" && grep -q 'LMCACHE_NIXL_RUNTIME_GATE_PASS' "$log"; then
         pass=1
+        if [ "$LMCACHE_REQUIRE_NIXL_RUNTIME" = "1" ] && ! grep -q 'SEAWEEDKV_LMCACHE_NIXL_RUNTIME_CPU ' "$log"; then
+          pass=0
+        fi
       fi
       ;;
   esac
