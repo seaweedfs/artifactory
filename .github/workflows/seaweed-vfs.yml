@@ -234,8 +234,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
       - name: Install weed
         run: |
-          curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin weed
+          # A freshly-published release uploads its ~50 assets one at a time, so
+          # releases/latest/download/linux_amd64.tar.gz can 404 for a few minutes
+          # after the tag goes live. Retry until the asset is available, and
+          # download to a file first so a 404 body never gets piped into tar.
+          for i in $(seq 1 20); do
+            curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
+              -o "$RUNNER_TEMP/weed.tar.gz" && break
+            echo "weed download attempt $i failed (release asset not ready?); retrying in 15s..."
+            sleep 15
+          done
+          sudo tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C /usr/local/bin weed
           weed version
       - name: Start SeaweedFS (master+volume+filer)
         run: |
@@ -322,8 +331,17 @@ jobs:
 
       - name: Install weed
         run: |
-          curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin weed
+          # A freshly-published release uploads its ~50 assets one at a time, so
+          # releases/latest/download/linux_amd64.tar.gz can 404 for a few minutes
+          # after the tag goes live. Retry until the asset is available, and
+          # download to a file first so a 404 body never gets piped into tar.
+          for i in $(seq 1 20); do
+            curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
+              -o "$RUNNER_TEMP/weed.tar.gz" && break
+            echo "weed download attempt $i failed (release asset not ready?); retrying in 15s..."
+            sleep 15
+          done
+          sudo tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C /usr/local/bin weed
           weed version
 
       - name: Enable FUSE allow_other
