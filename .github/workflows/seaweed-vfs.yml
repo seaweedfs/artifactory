@@ -5,8 +5,10 @@ on:
   # Triggered by seaweed-mono push (repository_dispatch)
   repository_dispatch:
     types:
-      - mono-push
-      - mono-merge-request
+      # vfs-scoped events: the seaweed-mono dispatcher sends these only when
+      # seaweed-vfs/** changed, so enterprise-only changes no longer trigger this.
+      - mono-vfs-push
+      - mono-vfs-merge-request
 
   # Allow manual triggering
   workflow_dispatch:
@@ -24,7 +26,9 @@ on:
     - cron: '0 4 * * *'
 
 concurrency:
-  group: ${{ github.head_ref || github.run_id }}/seaweed-vfs
+  # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
+  # dispatched mono ref (or the manual branch input) to actually dedupe runs.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/seaweed-vfs
   cancel-in-progress: true
 
 permissions:

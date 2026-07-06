@@ -29,7 +29,8 @@ on:
       - "seaweed-vfs (seaweed-mono)"
       - "Volume Server Integration Tests (seaweed-mono)"
     types:
-      - requested
+      # Only mirror the terminal result; skipping 'requested' halves the number
+      # of report runs (one status update per workflow, not a pending+final pair).
       - completed
 
 permissions:
@@ -45,7 +46,6 @@ jobs:
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
           WF_NAME: ${{ github.event.workflow_run.name }}
-          WF_STATUS: ${{ github.event.workflow_run.status }}
           WF_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WF_URL: ${{ github.event.workflow_run.html_url }}
           DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
@@ -56,15 +56,11 @@ jobs:
             echo "No mono SHA in run title: '$DISPLAY_TITLE' — skipping"
             exit 0
           fi
-          if [ "$WF_STATUS" = "completed" ]; then
-            case "$WF_CONCLUSION" in
-              success)            STATE=success; DESC="passed";;
-              cancelled|skipped)  STATE=error;   DESC="$WF_CONCLUSION";;
-              *)                  STATE=failure; DESC="${WF_CONCLUSION:-failed}";;
-            esac
-          else
-            STATE=pending; DESC="running"
-          fi
+          case "$WF_CONCLUSION" in
+            success)            STATE=success; DESC="passed";;
+            cancelled|skipped)  STATE=error;   DESC="$WF_CONCLUSION";;
+            *)                  STATE=failure; DESC="${WF_CONCLUSION:-failed}";;
+          esac
           echo "Reporting $STATE for '$WF_NAME' on seaweed-mono $SHA"
           BODY=$(jq -n \
             --arg state "$STATE" \
