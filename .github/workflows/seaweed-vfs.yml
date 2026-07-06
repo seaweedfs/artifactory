@@ -24,7 +24,9 @@ on:
     - cron: '0 4 * * *'
 
 concurrency:
-  group: ${{ github.head_ref || github.run_id }}/seaweed-vfs
+  # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
+  # dispatched mono ref (or the manual branch input) to actually dedupe runs.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/seaweed-vfs
   cancel-in-progress: true
 
 permissions:

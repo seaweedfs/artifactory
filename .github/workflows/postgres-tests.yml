@@ -17,7 +17,9 @@ on:
         default: 'main'
 
 concurrency:
-  group: ${{ github.head_ref || github.run_id }}/postgres-tests
+  # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
+  # dispatched mono ref (or the manual branch input) to actually dedupe runs.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/postgres-tests
   cancel-in-progress: true
 
 permissions:
