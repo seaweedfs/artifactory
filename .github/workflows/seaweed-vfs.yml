@@ -5,8 +5,10 @@ on:
   # Triggered by seaweed-mono push (repository_dispatch)
   repository_dispatch:
     types:
-      - mono-push
-      - mono-merge-request
+      # vfs-scoped events: the seaweed-mono dispatcher sends these only when
+      # seaweed-vfs/** changed, so enterprise-only changes no longer trigger this.
+      - mono-vfs-push
+      - mono-vfs-merge-request
 
   # Allow manual triggering
   workflow_dispatch:
