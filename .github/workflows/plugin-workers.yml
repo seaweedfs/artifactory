@@ -41,6 +41,8 @@ jobs:
             path: test/plugin_workers/vacuum
           - worker: volume_balance
             path: test/plugin_workers/volume_balance
+          - worker: volume_maintenance
+            path: test/plugin_workers/volume_maintenance
 
     steps:
     - name: Checkout artifactory repo
@@ -76,4 +78,9 @@ jobs:
     - name: Run plugin worker tests
       working-directory: seaweedfs-source/enterprise
       run: |
+        # a branch that predates this worker's tests has nothing to run
+        if [ ! -d "${{ matrix.path }}" ]; then
+          echo "skip: ${{ matrix.path }} does not exist on this branch"
+          exit 0
+        fi
         go test -v ./${{ matrix.path }}
