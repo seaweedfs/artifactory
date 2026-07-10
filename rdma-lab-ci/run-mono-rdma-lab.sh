@@ -208,7 +208,7 @@ build_unified_gate() {
     volume_features="rdma,rdma-dc"
   fi
 
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-object-bench --bin sw-rdma-s3-loader && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
+  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-object-bench --bin sw-rdma-s3-loader && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd && cargo build --release -p seaweedfs-sw-rdma-kvcache --features real-rdma"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
 }
@@ -254,7 +254,11 @@ run_unified_gate() {
     dc_m01="ENABLE_DC=1"
   fi
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 bash '$m01_src/$gate/m01-unified.sh'"
+  # SKIP_VFS: the lab filer (weed-uds) predates sw-rdma-kd's VFS conditional
+  # mutations, so the VFS cross-access + read-matrix blocks hard-fail. Skip them
+  # to gate the RDMA object/loader hot path independently. Remove once the lab
+  # filer is upgraded (or split a standalone rdma-object scenario).
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 SKIP_VFS=1 bash '$m01_src/$gate/m01-unified.sh'"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
