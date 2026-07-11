@@ -21,7 +21,23 @@ permissions:
 
 jobs:
 
+  # Fail fast when the release tag does not match the enterprise version
+  # constants in seaweed-mono, so a stale (unsynced) enterprise build never
+  # ships under a newer tag.
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Verify enterprise version matches release tag
+        uses: ./.github/actions/verify-enterprise-version
+        with:
+          tag: ${{ inputs.tag_name || github.ref_name }}
+          mono-token: ${{ secrets.MONO_TOKEN }}
+
   build-rust-volume-enterprise-linux:
+    needs: [verify-version]
     permissions:
       contents: write
     runs-on: ubuntu-22.04

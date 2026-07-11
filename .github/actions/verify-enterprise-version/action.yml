@@ -1,0 +1,51 @@
+name: Verify enterprise version
+description: >
+  Check that the release tag matches MAJOR_VERSION/MINOR_VERSION in
+  seaweed-mono enterprise/weed/util/version/constants.go, so an enterprise
+  build never ships an out-of-date version under a newer tag.
+
+inputs:
+  tag:
+    description: Release tag being built (e.g. 4.39)
+    required: true
+  mono-token:
+    description: Token with read access to seaweedfs/seaweed-mono
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Compare release tag with seaweed-mono version constants
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        MONO_TOKEN: ${{ inputs.mono-token }}
+      run: |
+        set -euo pipefail
+
+        tag="${TAG#v}"
+        if [[ ! "$tag" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+          echo "Tag '${TAG}' is not a MAJOR.MINOR release version; skipping version check."
+          exit 0
+        fi
+        tag_major=$((10#${BASH_REMATCH[1]}))
+        tag_minor=$((10#${BASH_REMATCH[2]}))
+
+        constants=$(curl -fsSL \
+          -H "Authorization: token ${MONO_TOKEN}" \
+          -H "Accept: application/vnd.github.raw" \
+          "https://api.github.com/repos/seaweedfs/seaweed-mono/contents/enterprise/weed/util/version/constants.go?ref=main")
+
+        major=$(sed -n 's/.*MAJOR_VERSION[[:space:]]*=[[:space:]]*int32(\([0-9]\{1,\}\)).*/\1/p' <<<"$constants")
+        minor=$(sed -n 's/.*MINOR_VERSION[[:space:]]*=[[:space:]]*int32(\([0-9]\{1,\}\)).*/\1/p' <<<"$constants")
+        if [[ -z "$major" || -z "$minor" ]]; then
+          echo "::error::could not parse MAJOR_VERSION/MINOR_VERSION from seaweed-mono enterprise/weed/util/version/constants.go"
+          exit 1
+        fi
+        version=$(printf '%d.%02d' "$major" "$minor")
+
+        if (( tag_major != major || tag_minor != minor )); then
+          echo "::error::release tag ${tag} does not match enterprise version ${version} in seaweed-mono main (enterprise/weed/util/version/constants.go); bump the version constants there before tagging"
+          exit 1
+        fi
+        echo "Release tag ${tag} matches enterprise version ${version}."
