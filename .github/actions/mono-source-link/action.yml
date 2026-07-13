@@ -1,0 +1,28 @@
+name: Link to seaweed-mono source
+description: >
+  Write a clickable link to the job summary pointing back at the seaweed-mono
+  change that dispatched this run — the PR when one triggered it, otherwise the
+  commit. Lets a failed artifactory run point straight at the enterprise PR.
+  No-op on manual (workflow_dispatch) runs, which carry no client_payload.
+
+runs:
+  using: composite
+  steps:
+    - name: Write seaweed-mono source link to job summary
+      shell: bash
+      env:
+        PR: ${{ github.event.client_payload.pr }}
+        SHA: ${{ github.event.client_payload.sha }}
+        REF: ${{ github.event.client_payload.ref }}
+      run: |
+        set -euo pipefail
+        # Manual runs carry no dispatched SHA; nothing to link to.
+        if [ -z "${SHA:-}" ] || [ "${SHA}" = "null" ]; then
+          exit 0
+        fi
+        repo="https://github.com/seaweedfs/seaweed-mono"
+        if [ -n "${PR:-}" ] && [ "${PR}" != "null" ]; then
+          echo "### Triggered by seaweed-mono [PR #${PR}](${repo}/pull/${PR}) ([\`${SHA}\`](${repo}/commit/${SHA}))" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "### Triggered by seaweed-mono [\`${REF:-main}\` @ \`${SHA}\`](${repo}/commit/${SHA})" >> "$GITHUB_STEP_SUMMARY"
+        fi
