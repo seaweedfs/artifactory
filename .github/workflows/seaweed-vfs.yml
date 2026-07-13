@@ -45,6 +45,10 @@ jobs:
         with:
           persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
+      - name: Link to seaweed-mono source
+        if: github.event_name == 'repository_dispatch'
+        uses: ./.github/actions/mono-source-link
+
       - name: Clone seaweed-mono source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}

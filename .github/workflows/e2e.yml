@@ -34,6 +34,10 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Link to seaweed-mono source
+      if: github.event_name == 'repository_dispatch'
+      uses: ./.github/actions/mono-source-link
+
     - name: Clone seaweed-mono (enterprise) source
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
