@@ -1,0 +1,77 @@
+name: Clone seaweed-mono source
+description: >
+  Clone seaweedfs/seaweed-mono at the dispatched change. Dispatched runs fetch
+  the exact commit from client_payload.sha — PR branches are deleted on merge,
+  so a run that queues past the merge can no longer clone by branch name — and
+  fall back to the branch if the commit is not fetchable. Manual
+  (workflow_dispatch) runs clone the given branch. Exports COMMIT_SHA (short)
+  and BRANCH_NAME to the job env. The clone's remote URL never carries the
+  token: the workspace can be bind-mounted into build containers.
+
+inputs:
+  token:
+    description: Token with read access to seaweedfs/seaweed-mono
+    required: true
+  branch:
+    description: Branch to clone when no commit was dispatched (manual runs); defaults to main
+    required: false
+    default: ''
+  path:
+    description: Directory to clone into
+    required: false
+    default: seaweedfs-source
+
+runs:
+  using: composite
+  steps:
+    - name: Clone seaweed-mono at the dispatched change
+      shell: bash
+      env:
+        MONO_TOKEN: ${{ inputs.token }}
+        CLONE_PATH: ${{ inputs.path }}
+        EVENT_NAME: ${{ github.event_name }}
+        PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+        PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+      run: |
+        set -euo pipefail
+        # Determine branch from webhook or manual input
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
+        [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
+        BRANCH="${BRANCH#refs/heads/}"
+        # Validate the resolved branch before using it in a clone command
+        if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+          echo "Refusing invalid branch: $BRANCH" >&2
+          exit 1
+        fi
+        SHA=""
+        if [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "${PAYLOAD_SHA:-}" ] && [ "$PAYLOAD_SHA" != "null" ]; then
+          if ! printf '%s' "$PAYLOAD_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Refusing invalid dispatched sha: $PAYLOAD_SHA" >&2
+            exit 1
+          fi
+          SHA="$PAYLOAD_SHA"
+        fi
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        if [ -n "$SHA" ]; then
+          echo "Fetching dispatched commit: $SHA (branch: $BRANCH)"
+          git init -q "$CLONE_PATH"
+          git -C "$CLONE_PATH" remote add origin "$REMOTE"
+          if git -C "$CLONE_PATH" fetch origin "$SHA"; then
+            git -C "$CLONE_PATH" checkout -q FETCH_HEAD
+          else
+            echo "Dispatched commit not fetchable; cloning branch: $BRANCH"
+            rm -rf "$CLONE_PATH"
+            git clone -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
+          fi
+        else
+          echo "Cloning branch: $BRANCH"
+          git clone -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
+        fi
+        # Drop the embedded token from .git/config: the workspace can be
+        # bind-mounted into build containers, so the remote URL must not
+        # carry the secret.
+        git -C "$CLONE_PATH" remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
+        echo "Cloned commit: $(git -C "$CLONE_PATH" rev-parse HEAD)"
+        echo "COMMIT_SHA=$(git -C "$CLONE_PATH" rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
+        echo "BRANCH_NAME=$BRANCH" >> "$GITHUB_ENV"
