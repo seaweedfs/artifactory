@@ -42,21 +42,10 @@ jobs:
         uses: ./.github/actions/mono-source-link
 
       - name: Clone seaweed-mono (enterprise) source
-        env:
-          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
-          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
-        run: |
-          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
-          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
-          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
-          if [ "$BRANCH" = "null" ]; then
-            BRANCH="main"
-          fi
-          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
-          echo "Cloning branch: $BRANCH"
-          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -122,21 +111,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Clone seaweed-mono (enterprise) source
-        env:
-          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
-          INPUT_BRANCH: ${{ github.event.inputs.gitlab_branch }}
-        run: |
-          if [ "$EVENT_NAME" = "repository_dispatch" ]; then BRANCH="$PAYLOAD_REF"; else BRANCH="$INPUT_BRANCH"; fi
-          [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] || BRANCH="main"
-          BRANCH=$(echo "$BRANCH" | sed 's|refs/heads/||')
-          if [ "$BRANCH" = "null" ]; then
-            BRANCH="main"
-          fi
-          if ! printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$'; then echo "Refusing invalid branch: $BRANCH" >&2; exit 1; fi
-          echo "Cloning branch: $BRANCH"
-          git clone -b "$BRANCH" https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
 
       # Build deps: protoc (tonic-build), clang/libclang (rdma-sys bindgen),
       # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`), ibverbs-utils
