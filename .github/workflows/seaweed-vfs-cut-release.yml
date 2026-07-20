@@ -36,6 +36,21 @@ jobs:
           set -euo pipefail
           [ -n "${GH_TOKEN:-}" ] || { echo "RELEASE_TOKEN secret is required (Contents:write on seaweed-mono, seaweedvfs-kmod, artifactory)" >&2; exit 1; }
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version must be X.Y.Z, got: '$V'" >&2; exit 1; }
+          # Prove the token can PUSH to all three repos before touching anything.
+          # kmod and artifactory are public, so every read below succeeds even
+          # anonymously — an expired/revoked PAT would otherwise surface only at
+          # the first `git push`, mid-release. The receive-pack ref advertisement
+          # is the first thing `git push` requests; GitHub authorizes write there
+          # (200 = can push, 401/403 = cannot) and it mutates nothing.
+          for r in seaweedvfs-kmod seaweed-mono artifactory; do
+            curl -fsS -o /dev/null -u "x-access-token:${GH_TOKEN}" \
+              "https://github.com/seaweedfs/$r.git/info/refs?service=git-receive-pack" \
+              || { echo "RELEASE_TOKEN cannot push to seaweedfs/$r — expired, revoked, or missing Contents:write; re-mint the PAT and update the secret" >&2; exit 1; }
+          done
+          # Surface the PAT's expiry date so the next expiry is predictable.
+          exp=$(curl -fsS -D- -o /dev/null -u "x-access-token:${GH_TOKEN}" https://api.github.com/user \
+            | tr -d '\r' | sed -n 's/^github-authentication-token-expiration: *//Ip') || true
+          [ -z "$exp" ] || echo "note: RELEASE_TOKEN expires $exp"
           # Refuse to re-cut an already-released version. DKMS and apt key on the
           # version string, so re-shipping the same X.Y.Z never upgrades the broken
           # copy already on a host — exactly why the fixed 0.1.2 could not reach
