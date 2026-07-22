@@ -21,10 +21,17 @@ jobs:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: git clone -b main --depth 1 https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweed-mono
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweed-mono/enterprise/go.mod'
+          cache-dependency-path: 'seaweed-mono/enterprise/go.sum'
+
       - name: Check for new subscriptions
+        working-directory: seaweed-mono/enterprise/license-manager
         env:
           STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
-        run: python3 seaweed-mono/enterprise/license-manager/check_new_subscriptions.py
+        run: go run ./subscription-tracker
 
       - name: Commit and push to seaweed-mono main
         working-directory: seaweed-mono
