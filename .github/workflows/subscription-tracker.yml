@@ -1,0 +1,48 @@
+name: "Subscription Tracker"
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: subscription-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: git clone -b main --depth 1 https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweed-mono
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweed-mono/enterprise/go.mod'
+          cache-dependency-path: 'seaweed-mono/enterprise/go.sum'
+
+      - name: Check for new subscriptions
+        working-directory: seaweed-mono/enterprise/license-manager
+        env:
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+        run: go run ./subscription-tracker
+
+      - name: Commit and push to seaweed-mono main
+        working-directory: seaweed-mono
+        run: |
+          if git diff --quiet enterprise/license-manager/license_tracking.csv; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enterprise/license-manager/license_tracking.csv
+          git commit -m "license-manager: record new Stripe subscriptions"
+          git pull --rebase origin main
+          git push origin main
