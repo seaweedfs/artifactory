@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: subscription-tracker
@@ -16,24 +16,26 @@ jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: git clone -b main --depth 1 https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweed-mono
 
       - name: Check for new subscriptions
         env:
           STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
-        run: python3 subscriptions/check_new_subscriptions.py
+        run: python3 seaweed-mono/enterprise/license-manager/check_new_subscriptions.py
 
-      - name: Commit and push
+      - name: Commit and push to seaweed-mono main
+        working-directory: seaweed-mono
         run: |
-          if git diff --quiet subscriptions/subscriptions.csv; then
+          if git diff --quiet enterprise/license-manager/license_tracking.csv; then
             echo "Nothing to commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add subscriptions/subscriptions.csv
-          git commit -m "subscriptions: record new Stripe subscriptions"
+          git add enterprise/license-manager/license_tracking.csv
+          git commit -m "license-manager: record new Stripe subscriptions"
           git pull --rebase origin main
           git push origin main
