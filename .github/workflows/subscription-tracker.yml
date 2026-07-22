@@ -1,0 +1,39 @@
+name: "Subscription Tracker"
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: subscription-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Check for new subscriptions
+        env:
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+        run: python3 subscriptions/check_new_subscriptions.py
+
+      - name: Commit and push
+        run: |
+          if git diff --quiet subscriptions/subscriptions.csv; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add subscriptions/subscriptions.csv
+          git commit -m "subscriptions: record new Stripe subscriptions"
+          git pull --rebase origin main
+          git push origin main
