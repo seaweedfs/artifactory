@@ -1,0 +1,137 @@
+# VFS cross-access gate — one dataset, two access methods.
+#
+# Proves the shared-namespace claim: the SAME object/KV data (M02 filer + volume)
+# is consumed via S3 (HTTP) AND a POSIX VFS mount (M01 FUSE), byte/SHA-identical
+# in both directions. See docs/wiki/guides/vfs.md.
+#
+# Stateful, as an SOP:  setup -> mount -> test -> unmount (unmount is always:true).
+# The weed binary is built once on M02 and shared to M01 via SMB (no cross-node ssh).
+#
+# Runner: any core-capable binary (has exec + emit_provenance), e.g. sweeds3.
+
+name: vfs-cross-access-chain
+timeout: 15m
+
+env:
+  ssh_key: "C:\\work\\dev_server\\testdev_key"
+  weed_repo: "https://github.com/seaweedfs/seaweedfs"
+  weed_ref: "master"
+  root: "/tmp/sw-vfs-xa"
+  weed_bin: "/tmp/sw-vfs-xa/bin/weed"
+  smb_weed: "/mnt/smb/work/share/testops/tmp/vfs-weed/weed"
+  m02_ip: "192.168.1.184"
+  s3_port: "8333"
+  filer_port: "8888"
+  mnt: "/tmp/sw-vfs-xa/mnt"
+  bucket: "vfsxa"
+
+topology:
+  nodes:
+    m01:
+      host: 192.168.1.181
+      user: testdev
+      key: "{{ ssh_key }}"
+    m02:
+      host: 192.168.1.184
+      user: testdev
+      key: "{{ ssh_key }}"
+
+phases:
+  - name: pre_clean
+    actions:
+      - action: exec
+        node: m02
+        cmd: "pkill -f '[w]eed server' 2>/dev/null || true; sleep 1; rm -rf {{ root }}; mkdir -p {{ root }}/bin {{ root }}/data $(dirname {{ smb_weed }})"
+      - action: exec
+        node: m01
+        cmd: "sudo -n umount -l {{ mnt }} 2>/dev/null || fusermount3 -u {{ mnt }} 2>/dev/null || true; sudo -n pkill -f '[w]eed mount' 2>/dev/null || true; rm -rf {{ root }}; mkdir -p {{ root }}/bin {{ mnt }}"
+
+  - name: setup
+    actions:
+      - action: exec
+        node: m02
+        timeout: 12m
+        cmd: "cd {{ root }} && git clone --depth 1 -b {{ weed_ref }} {{ weed_repo }} src 2>&1 | tail -1 && cd src/weed && go build -o {{ weed_bin }} . && cp {{ weed_bin }} {{ smb_weed }} && {{ weed_bin }} version | head -1"
+      - action: exec
+        node: m02
+        cmd: "git -C {{ root }}/src rev-parse --short HEAD"
+        save_as: weed_sha
+      # Reuse the proven s3_start_stack (starts weed -s3 -filer detached + waits
+      # ready). ip must be reachable from M01 so the mount can reach filer+volume.
+      - action: s3_start_stack
+        node: m02
+        weed: "{{ weed_bin }}"
+        data_dir: "{{ root }}/data"
+        s3_port: "{{ s3_port }}"
+        ip: "{{ m02_ip }}"
+
+  - name: mount
+    actions:
+      - action: exec
+        node: m01
+        cmd: "cp {{ smb_weed }} {{ weed_bin }} && chmod +x {{ weed_bin }} && {{ weed_bin }} version | head -1"
+      - action: exec
+        node: m01
+        cmd: "sudo -n sh -c 'nohup {{ weed_bin }} mount -filer={{ m02_ip }}:{{ filer_port }} -dir={{ mnt }} -allowOthers=false </dev/null >{{ root }}/mount.log 2>&1 & echo $!'"
+      - action: exec
+        node: m01
+        timeout: 90s
+        cmd: "for i in $(seq 1 40); do grep -q ' {{ mnt }} ' /proc/mounts && echo mounted && exit 0; sleep 1; done; { echo 'MOUNT-FAILED; mount.log:'; sudo -n tail -25 {{ root }}/mount.log; } >&2; exit 1"
+      - action: exec
+        node: m01
+        cmd: "grep -q ' {{ mnt }} ' /proc/mounts && echo 1 || echo 0"
+        save_as: vfs_mounted
+      - action: assert_greater
+        actual: "{{ vfs_mounted }}"
+        threshold: "0"
+
+  - name: test_cross_access
+    actions:
+      - action: exec
+        node: m02
+        cmd: "curl -s -o /dev/null -X PUT http://{{ m02_ip }}:{{ s3_port }}/{{ bucket }}; echo bucket-put"
+      # S3 write -> capture sha
+      - action: exec
+        node: m02
+        cmd: "printf 'S3-TO-VFS-%s' \"$(date +%s%N)\" > {{ root }}/s3obj.dat && curl -s -o /dev/null -X PUT --data-binary @{{ root }}/s3obj.dat http://{{ m02_ip }}:{{ s3_port }}/{{ bucket }}/from-s3.dat && sha256sum {{ root }}/s3obj.dat | awk '{print $1}'"
+        save_as: s3_sha
+      # read via VFS mount, compare  (S3 -> VFS)
+      - action: exec
+        node: m01
+        timeout: 2m
+        cmd: "p={{ mnt }}/buckets/{{ bucket }}/from-s3.dat; for i in $(seq 1 40); do [ \"$(sudo -n sha256sum $p 2>/dev/null | cut -c1-64)\" = \"{{ s3_sha }}\" ] && echo 1 && exit 0; sleep 1; done; { echo 'S3->VFS mismatch'; echo \"want={{ s3_sha }}\"; sudo -n ls -la $p 2>&1; echo \"got=$(sudo -n sha256sum $p 2>/dev/null | cut -c1-64)\"; } >&2; echo 0"
+        save_as: s3_to_mount_match
+      - action: assert_greater
+        actual: "{{ s3_to_mount_match }}"
+        threshold: "0"
+      # write via VFS mount -> capture sha
+      - action: exec
+        node: m01
+        cmd: "printf 'VFS-TO-S3-%s' \"$(date +%s%N)\" > {{ root }}/vfsfile.dat && sudo -n cp {{ root }}/vfsfile.dat {{ mnt }}/buckets/{{ bucket }}/from-vfs.dat && sync && sha256sum {{ root }}/vfsfile.dat | cut -c1-64"
+        save_as: vfs_sha
+      # read via S3, compare  (VFS -> S3)
+      - action: exec
+        node: m02
+        timeout: 2m
+        cmd: "for i in $(seq 1 40); do curl -sf -m3 http://{{ m02_ip }}:{{ s3_port }}/{{ bucket }}/from-vfs.dat -o {{ root }}/got.dat 2>/dev/null && [ \"$(sha256sum {{ root }}/got.dat | awk '{print $1}')\" = \"{{ vfs_sha }}\" ] && echo 1 && exit 0; sleep 1; done; { echo 'VFS->S3 mismatch'; echo \"want={{ vfs_sha }}\"; echo \"got=$(sha256sum {{ root }}/got.dat 2>/dev/null | awk '{print $1}')\"; } >&2; echo 0"
+        save_as: mount_to_s3_match
+      - action: assert_greater
+        actual: "{{ mount_to_s3_match }}"
+        threshold: "0"
+      - action: emit_provenance
+        product: vfs
+        tested_ref: "{{ weed_ref }}"
+        tested_sha: "{{ weed_sha }}"
+        __vfs_mounted: "{{ vfs_mounted }}"
+        __vfs_s3_to_mount_sha_match: "{{ s3_to_mount_match }}"
+        __vfs_mount_to_s3_sha_match: "{{ mount_to_s3_match }}"
+
+  - name: unmount_cleanup
+    always: true
+    actions:
+      - action: exec
+        node: m01
+        cmd: "sudo -n umount -l {{ mnt }} 2>/dev/null || fusermount3 -u {{ mnt }} 2>/dev/null || true; sudo -n pkill -f '[w]eed mount' 2>/dev/null || true; sleep 1; rm -rf {{ root }}; grep -q ' {{ mnt }} ' /proc/mounts && echo still-mounted || echo unmounted"
+      - action: exec
+        node: m02
+        cmd: "pkill -f '[w]eed server' 2>/dev/null || true; sleep 2; rm -rf {{ root }} {{ smb_weed }}; test $(pgrep -f '[w]eed server' | wc -l) -eq 0 && echo clean || echo residue"

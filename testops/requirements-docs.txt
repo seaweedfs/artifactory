@@ -1,0 +1,3 @@
+# Docs/wiki toolchain — install with: pip install -r requirements-docs.txt
+# Then: mkdocs serve   (or: make wiki)
+mkdocs-material>=9.5

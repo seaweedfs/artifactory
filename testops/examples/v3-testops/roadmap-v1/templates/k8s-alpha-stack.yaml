@@ -1,0 +1,58 @@
+apiVersion: testrunner.io/v1
+kind: Template
+metadata:
+  name: k8s-alpha-stack
+  description: |
+    Apply seaweed-block alpha control plane (blockmaster + service +
+    cluster-spec configmap) and CSI components (controller +
+    daemonset + RBAC + CSIDriver). Defaults to PVC-owner-ref cleanup
+    mode (matches scripts/install-k8s-alpha.sh defaults at
+    iscsi/frontend-completeness).
+  parameters:
+    product_root: { type: string, required: true }
+    namespace:    { type: string, default: kube-system }
+    block_image:    { type: string, required: true }
+    csi_image:      { type: string, required: true }
+    pvc_owner_ref:  { type: bool, default: true }
+spec:
+  phases:
+    - id: render
+      action: render_manifest_set
+      sources:
+        - { in: "{{.product_root}}/deploy/k8s/alpha/block-stack.yaml",     out: block-stack.yaml }
+        - { in: "{{.product_root}}/deploy/k8s/alpha/csi-controller.yaml",  out: csi-controller.yaml }
+        - { in: "{{.product_root}}/deploy/k8s/alpha/csi-node.yaml",        out: csi-node.yaml }
+      substitutions:
+        __NODE_NAME__: "{{.env.node_name}}"
+        sw-block:local: "{{.block_image}}"
+        sw-block-csi:local: "{{.csi_image}}"
+        "imagePullPolicy: Never": "imagePullPolicy: IfNotPresent"
+      injects:
+        - if: "{{.pvc_owner_ref}}"
+          file: block-stack.yaml
+          after: "--launcher-namespace="
+          line: '            - "--launcher-pvc-owner-ref"'
+        - if: "{{.pvc_owner_ref}}"
+          file: csi-controller.yaml
+          after: "--node-id=$(NODE_NAME)"
+          line: '            - "--kubernetes-pvc-uid-lookup"'
+    - id: apply_block_stack
+      action: kubectl_apply
+      file: "{{.phases.render.outputs.dir}}/block-stack.yaml"
+      wait_condition: { kind: deployment, name: sw-blockmaster, namespace: "{{.namespace}}", condition: available, timeout: 60s }
+    - id: apply_csi
+      action: kubectl_apply
+      files:
+        - "{{.product_root}}/deploy/k8s/alpha/rbac.yaml"
+        - "{{.product_root}}/deploy/k8s/alpha/csidriver.yaml"
+        - "{{.phases.render.outputs.dir}}/csi-controller.yaml"
+        - "{{.phases.render.outputs.dir}}/csi-node.yaml"
+      wait_condition: { kind: deployment, name: sw-block-csi-controller, namespace: "{{.namespace}}", condition: available, timeout: 90s }
+    - id: rollout_csi_node
+      action: kubectl_rollout_status
+      kind: daemonset
+      name: sw-block-csi-node
+      namespace: "{{.namespace}}"
+      timeout: 60s
+  outputs:
+    - { name: rendered_dir, from: phases.render.outputs.dir }

@@ -24,6 +24,18 @@ object/loader path:
 - SHA/byte correctness;
 - benchmark lines for the active rows.
 
+The second supported profile is `lmcache-nixl`. It runs the mono
+`enterprise/python/seaweedkv-lmcache/tests/lab/lmcache-connector-gate`
+scripts and checks the SeaweedKV/LMCache connector path:
+
+- `libseaweedfs_sw_rdma_nixl.so` built with `--features real-rdma`;
+- canonical RDMA-enabled `enterprise/seaweed-volume` on M02;
+- LMCache source staged on M01;
+- `nixl==1.3.0` installed in the M01 LMCache venv if missing;
+- 1 MiB and 20 MiB connector smokes through `loader-rdma`;
+- real NIXL CPU runtime transfer from retained Seaweed CPU descriptor to
+  caller-owned CPU DRAM descriptor, with SHA match.
+
 ## Install on M01
 
 1. Install a Buildkite agent on M01.
@@ -41,6 +53,17 @@ bash rdma-lab-ci/run-mono-rdma-lab.sh \
   --repo https://github.com/seaweedfs/seaweed-mono.git \
   --ref main \
   --profile unified
+```
+
+For the LMCache/NIXL CPU runtime gate:
+
+```bash
+bash rdma-lab-ci/run-mono-rdma-lab.sh \
+  --repo https://github.com/seaweedfs/seaweed-mono.git \
+  --ref main \
+  --profile lmcache-nixl \
+  --lmcache-repo https://github.com/LMCache/LMCache.git \
+  --lmcache-ref dev
 ```
 
 For a PR branch:
@@ -83,6 +106,20 @@ The run must print:
 - `UNIFIED_VFS_READ_MATRIX_DONE`
 - `UNIFIED_RDMA_GATE_PASS`
 
+For `lmcache-nixl`, the run must print:
+
+- `SEAWEEDKV_LMCACHE_CONNECTOR_GATE_PASS` for both configured sizes;
+- `SEAWEEDKV_LMCACHE_WORKLOAD_PASS` with nonzero `batch_saves` and
+  `batch_loads` when `LMCACHE_WORKLOAD_SECONDS` is enabled;
+- `UNIFIED_COMMIT_WITNESS_OK`;
+- `LMCACHE_NIXL_RUNTIME_GATE_PASS`.
+
+When `LMCACHE_REQUIRE_NIXL_RUNTIME=1`, the run must also print:
+
+- `SEAWEEDKV_LMCACHE_NIXL_CPU_CALLER`;
+- `SEAWEEDKV_LMCACHE_NIXL_RUNTIME_CPU`;
+- `LMCACHE_CONNECTOR_NIXL_RUNTIME_SIZE_PASS`.
+
 For the current object hot path, the PR evidence should also record:
 
 - RC push throughput for 20MiB/c32 and 128MiB/c32;
@@ -101,6 +138,11 @@ Each run writes to `rdma-lab-runs/<timestamp>-<ref>-<profile>/`:
 - `provenance.txt`
 - `run.log`
 - `summary.env`
+
+For `lmcache-nixl`, `summary.env` additionally records:
+
+- `RDMA_CI_LMCACHE_ROWS`;
+- `RDMA_CI_NIXL_RUNTIME_ROWS`.
 
 Buildkite uploads that directory as an artifact. For manual runs, serve the
 directory with any static file server if a simple web view is needed.
