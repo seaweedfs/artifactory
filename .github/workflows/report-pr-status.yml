@@ -28,6 +28,8 @@ on:
       - "Ceph S3 tests (seaweed-mono)"
       - "seaweed-vfs (seaweed-mono)"
       - "Volume Server Integration Tests (seaweed-mono)"
+      - "Volume Tiering Tests (seaweed-mono)"
+      - "EC Degraded Read Tests (seaweed-mono)"
     types:
       # Only mirror the terminal result; skipping 'requested' halves the number
       # of report runs (one status update per workflow, not a pending+final pair).
