@@ -1,14 +1,19 @@
 name: "Volume Tiering Tests (seaweed-mono)"
 run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
 
-# End-to-end guard for the storage-class tiering DSL: a real cluster is driven
-# through `weed shell` the way an operator drives it, and the assertions read
-# back what the cluster reports.
+# End-to-end guard for the storage-class tiering DSL. A real cluster is driven
+# both through `weed shell` and through the plugin worker (RunDetection ->
+# ExecuteJob, the admin's path), and every assertion reads back the topology the
+# worker itself plans from — not shell output.
 #
-# The cluster runs two media (ssd, hdd_ht) with two volume servers each. Both
-# parts matter: tiering plans from physically grounded placement, so a single
-# medium proves nothing, and a same-node cross-disk move is refused (the delete
-# primitive is node-wide) so each tier needs a distinct host to move to.
+# Two layouts run on separate runners:
+#   single-disk  (make test)           two servers per medium, one disk each
+#   multi-disk   (make test-multidisk) every server hosts both media
+# The multi-disk layout is what proves a same-node cross-disk move still crosses
+# to another node: the source node holds the target disk, and a node-wide delete
+# would destroy the data if the move stayed local, so a passing move is the proof
+# the source-node exclusion holds. It also exercises the same-ratio cross-medium
+# EC shard relocation, which the single-disk layout cannot reach.
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -36,9 +41,18 @@ permissions:
 
 jobs:
   volume-tiering-tests:
-    name: Volume Tiering E2E
+    name: Volume Tiering E2E (${{ matrix.layout }})
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 40
+    strategy:
+      # Report both layouts independently; one failing must not cancel the other.
+      fail-fast: false
+      matrix:
+        include:
+          - layout: single-disk
+            target: test
+          - layout: multi-disk
+            target: test-multidisk
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -55,17 +69,24 @@ jobs:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
 
-    # Branches predating the tiering suite have no such directory; skip rather
-    # than fail so the guard only runs where the suite actually exists.
-    - name: Check for volume tiering suite
+    # Branches predating the suite have no directory; branches predating the
+    # multi-disk layout have the directory but no test-multidisk target. Skip
+    # rather than fail so each layout only runs where it actually exists.
+    - name: Check for the suite and this layout
       id: check
       run: |
-        if [ -d seaweedfs-source/enterprise/test/volume_tiering ]; then
-          echo "present=true" >> "$GITHUB_OUTPUT"
+        present=false
+        dir=seaweedfs-source/enterprise/test/volume_tiering
+        if [ -d "$dir" ]; then
+          if [ "${{ matrix.target }}" = "test-multidisk" ] && ! grep -qE '^test-multidisk:' "$dir/Makefile"; then
+            echo "::notice::Branch has no test-multidisk target; skipping the multi-disk layout."
+          else
+            present=true
+          fi
         else
-          echo "present=false" >> "$GITHUB_OUTPUT"
-          echo "::notice::Branch has no enterprise/test/volume_tiering; skipping volume tiering tests."
+          echo "::notice::Branch has no enterprise/test/volume_tiering; skipping."
         fi
+        echo "present=$present" >> "$GITHUB_OUTPUT"
 
     - name: Set up Go
       if: steps.check.outputs.present == 'true'
@@ -80,17 +101,10 @@ jobs:
       if: steps.check.outputs.present == 'true'
       run: sudo apt-get update && sudo apt-get install -y lsof
 
-    - name: Run volume tiering E2E suite
+    - name: Run volume tiering E2E suite (${{ matrix.layout }})
       if: steps.check.outputs.present == 'true'
       working-directory: seaweedfs-source/enterprise/test/volume_tiering
-      run: |
-        echo "Starting a two-medium cluster (ssd x2, hdd_ht x2) and running the tiering suite..."
-        echo "  quiet trigger holds a volume that was never written"
-        echo "  a replicated volume relocates to the colder medium, payload byte-identical after"
-        echo "  an encode is planned onto the EC tier"
-        echo "  an unbound collection is never planned (ownership boundary)"
-        echo "  a dry run moves nothing"
-        make test
+      run: make ${{ matrix.target }}
 
     - name: Collect cluster logs on failure
       if: failure()
@@ -102,7 +116,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: volume-tiering-logs-${{ env.COMMIT_SHA }}
+        name: volume-tiering-logs-${{ matrix.layout }}-${{ env.COMMIT_SHA }}
         path: /tmp/volume-tiering-logs/
         if-no-files-found: warn
         retention-days: 7
@@ -115,23 +129,23 @@ jobs:
     - name: Summary
       if: always()
       run: |
-        echo "## Volume Tiering E2E" >> "$GITHUB_STEP_SUMMARY"
+        echo "## Volume Tiering E2E — ${{ matrix.layout }}" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
         if [ "${{ steps.check.outputs.present }}" != "true" ]; then
-          echo "Branch has no \`enterprise/test/volume_tiering\`; suite skipped." >> "$GITHUB_STEP_SUMMARY"
+          echo "Layout not present on this branch; skipped." >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
-        echo "Result: **${{ job.status }}**" >> "$GITHUB_STEP_SUMMARY"
+        echo "Result: **${{ job.status }}** (\`make ${{ matrix.target }}\`)" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
-        echo "Suite: \`test/volume_tiering\`, driven through \`weed shell\` against a live cluster." >> "$GITHUB_STEP_SUMMARY"
+        echo "Suite \`test/volume_tiering\`, driven through \`weed shell\` and the plugin worker against a live cluster; assertions read the observed topology." >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
-        echo "### Cluster" >> "$GITHUB_STEP_SUMMARY"
-        echo "- two media, two volume servers each: **ssd** x2, **hdd_ht** x2" >> "$GITHUB_STEP_SUMMARY"
-        echo "- two per medium because a same-node cross-disk move is refused, so a tier needs a distinct host to move to" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
-        echo "### Covered" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **quiet trigger** holds a volume that was never written (regression guard: such a volume once read as decades old and was tiered the moment it was created)" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **replicated move** to the colder medium, payload byte-identical afterwards" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **encode** planned onto the EC tier" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **unbound collection** never planned — the boundary that keeps tiering off stock volumes" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **dry run** moves nothing" >> "$GITHUB_STEP_SUMMARY"
+        if [ "${{ matrix.layout }}" = "multi-disk" ]; then
+          echo "### Multi-disk layout" >> "$GITHUB_STEP_SUMMARY"
+          echo "- every server hosts both media, so a move from a node's ssd must still cross to another node's hdd_ht" >> "$GITHUB_STEP_SUMMARY"
+          echo "- proves the same-node cross-disk refusal (a node-wide delete would destroy the data otherwise)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- exercises the same-ratio cross-medium EC shard relocation" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "### Single-disk layout" >> "$GITHUB_STEP_SUMMARY"
+          echo "- two servers per medium (ssd x2, hdd_ht x2); multi-disk-only cases skip here" >> "$GITHUB_STEP_SUMMARY"
+          echo "- quiet trigger holds a fresh volume; replicated move; encode; unbound collection untouched; dry run moves nothing; worker-driven encode / re-encode / decode / relocation" >> "$GITHUB_STEP_SUMMARY"
+        fi
