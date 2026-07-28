@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
+    inputs:
+      email:
+        description: "Send the license instructions to this address instead of polling Stripe"
+        required: false
 
 permissions:
   contents: read
@@ -21,6 +25,14 @@ jobs:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: git clone -b main --depth 1 https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweed-mono
 
+      - name: Check the screenshot the license instructions attach
+        working-directory: seaweed-mono/enterprise/license-manager
+        run: |
+          test -f cluster-uuid.png || {
+            echo "cluster-uuid.png is missing, and the license instructions attach it."
+            exit 1
+          }
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -31,7 +43,16 @@ jobs:
         working-directory: seaweed-mono/enterprise/license-manager
         env:
           STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
-        run: go run ./subscription-tracker
+          ZOHO_EMAIL: ${{ secrets.ZOHO_EMAIL }}
+          ZOHO_PASSWORD: ${{ secrets.ZOHO_PASSWORD }}
+          ZOHO_SMTP_ADDR: ${{ vars.ZOHO_SMTP_ADDR }}
+          MANUAL_EMAIL: ${{ inputs.email }}
+        run: |
+          if [ -n "$MANUAL_EMAIL" ]; then
+            go run ./subscription-tracker -email "$MANUAL_EMAIL"
+          else
+            go run ./subscription-tracker
+          fi
 
       - name: Commit and push to seaweed-mono main
         working-directory: seaweed-mono
