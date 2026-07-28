@@ -43,11 +43,8 @@ jobs:
         working-directory: seaweed-mono/enterprise/license-manager
         env:
           STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
-          # uncomment once SMTP is enabled on the Zoho mailbox: until the
-          # credentials reach it, the tracker records subscriptions and mails
-          # nobody, rather than failing every run on a rejected login
-          # ZOHO_EMAIL: ${{ secrets.ZOHO_EMAIL }}
-          # ZOHO_PASSWORD: ${{ secrets.ZOHO_PASSWORD }}
+          ZOHO_EMAIL: ${{ secrets.ZOHO_EMAIL }}
+          ZOHO_PASSWORD: ${{ secrets.ZOHO_PASSWORD }}
           ZOHO_SMTP_ADDR: ${{ vars.ZOHO_SMTP_ADDR }}
           MANUAL_EMAIL: ${{ inputs.email }}
         run: |
