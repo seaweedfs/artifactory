@@ -67,6 +67,9 @@ jobs:
         fusermount3 --version || fusermount --version || true
         ls -la /dev/fuse
 
+    - name: Repair the fusermount3 setuid bit
+      uses: ./.github/actions/fix-fusermount-setuid
+
     - name: Build SeaweedFS
       working-directory: seaweedfs-source/enterprise/weed
       run: |
