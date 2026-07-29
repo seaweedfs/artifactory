@@ -183,7 +183,20 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
+          # Some runner images carry a second, source-built fusermount3 in
+          # /usr/local/bin that shadows the distro one in PATH without its setuid
+          # bit, and every unprivileged mount then fails with EPERM. The mount
+          # helper is looked up through PATH, so repair the first one.
+          fusermount_bin=$(command -v fusermount3 || true)
+          if [ -n "$fusermount_bin" ]; then
+            if [ ! -u "$fusermount_bin" ]; then
+              sudo chown root:root "$fusermount_bin"
+              sudo chmod u+s "$fusermount_bin"
+            fi
+            ls -l "$fusermount_bin"
+          fi
       - name: Install weed
         run: |
           # A freshly-published release uploads its ~50 assets one at a time, so
@@ -265,7 +278,20 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
+          # Some runner images carry a second, source-built fusermount3 in
+          # /usr/local/bin that shadows the distro one in PATH without its setuid
+          # bit, and every unprivileged mount then fails with EPERM. The mount
+          # helper is looked up through PATH, so repair the first one.
+          fusermount_bin=$(command -v fusermount3 || true)
+          if [ -n "$fusermount_bin" ]; then
+            if [ ! -u "$fusermount_bin" ]; then
+              sudo chown root:root "$fusermount_bin"
+              sudo chmod u+s "$fusermount_bin"
+            fi
+            ls -l "$fusermount_bin"
+          fi
 
       - name: Install weed
         run: |
