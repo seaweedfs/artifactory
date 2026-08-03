@@ -90,7 +90,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
           # Drop the embedded token: the workspace is bind-mounted into the build container.
           git -C src remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
 
@@ -145,7 +145,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config
@@ -225,7 +225,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Install nfpm
         uses: ./.github/actions/install-nfpm   # pinned version lives in the composite action
@@ -305,7 +305,7 @@ jobs:
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Stage module-signing material (no-op if secrets unset)
         env:
@@ -422,13 +422,18 @@ jobs:
       packages: write
     runs-on: ubuntu-22.04
     steps:
+      - name: Check out the git retry helper
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+
       - name: Clone seaweed-mono source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Set up QEMU (arm64 emulation)
         uses: docker/setup-qemu-action@v3
@@ -488,16 +493,21 @@ jobs:
       USERNAME: seaweedfs
       PUSH: "true"
     steps:
+      - name: Check out the git retry helper
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+
       - name: Clone seaweed-mono source (extension package files)
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           REF="${MONO_REF}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "bad ref: $REF" >&2; exit 1; }
-          git clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
+          .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Check out siderolabs/extensions build harness
-        run: git clone --depth 1 https://github.com/siderolabs/extensions.git ext
+        run: .github/scripts/git-retry.sh clone --depth 1 https://github.com/siderolabs/extensions.git ext
 
       - name: Overlay the seaweedvfs extension
         run: |

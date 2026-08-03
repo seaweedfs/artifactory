@@ -31,6 +31,11 @@ jobs:
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       V: ${{ github.event.inputs.version }}
     steps:
+      - name: Check out the git retry helper
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+
       - name: Validate input + token
         run: |
           set -euo pipefail
@@ -79,7 +84,7 @@ jobs:
       - name: Bump + tag kmod (GPL source of truth)
         run: |
           set -euo pipefail
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/seaweedvfs-kmod.git" kmod
+          .github/scripts/git-retry.sh clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/seaweedvfs-kmod.git" kmod
           cd kmod
           perl -pi -e "s/SEAWEEDVFS_VERSION \"[0-9.]+\"/SEAWEEDVFS_VERSION \"$V\"/" seaweedvfs.c
           perl -pi -e "s/PACKAGE_VERSION=\"[0-9.]+\"/PACKAGE_VERSION=\"$V\"/"        dkms.conf
@@ -95,7 +100,7 @@ jobs:
       - name: Bump mono (vendored module + nfpm specs) on main
         run: |
           set -euo pipefail
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/seaweed-mono.git" mono
+          .github/scripts/git-retry.sh clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/seaweed-mono.git" mono
           cd mono
           perl -pi -e "s/SEAWEEDVFS_VERSION \"[0-9.]+\"/SEAWEEDVFS_VERSION \"$V\"/" seaweed-vfs/kernel/seaweedvfs.c
           perl -pi -e "s/PACKAGE_VERSION=\"[0-9.]+\"/PACKAGE_VERSION=\"$V\"/"        seaweed-vfs/kernel/dkms.conf
@@ -124,7 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           # Push the tag with the PAT (not GITHUB_TOKEN) so seaweed-vfs-release.yml fires.
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" art
+          .github/scripts/git-retry.sh clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/seaweedfs/artifactory.git" art
           cd art
           git tag "vfs-$V"
           git push origin "vfs-$V"

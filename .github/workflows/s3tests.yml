@@ -57,7 +57,7 @@ jobs:
 
       - name: Clone s3-tests
         run: |
-          git clone https://github.com/ceph/s3-tests.git
+          .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
           pip install -r requirements.txt
           pip install tox
@@ -376,7 +376,7 @@ jobs:
 
       - name: Clone s3-tests
         run: |
-          git clone https://github.com/ceph/s3-tests.git
+          .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
           sudo apt-get update -qq
           sudo apt-get install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
@@ -552,7 +552,7 @@ jobs:
 
       - name: Clone s3-tests
         run: |
-          git clone https://github.com/ceph/s3-tests.git
+          .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
           sudo apt-get update -qq
           sudo apt-get install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
@@ -793,7 +793,7 @@ jobs:
 
       - name: Clone s3-tests
         run: |
-          git clone https://github.com/ceph/s3-tests.git
+          .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
           sudo apt-get update -qq
           sudo apt-get install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
