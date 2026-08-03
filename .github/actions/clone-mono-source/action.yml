@@ -53,20 +53,35 @@ runs:
           SHA="$PAYLOAD_SHA"
         fi
         REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        # A transient github 5xx must not demote the commit fetch to the branch
+        # fallback: by then the branch is usually deleted and there is nothing
+        # left to clone. Retry every network step before giving up on it.
+        retry() {
+          local attempt=1
+          until "$@"; do
+            if [ "$attempt" -ge 4 ]; then return 1; fi
+            echo "git failed (attempt $attempt of 4); retrying in $((attempt * 10))s" >&2
+            sleep $((attempt * 10))
+            attempt=$((attempt + 1))
+          done
+        }
+        clone_branch() {
+          rm -rf "$CLONE_PATH"
+          git clone -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
+        }
         if [ -n "$SHA" ]; then
           echo "Fetching dispatched commit: $SHA (branch: $BRANCH)"
           git init -q "$CLONE_PATH"
           git -C "$CLONE_PATH" remote add origin "$REMOTE"
-          if git -C "$CLONE_PATH" fetch origin "$SHA"; then
+          if retry git -C "$CLONE_PATH" fetch origin "$SHA"; then
             git -C "$CLONE_PATH" checkout -q FETCH_HEAD
           else
             echo "Dispatched commit not fetchable; cloning branch: $BRANCH"
-            rm -rf "$CLONE_PATH"
-            git clone -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
+            retry clone_branch
           fi
         else
           echo "Cloning branch: $BRANCH"
-          git clone -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
+          retry clone_branch
         fi
         # Drop the embedded token from .git/config: the workspace can be
         # bind-mounted into build containers, so the remote URL must not
