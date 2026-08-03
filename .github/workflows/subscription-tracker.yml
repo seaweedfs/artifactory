@@ -20,10 +20,15 @@ jobs:
   track:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the git retry helper
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
-        run: git clone -b main --depth 1 https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweed-mono
+        run: .github/scripts/git-retry.sh clone -b main --depth 1 https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweed-mono
 
       - name: Check the screenshot the license instructions attach
         working-directory: seaweed-mono/enterprise/license-manager
