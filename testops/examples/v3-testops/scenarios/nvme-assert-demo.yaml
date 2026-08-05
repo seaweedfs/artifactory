@@ -1,0 +1,32 @@
+name: nvme-assert-demo
+timeout: 30s
+
+# M1 PR-4 demo. Replaces ~30 lines of bash gate (path-count grep,
+# sysfs walk, identity regex, ANA state byte check) with one
+# declarative assertion. Run against a live V3 multipath stack
+# whose subsystem NQN matches `nqn.2024-01.com.seaweedfs:vol.<suffix>`.
+
+topology:
+  nodes:
+    local:
+      host: "127.0.0.1"
+      is_local: true
+
+targets:
+  v3-vol:
+    node: local
+    iqn_suffix: demo-v1
+
+phases:
+  - name: assert_multipath
+    actions:
+      - action: nvme_assert_subsystem
+        target: v3-vol
+        node: local
+        paths: "2"
+        namespace_devices: "1"
+        ana_state: "optimized"
+        cmic: "0x0a"
+        nmic: "0x01"
+        anagrpid: "1"
+        cntlid_distinct: "true"

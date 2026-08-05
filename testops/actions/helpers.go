@@ -1,0 +1,125 @@
+package actions
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	tr "github.com/seaweedfs/artifactory/testops"
+	"github.com/seaweedfs/artifactory/testops/infra"
+)
+
+// getNode retrieves the infra.Node for the named node from the action context.
+func GetNode(actx *tr.ActionContext, name string) (*infra.Node, error) {
+	if name == "" {
+		// Try to get the first available node.
+		for _, n := range actx.Nodes {
+			if nn, ok := n.(*infra.Node); ok {
+				return nn, nil
+			}
+		}
+		return nil, fmt.Errorf("no nodes available")
+	}
+	n, ok := actx.Nodes[name]
+	if !ok {
+		return nil, fmt.Errorf("node %q not found", name)
+	}
+	nn, ok := n.(*infra.Node)
+	if !ok {
+		return nil, fmt.Errorf("node %q is not an infra.Node", name)
+	}
+	return nn, nil
+}
+
+// getTargetNode retrieves the node associated with a target.
+func GetTargetNode(actx *tr.ActionContext, targetName string) (*infra.Node, error) {
+	spec, ok := actx.Scenario.Targets[targetName]
+	if !ok {
+		return nil, fmt.Errorf("target %q not in scenario", targetName)
+	}
+	return GetNode(actx, spec.Node)
+}
+
+// getTargetHost returns the host address for a target's node.
+func GetTargetHost(actx *tr.ActionContext, targetName string) (string, error) {
+	spec, ok := actx.Scenario.Targets[targetName]
+	if !ok {
+		return "", fmt.Errorf("target %q not in scenario", targetName)
+	}
+	nodeSpec, ok := actx.Scenario.Topology.Nodes[spec.Node]
+	if !ok {
+		return "", fmt.Errorf("node %q not in topology", spec.Node)
+	}
+	if nodeSpec.IsLocal {
+		return "127.0.0.1", nil
+	}
+	return nodeSpec.Host, nil
+}
+
+func ParseDuration(s string) (time.Duration, error) {
+	return time.ParseDuration(s)
+}
+
+func ParseDurationMs(s string) (uint32, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		// Try parsing as plain number (milliseconds).
+		ms, err2 := strconv.ParseUint(s, 10, 32)
+		if err2 != nil {
+			return 0, err
+		}
+		return uint32(ms), nil
+	}
+	return uint32(d.Milliseconds()), nil
+}
+
+func ParseInt(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// parseSizeBytes converts a human-readable size string (e.g. "50M", "1G", "104857600") to bytes.
+func ParseSizeBytes(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty size string")
+	}
+	upper := strings.ToUpper(s)
+	var multiplier uint64 = 1
+	switch {
+	case strings.HasSuffix(upper, "G"):
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSuffix(upper, "G")
+	case strings.HasSuffix(upper, "M"):
+		multiplier = 1024 * 1024
+		s = strings.TrimSuffix(upper, "M")
+	case strings.HasSuffix(upper, "K"):
+		multiplier = 1024
+		s = strings.TrimSuffix(upper, "K")
+	default:
+		s = upper
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse size %q: %w", s, err)
+	}
+	return v * multiplier, nil
+}
+
+func ParseIntSlice(s string) []int {
+	var result []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if v, err := strconv.Atoi(part); err == nil {
+			result = append(result, v)
+		}
+	}
+	return result
+}

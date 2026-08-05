@@ -1,0 +1,67 @@
+site_name: sw-test-runner — TestOps
+site_description: Cross-product TestOps platform for SeaweedFS block / S3 / VFS.
+repo_url: https://github.com/seaweedfs/artifactory/testops
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+
+# Start Here / Standard reuse the existing top-level docs/*.md; the wiki/ subdir
+# holds the connective reference pages (mirrors seaweed_block's docs/ + docs/wiki).
+nav:
+  - Home: wiki/index.md
+  - Wiki Links:
+      - Block Wiki: http://192.168.1.135:8010/wiki/
+      - RDMA Wiki: http://192.168.1.135:8011/wiki/
+      - TestOps Wiki: http://192.168.1.135:8012/wiki/
+  - Start Here:
+      - Unified TestOps: unified-testops.md
+      - NIXL / KVCache Testbed: nixl-kvcache-testbed.md
+      - Submit & Author: wiki/submitting.md
+      - Agent Runbook: agent-testops-runbook.md
+      - Handbook: testops-handbook.md
+      - Storage Platform SOP: storage-testops-platform.md
+      - Control Plane Roadmap: testops-control-plane-roadmap.md
+      - Product Contract: control-plane-product-contract.md
+      - QA Bundle Assert: qa-bundle-assert.md
+      - Tutorial: tutorial.md
+      - Scenario Spec: scenario-spec.md
+  - Standard: cross-product-testops-standard.md
+  - Design:
+      - How It Works: wiki/how-it-works.md
+      - Run Lifecycle & Cleanup: wiki/lifecycle.md
+      - Scenario Syntax: wiki/syntax.md
+      - Code Map: wiki/code-map.md
+      - Packs & Binaries: wiki/packs-and-binaries.md
+  - Deploy & Operate: wiki/deploy.md
+  - Product Testing Guides:
+      - Block (iSCSI / NVMe): wiki/guides/block.md
+      - S3 Gateway: wiki/guides/s3.md
+      - VFS (POSIX / shared-data): wiki/guides/vfs.md
+      - RDMA lab gate (object / VFS): wiki/guides/rdma.md
+      - NIXL / KVCache Testbed: nixl-kvcache-testbed.md
+  - Scenarios: wiki/scenario-catalog.md
+  - Live Dashboard: wiki/dashboard.md

@@ -1,0 +1,23 @@
+{
+  "subsystems": [
+    {
+      "name": "nvme-subsys1",
+      "nqn": "nqn.2026-05.io.seaweedfs:mpath-v1",
+      "io_policy": "numa",
+      "paths": [
+        {
+          "name": "nvme2",
+          "transport": "tcp",
+          "address": "traddr=127.0.0.1,trsvcid=51677,src_addr=127.0.0.1",
+          "state": "inaccessible"
+        },
+        {
+          "name": "nvme1",
+          "transport": "tcp",
+          "address": "traddr=127.0.0.1,trsvcid=47861,src_addr=127.0.0.1",
+          "state": "live"
+        }
+      ]
+    }
+  ]
+}
