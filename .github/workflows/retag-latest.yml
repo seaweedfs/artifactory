@@ -1,0 +1,48 @@
+name: "Containers: Retag latest"
+
+# Points the latest* tags at an already-published release's manifests
+# (no rebuild, digests unchanged). For when latest falls behind, e.g.
+# releases cut before the latest tag was enabled on tag pushes.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published version latest should point at (e.g. 4.41)'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retag latest from ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          for image in chrislusf/seaweedfs-enterprise ghcr.io/seaweedfs/seaweedfs-enterprise; do
+            for suffix in "" _full _large_disk _large_disk_full _large_disk_rocksdb _large_disk_rocksdb_9_3 _large_disk_foundationdb; do
+              src="$image:$version$suffix"
+              if docker buildx imagetools inspect "$src" >/dev/null 2>&1; then
+                docker buildx imagetools create -t "$image:latest$suffix" "$src"
+                echo "latest$suffix -> $version$suffix"
+              else
+                echo "::warning::$src not found, skipped"
+              fi
+            done
+          done
