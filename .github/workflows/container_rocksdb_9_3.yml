@@ -69,7 +69,7 @@ jobs:
             chrislusf/seaweedfs-enterprise
           tags: |
             type=ref,event=tag,suffix=_large_disk_rocksdb_9_3
-            type=raw,value=latest,suffix=_large_disk_rocksdb_9_3,enable={{is_default_branch}}
+            type=raw,value=latest,suffix=_large_disk_rocksdb_9_3,enable=true
           flavor: |
             latest=false
           labels: |
