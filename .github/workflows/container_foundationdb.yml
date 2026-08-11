@@ -59,7 +59,7 @@ jobs:
           tags: |
             type=ref,event=tag,suffix=_large_disk_foundationdb
             type=raw,value=${{ inputs.tag_name }},suffix=_large_disk_foundationdb,enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=latest,suffix=_large_disk_foundationdb,enable={{is_default_branch}}
+            type=raw,value=latest,suffix=_large_disk_foundationdb,enable=true
           flavor: |
             latest=false
           labels: |
