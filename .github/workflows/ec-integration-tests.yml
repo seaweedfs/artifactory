@@ -316,7 +316,8 @@ jobs:
         echo "  - round 1: active_version 0 -> 1 (stage / Prepare / Commit fan-out)"
         echo "  - round 2: 1 -> 2 (validates post-switch read path)"
         echo "  - vacuum-to-empty: 2 -> 3 + TeardownEmptyVolume across all 14 holders"
-        go test -v -timeout 25m -run TestEcVacuumVersionedSwitch .
+        # Anchored: the Rust variant of this scenario is its own job.
+        go test -v -timeout 25m -run '^TestEcVacuumVersionedSwitch$' .
 
     - name: Archive test logs
       if: always()
@@ -351,3 +352,128 @@ jobs:
         echo "- Master dropping versioned-EC heartbeat fields on no-op shard-set updates" >> $GITHUB_STEP_SUMMARY
         echo "- Worker \`cleanupEcVacuumShards\` deleting freshly-committed \`.v<N>\` files because \`KeepVersion=0\`" >> $GITHUB_STEP_SUMMARY
         echo "- \`TeardownEmptyVolume\` not wired through the volume server's commit-ordering deps" >> $GITHUB_STEP_SUMMARY
+
+  # The same versioned-switch scenario against RUST shard holders
+  # (seaweed-volume crate) instead of the Go `weed volume` binary.
+  #
+  # The restart phase is the reason this variant exists: seaweedfs#10785
+  # was a mount-time discovery bug and the Rust volume server had it too,
+  # yet every restart test in the tree runs Go holders only. Master,
+  # filer, admin and workers stay Go — they are the orchestrators.
+  ec-vacuum-2pc-rust-tests:
+    name: EC Vacuum 2PC Switch Tests (Rust volumes)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        branch: ${{ github.event.inputs.gitlab_branch }}
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Install protobuf compiler
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry and target
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          seaweedfs-source/enterprise/seaweed-volume/target
+        key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+        restore-keys: |
+          rust-
+
+    - name: Build Rust volume binary
+      run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
+
+    - name: Run EC Vacuum 2PC Switch Test (Rust volumes)
+      working-directory: seaweedfs-source/enterprise/test/ec_vacuum/admin_dockertest
+      env:
+        EC_VACUUM_INTEGRATION: "1"
+        # Without this the test builds the crate itself; the cached
+        # release build above is the one we want it to use.
+        RUST_VOLUME_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+      run: |
+        # Same three switch rounds plus the restart phase as the Go job,
+        # with 14 Rust shard holders. The test forks its own Go weed_bin
+        # with -tags 5BytesOffset to match the crate's 17-byte idx layout.
+        go test -v -timeout 35m -run '^TestEcVacuumVersionedSwitch_RustVolumes$' .
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-vacuum-2pc-rust-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/enterprise/test/ec_vacuum/admin_dockertest/tmp/logs/*.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+  # Kills a shard holder inside the 2PC switch and requires the cluster to
+  # come back consistent. These live in their own job because most of their
+  # wall time is spent waiting out the switch's own 2-minute deadline —
+  # cooperative termination fires there and nothing they assert is true
+  # before it — which would push the main EC integration job over budget.
+  ec-2pc-interruption-tests:
+    name: EC 2PC Interruption Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Clone seaweed-mono (enterprise) source
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        branch: ${{ github.event.inputs.gitlab_branch }}
+
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+      id: go
+
+    - name: Build weed binary
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        go build -o weed .
+        ./weed version
+        echo "$(pwd)" >> $GITHUB_PATH
+
+    - name: Run EC 2PC interruption tests
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      env:
+        EC_2PC_INTERRUPTION: "1"
+      run: |
+        echo "  - kill a holder between Prepare and Commit, restart it, require one"
+        echo "    generation cluster-wide + every byte intact + another vacuum still runs"
+        echo "  - hold a holder down across a whole vacuum: the vacuum must REFUSE"
+        echo "    rather than compact from an incomplete shard set"
+        go test -v -timeout 35m -run 'TestECVacuumKillHolderMidSwitch|TestECVacuumHolderDownAcrossSwitch' .
+
+    - name: Archive test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ec-2pc-interruption-test-logs-${{ env.COMMIT_SHA }}
+        path: |
+          seaweedfs-source/enterprise/test/erasure_coding/*.log
+        if-no-files-found: ignore
+        retention-days: 7
