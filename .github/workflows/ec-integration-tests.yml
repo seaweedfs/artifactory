@@ -363,10 +363,14 @@ jobs:
   ec-vacuum-2pc-rust-tests:
     name: EC Vacuum 2PC Switch Tests (Rust volumes)
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    # A cold cargo cache means a full release build of the crate before the
+    # test starts, on top of the test's own 35m budget.
+    timeout-minutes: 55
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -436,6 +440,8 @@ jobs:
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -466,7 +472,7 @@ jobs:
         echo "    generation cluster-wide + every byte intact + another vacuum still runs"
         echo "  - hold a holder down across a whole vacuum: the vacuum must REFUSE"
         echo "    rather than compact from an incomplete shard set"
-        go test -v -timeout 35m -run 'TestECVacuumKillHolderMidSwitch|TestECVacuumHolderDownAcrossSwitch' .
+        go test -v -timeout 25m -run '^(TestECVacuumKillHolderMidSwitch|TestECVacuumHolderDownAcrossSwitch)$' .
 
     - name: Archive test logs
       if: always()
