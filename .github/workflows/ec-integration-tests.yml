@@ -385,9 +385,6 @@ jobs:
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
-    - name: Install protobuf compiler
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
