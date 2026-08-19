@@ -62,7 +62,13 @@ jobs:
     - name: Build SeaweedFS binary
       working-directory: seaweedfs-source/enterprise/weed
       run: |
-        go build -o weed .
+        # -tags 5BytesOffset to match the Rust volume server, which the mixed
+        # Go/Rust tests in this suite run against and which the harness builds
+        # with default features (17-byte idx entries, 5-byte offset — the same
+        # as production Go builds). An untagged Go binary writes 16-byte
+        # entries, and the pair then fails on first contact with
+        # "bytes_offset mismatch ... found 4, expected 5".
+        go build -tags 5BytesOffset -o weed .
         chmod +x weed
         ./weed version
 
