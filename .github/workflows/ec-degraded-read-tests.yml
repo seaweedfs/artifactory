@@ -146,10 +146,6 @@ jobs:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
-    - name: Install protobuf compiler
-      if: steps.check.outputs.present == 'true'
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
     - name: Install Rust toolchain
       if: steps.check.outputs.present == 'true'
       uses: dtolnay/rust-toolchain@stable

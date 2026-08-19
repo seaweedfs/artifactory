@@ -66,9 +66,6 @@ jobs:
           cd seaweedfs-enterprise-source
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
