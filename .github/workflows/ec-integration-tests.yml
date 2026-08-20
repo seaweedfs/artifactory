@@ -433,7 +433,7 @@ jobs:
   ec-2pc-interruption-tests:
     name: EC 2PC Interruption Tests
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 70
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -470,6 +470,24 @@ jobs:
         echo "  - hold a holder down across a whole vacuum: the vacuum must REFUSE"
         echo "    rather than compact from an incomplete shard set"
         go test -v -timeout 25m -run '^(TestECVacuumKillHolderMidSwitch|TestECVacuumHolderDownAcrossSwitch)$' .
+
+    # Separate step, not more names on the one above: these drive the fault
+    # seam rather than a process kill, and folding them in would put five long
+    # tests under a single 25m timeout where the first to overrun hides the
+    # rest.
+    - name: Run EC 2PC fault-injection tests
+      working-directory: seaweedfs-source/enterprise/test/erasure_coding
+      env:
+        EC_2PC_INTERRUPTION: "1"
+      run: |
+        echo "  - fail ONE disk of a multi-disk holder before its durable decision:"
+        echo "    the holder must disagree with itself, keep every byte readable,"
+        echo "    and converge with no operator action"
+        echo "  - hold the publish window open and move a shard through it: the"
+        echo "    copy must land inside a window it observed, and whichever way"
+        echo "    the race goes the cluster settles on one generation"
+        echo "  - plus the unaimed soak, which CI was not running at all"
+        go test -v -timeout 30m -run '^(TestECVacuumPartialCommitAcrossDisks|TestECVacuumShardMoveInsideTheSwitchWindow|TestECVacuumConcurrentShardMove)$' .
 
     - name: Archive test logs
       if: always()
