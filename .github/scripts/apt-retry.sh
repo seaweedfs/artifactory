@@ -27,6 +27,34 @@ ATTEMPTS="${APT_RETRY_ATTEMPTS:-4}"
 # Generous enough for a real install over a slow link, short enough that a
 # dead mirror is caught inside one job step rather than by the job timeout.
 TIMEOUT="${APT_RETRY_TIMEOUT:-300}"
+# How long apt gets to honour TERM before it is killed outright. See the
+# --kill-after note below for why the escalation is wanted at all.
+KILL_GRACE="${APT_RETRY_KILL_AFTER:-30}"
+
+# Reject settings that would quietly remove the bounds this script exists to
+# apply. Two of them fail badly rather than obviously:
+#
+#   ATTEMPTS=abc -> `[ 1 -ge abc ]` errors and returns non-zero, so the
+#     terminal branch is never taken and the loop retries FOREVER, sleeping
+#     longer each time. An unbounded loop is the one outcome this script must
+#     not produce.
+#   TIMEOUT=0    -> GNU timeout reads 0 as "no limit", so a hang is unbounded
+#     again, which is precisely the failure being fixed here.
+require_positive_int() {
+  case "$2" in
+    '' | *[!0-9]*)
+      echo "apt-retry: $1 must be a positive integer, got '$2'" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$2" -eq 0 ]; then
+    echo "apt-retry: $1 must be greater than zero; 0 disables the bound" >&2
+    exit 2
+  fi
+}
+require_positive_int APT_RETRY_ATTEMPTS "$ATTEMPTS"
+require_positive_int APT_RETRY_TIMEOUT "$TIMEOUT"
+require_positive_int APT_RETRY_KILL_AFTER "$KILL_GRACE"
 
 # Acquire::Retries lets apt re-ask a working mirror for a file it dropped;
 # the Timeouts are what stop it waiting on one that is gone. Both are per
@@ -40,23 +68,34 @@ apt_opts=(
 
 op="apt-get ${1:-}"
 
-# timeout(1) is coreutils, so it is there on the runners but not everywhere a
-# developer might run this. Degrade to retries-only rather than failing every
-# command on a host without it.
-bound=(timeout "$TIMEOUT")
+# --kill-after escalates to KILL for a command that ignores or delays TERM;
+# without it the per-attempt bound is advisory. Killing apt mid-install can
+# leave dpkg wanting a --configure, which would matter on a real machine and
+# does not on a throwaway runner -- and we only reach it after apt has already
+# spent TIMEOUT seconds unresponsive and then ignored TERM for KILL_GRACE more.
+#
+# timeout(1) is coreutils, so it is on the runners but not everywhere a
+# developer might run this, and not every build of it has --kill-after. Probe
+# once and degrade in two steps rather than failing every command outright.
+bound=(timeout --kill-after="$KILL_GRACE" "$TIMEOUT")
 if ! command -v timeout >/dev/null 2>&1; then
   echo "$op: timeout(1) not found; running unbounded with retries only" >&2
   bound=()
+elif ! timeout --kill-after=1 1 true >/dev/null 2>&1; then
+  echo "$op: timeout(1) has no --kill-after; bounding with TERM only" >&2
+  bound=(timeout "$TIMEOUT")
 fi
 
 attempt=1
 until "${bound[@]+"${bound[@]}"}" sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" "$@"; do
   status=$?
   reason="exit $status"
-  # 124 is timeout(1)'s own code for "I killed it" -- the case above.
-  if [ "$status" = 124 ]; then
-    reason="no response within ${TIMEOUT}s"
-  fi
+  case "$status" in
+    # timeout(1)'s own code for "I terminated it" -- the hang case above.
+    124) reason="no response within ${TIMEOUT}s" ;;
+    # 128+9: TERM was ignored and --kill-after escalated to KILL.
+    137) reason="ignored TERM, killed ${KILL_GRACE}s after the ${TIMEOUT}s bound" ;;
+  esac
   if [ "$attempt" -ge "$ATTEMPTS" ]; then
     plural=s
     [ "$ATTEMPTS" = 1 ] && plural=
