@@ -48,7 +48,7 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -121,8 +121,8 @@ jobs:
       # (`ibv_devices`) and the userspace siw provider, libsiw (ibverbs-providers).
       - name: Install build + RDMA userspace deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y \
             protobuf-compiler clang libclang-dev \
             libibverbs-dev librdmacm-dev rdma-core ibverbs-providers ibverbs-utils
 
@@ -133,7 +133,10 @@ jobs:
           # siw (Soft-iWARP) but NOT rdma_rxe (SoftRoCE) in modules-extra. siw drives
           # the same RC verbs + rdma_cm (RDMA_PS_TCP) path these one-sided read/write
           # e2e tests use, so it is a drop-in software RDMA transport here.
-          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || \
+          # A miss here is expected and tolerated, so no retries -- but still go
+          # through the wrapper, which bounds the attempt if the mirror hangs.
+          APT_RETRY_ATTEMPTS=1 $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh \
+            install -y "linux-modules-extra-$(uname -r)" || \
             echo "linux-modules-extra not available; relying on in-tree siw"
           sudo modprobe siw || { echo "::error::siw module unavailable on $(uname -r)"; exit 1; }
           # Give siw its own dummy netdev with a private IP. eth0 also carries

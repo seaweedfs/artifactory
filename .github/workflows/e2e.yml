@@ -91,8 +91,8 @@ jobs:
         echo "deb http://azure.archive.ubuntu.com/ubuntu/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list
         echo "deb http://azure.archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
 
-        sudo apt-get update --fix-missing
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fuse
+        $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update --fix-missing
+        $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y --no-install-recommends fuse
 
         # Verify FUSE installation
         echo "FUSE version: $(fusermount --version 2>&1 || echo 'fusermount not found')"

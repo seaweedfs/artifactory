@@ -56,7 +56,7 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libfuse3-dev pkg-config
+        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler libfuse3-dev pkg-config
       - name: Build
         working-directory: seaweedfs-source/seaweed-vfs
         run: cargo build --workspace --locked
@@ -183,7 +183,7 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
+        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
       - name: Repair the fusermount3 setuid bit
         uses: ./.github/actions/fix-fusermount-setuid
       - name: Install weed
@@ -267,7 +267,7 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
+        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
 
       - name: Repair the fusermount3 setuid bit
         uses: ./.github/actions/fix-fusermount-setuid

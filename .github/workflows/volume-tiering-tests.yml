@@ -99,7 +99,7 @@ jobs:
     # following start, which it checks with lsof.
     - name: Install lsof
       if: steps.check.outputs.present == 'true'
-      run: sudo apt-get update && sudo apt-get install -y lsof
+      run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y lsof
 
     - name: Run volume tiering E2E suite (${{ matrix.layout }})
       if: steps.check.outputs.present == 'true'
