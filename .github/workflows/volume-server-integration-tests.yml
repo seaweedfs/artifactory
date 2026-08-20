@@ -95,7 +95,9 @@ jobs:
           fi
         fi
         echo "Running volume server integration tests for ${{ matrix.test-type }} (Shard ${{ matrix.shard }}, pattern: ${TEST_PATTERN})..."
-        go test -v -count=1 -timeout=${{ env.TEST_TIMEOUT }} ./test/volume_server/${{ matrix.test-type }}/... -run "${TEST_PATTERN}"
+        # Same tag as the binary above: the tests that read .idx files size their
+        # entries with types.NeedleMapEntrySize, which is a compile-time constant.
+        go test -v -count=1 -tags 5BytesOffset -timeout=${{ env.TEST_TIMEOUT }} ./test/volume_server/${{ matrix.test-type }}/... -run "${TEST_PATTERN}"
 
     - name: Collect logs on failure
       if: failure()
@@ -135,4 +137,4 @@ jobs:
         echo "## Go Volume Server Integration Test Summary (${{ matrix.test-type }} - Shard ${{ matrix.shard }})" >> "$GITHUB_STEP_SUMMARY"
         echo "- Source: github.com/seaweedfs/seaweed-mono enterprise/ (branch: ${{ env.BRANCH_NAME }}, commit: ${{ env.COMMIT_SHA }})" >> "$GITHUB_STEP_SUMMARY"
         echo "- Suite: test/volume_server/${{ matrix.test-type }} (Pattern: ${TEST_PATTERN})" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Command: go test -v -count=1 -timeout=${{ env.TEST_TIMEOUT }} ./test/volume_server/${{ matrix.test-type }}/... -run \"${TEST_PATTERN}\"" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Command: go test -v -count=1 -tags 5BytesOffset -timeout=${{ env.TEST_TIMEOUT }} ./test/volume_server/${{ matrix.test-type }}/... -run \"${TEST_PATTERN}\"" >> "$GITHUB_STEP_SUMMARY"
