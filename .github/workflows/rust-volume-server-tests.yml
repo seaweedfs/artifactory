@@ -116,7 +116,7 @@ jobs:
         run: |
           echo "Running Rust volume server integration tests..."
           cd seaweedfs-source/enterprise
-          go test -v -count=1 -timeout=15m ./test/volume_server/rust/...
+          go test -v -count=1 -tags 5BytesOffset -timeout=15m ./test/volume_server/rust/...
 
       - name: Collect logs on failure
         if: failure()
@@ -138,7 +138,7 @@ jobs:
         run: |
           echo "## Rust Volume Server Integration Test Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- Suite: test/volume_server/rust" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Command: go test -v -count=1 -timeout=15m ./test/volume_server/rust/..." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Command: go test -v -count=1 -tags 5BytesOffset -timeout=15m ./test/volume_server/rust/..." >> "$GITHUB_STEP_SUMMARY"
 
   rust-volume-go-tests:
     name: Go Tests with Rust Volume (${{ matrix.test-type }} - Shard ${{ matrix.shard }})
