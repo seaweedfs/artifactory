@@ -75,8 +75,8 @@ jobs:
           sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y gcc-aarch64-linux-gnu libssl-dev:arm64
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "OPENSSL_DIR=/usr" >> "$GITHUB_ENV"
           echo "OPENSSL_INCLUDE_DIR=/usr/include" >> "$GITHUB_ENV"

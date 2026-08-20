@@ -148,7 +148,7 @@ jobs:
           .github/scripts/git-retry.sh clone -b "$REF" "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" src
 
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config
+        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -158,7 +158,7 @@ jobs:
       - name: Cross-compile tools (arm64)
         if: matrix.cross
         run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Cache cargo
