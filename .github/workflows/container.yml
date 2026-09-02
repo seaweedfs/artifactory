@@ -150,6 +150,10 @@ jobs:
     needs: [build-rust-binaries]
     runs-on: ubuntu-latest
     strategy:
+      # A variant that cannot build is the whole story for that variant, not for
+      # the four beside it: without this, one failure cancels the rest mid-push
+      # and the release lands with holes in it.
+      fail-fast: false
       # Build sequentially to avoid rate limits
       max-parallel: 2
       matrix:
