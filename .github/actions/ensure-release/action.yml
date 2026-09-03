@@ -1,0 +1,66 @@
+name: Ensure release
+description: >
+  Make sure the GitHub release the assets upload to exists before any build
+  starts. go-release-action's uploader only attaches assets to an existing
+  release, so a run for a tag nobody had released yet failed every matrix leg
+  after its build. Creates the release when it is missing; for a manual run
+  that also creates the tag, at the workflow's commit.
+
+inputs:
+  tag:
+    description: Release tag the assets upload to (e.g. 4.45.2)
+    required: true
+  token:
+    description: Token with contents:write on this repository
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Find or create the release
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        err=$(mktemp)
+        lookup() { gh release view "$TAG" --json url --jq .url 2>"$err"; }
+
+        if url=$(lookup); then
+          echo "Release ${TAG} exists: ${url}"
+          exit 0
+        fi
+        if ! grep -q 'release not found' "$err"; then
+          echo "::error::could not look up release ${TAG}: $(cat "$err")"
+          exit 1
+        fi
+
+        # Only a version tag gets a release made for it: a stray input such as
+        # 'latest' must not become a release with binaries attached.
+        if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+          echo "::error::there is no release '${TAG}' and it is not a MAJOR.MINOR[.PATCH] version; publish the release first, or dispatch with a version tag"
+          exit 1
+        fi
+
+        # Another release workflow may create the same release at the same
+        # moment: a failed create that a lookup then satisfies is that race.
+        create_err=$(mktemp)
+        if url=$(gh release create "$TAG" --title "$TAG" --notes "" --target "$GITHUB_SHA" 2>"$create_err"); then
+          echo "Created release ${TAG} at ${GITHUB_SHA}: ${url}"
+        elif url=$(lookup); then
+          echo "Release ${TAG} was created meanwhile: ${url}"
+          exit 0
+        else
+          echo "::error::could not create release ${TAG}: $(cat "$create_err")"
+          exit 1
+        fi
+
+        {
+          echo "Created release [${TAG}](${url}) at ${GITHUB_SHA}."
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "Its tag was pushed with the workflow token, which starts no other workflow: dispatch the container and Rust volume server release workflows for ${TAG} as needed."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
