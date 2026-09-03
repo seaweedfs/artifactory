@@ -16,6 +16,11 @@ on:
 permissions:
   contents: write
 
+# Two runs publishing to one release would race each other's asset overwrites.
+concurrency:
+  group: binaries-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 env:
   TAG: ${{ inputs.tag_name || github.ref_name }}
 
