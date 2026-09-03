@@ -1,12 +1,13 @@
 name: Verify enterprise version
 description: >
-  Check that the release tag matches MAJOR_VERSION/MINOR_VERSION in
-  seaweed-mono enterprise/weed/util/version/constants.go, so an enterprise
-  build never ships an out-of-date version under a newer tag.
+  Check that the release tag's MAJOR.MINOR matches MAJOR_VERSION/MINOR_VERSION
+  in seaweed-mono enterprise/weed/util/version/constants.go, so an enterprise
+  build never ships an out-of-date version under a newer tag. A patch tag
+  (4.45.2) rebuilds its MAJOR.MINOR line: the constants carry no patch number.
 
 inputs:
   tag:
-    description: Release tag being built (e.g. 4.39)
+    description: Release tag being built (e.g. 4.39 or 4.39.1)
     required: true
   mono-token:
     description: Token with read access to seaweedfs/seaweed-mono
@@ -24,8 +25,8 @@ runs:
         set -euo pipefail
 
         tag="${TAG#v}"
-        if [[ ! "$tag" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-          echo "Tag '${TAG}' is not a MAJOR.MINOR release version; skipping version check."
+        if [[ ! "$tag" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]]; then
+          echo "Tag '${TAG}' is not a MAJOR.MINOR[.PATCH] release version; skipping version check."
           exit 0
         fi
         tag_major=$((10#${BASH_REMATCH[1]}))
