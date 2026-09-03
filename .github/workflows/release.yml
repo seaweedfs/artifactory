@@ -87,7 +87,7 @@ jobs:
 
       # Build and Release Normal Volume Size Binary (Enterprise)
       - name: Go Release Binaries Normal Volume Size
-        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.22
+        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.53
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
@@ -103,7 +103,7 @@ jobs:
 
       # Build and Release Large Disk Binary (Enterprise)
       - name: Go Release Large Disk Binaries
-        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.22
+        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.53
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
