@@ -47,6 +47,10 @@ jobs:
     needs: [prepare-release]
     runs-on: ubuntu-latest
     strategy:
+      # A platform that cannot build or upload is that platform's problem, not
+      # the other eleven's: without this, one failure cancels the rest mid-run
+      # and the release lands with holes in it.
+      fail-fast: false
       matrix:
         goos: [linux, darwin, windows, freebsd, openbsd]
         goarch: [amd64, arm, arm64]

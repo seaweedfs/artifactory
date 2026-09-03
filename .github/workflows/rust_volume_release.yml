@@ -42,6 +42,8 @@ jobs:
       contents: write
     runs-on: ubuntu-22.04
     strategy:
+      # One architecture failing must not cancel the other's upload.
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
