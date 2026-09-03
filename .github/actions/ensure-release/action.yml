@@ -40,7 +40,7 @@ runs:
 
         # Only a version tag gets a release made for it: a stray input such as
         # 'latest' must not become a release with binaries attached.
-        if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
           echo "::error::there is no release '${TAG}' and it is not a MAJOR.MINOR[.PATCH] version; publish the release first, or dispatch with a version tag"
           exit 1
         fi
