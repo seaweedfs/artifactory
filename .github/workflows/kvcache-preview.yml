@@ -127,34 +127,20 @@ jobs:
           git -C lmcache checkout --detach "$LMCACHE_SHA"
           test "$(git -C lmcache rev-parse HEAD)" = "$LMCACHE_SHA"
 
-      - name: Install native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake libclang-dev libibverbs-dev \
-            librdmacm-dev pkg-config protobuf-compiler \
-            python3.12-dev python3.12-venv
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup default 1.93.0
-          python3.12 -m venv "$RUNNER_TEMP/kvcache-build-venv"
-          "$RUNNER_TEMP/kvcache-build-venv/bin/python" -m pip install --disable-pip-version-check \
-            build 'setuptools>=68' wheel 'pybind11>=2.11'
-          echo "BUILD_PYTHON=$RUNNER_TEMP/kvcache-build-venv/bin/python" >> "$GITHUB_ENV"
-
-      - name: Build and verify connector wheel
+      - name: Download and verify released connector wheel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cd mono/enterprise/rust
-          cargo build --locked --release -p seaweedfs-sw-rdma-nixl --features mlx5-dc
-          cd ../python/seaweedkv-native
-          SOURCE_DATE_EPOCH="$(git -C ../../../ show -s --format=%ct "$MONO_SHA")"
-          export SOURCE_DATE_EPOCH
-          LMCACHE_ROOT="$GITHUB_WORKSPACE/lmcache" \
-          SW_RDMA_NIXL_LIB_DIR="$GITHUB_WORKSPACE/mono/enterprise/rust/target/release" \
-          CXXFLAGS=-g0 \
-            "$BUILD_PYTHON" -m build --wheel --no-isolation
-          wheel=$(find dist -maxdepth 1 -name 'seaweedkv_native-*.whl' -print -quit)
-          test -n "$wheel"
+          dist=mono/enterprise/python/seaweedkv-native/dist
+          mkdir -p "$dist"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'seaweedkv_native-*.whl' \
+            --dir "$dist"
+          mapfile -t wheels < <(find "$dist" -maxdepth 1 -name 'seaweedkv_native-*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel=${wheels[0]}
           actual=$(sha256sum "$wheel" | awk '{print $1}')
           echo "wheel_sha256=$actual"
           echo "expected_wheel_sha256=$EXPECTED_WHEEL_SHA256"
