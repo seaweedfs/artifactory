@@ -1,0 +1,242 @@
+name: "KVCache: Publish LMCache preview"
+
+on:
+  workflow_dispatch:
+    inputs:
+      mono_sha:
+        description: "Full seaweed-mono source SHA"
+        required: true
+        default: "0d5ea8a702ceb85659d562b08457b94a81f894b1"
+      release_tag:
+        description: "Existing artifactory prerelease tag"
+        required: true
+        default: "kvcache-filer-native-v0.1.0-preview.1"
+  push:
+    branches:
+      - release/kvcache-preview-artifactory
+    paths:
+      - .github/workflows/kvcache-preview.yml
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: kvcache-preview-${{ inputs.release_tag || 'kvcache-filer-native-v0.1.0-preview.1' }}
+  cancel-in-progress: false
+
+env:
+  MONO_SHA: ${{ inputs.mono_sha || '0d5ea8a702ceb85659d562b08457b94a81f894b1' }}
+  LMCACHE_SHA: f2b65521c55f55d6c146277f004153e185e5d73a
+  RELEASE_TAG: ${{ inputs.release_tag || 'kvcache-filer-native-v0.1.0-preview.1' }}
+  SERVER_IMAGE: ghcr.io/seaweedfs/seaweedfs-enterprise:kvcache-v0.1.0-preview.1-rdma
+  RUNTIME_IMAGE: ghcr.io/seaweedfs/lmcache-seaweed:v0.1.0-preview.1
+  EXPECTED_WHEEL_SHA256: 4349943eb5198c22fa094e9db55d3206846d96427da94e6d700e4f712868fe37
+
+jobs:
+  server-image:
+    name: Build and publish SeaweedFS RDMA image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af --volumes || true
+
+      - name: Checkout frozen seaweed-mono source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${#MONO_SHA}" -eq 40
+          git init mono
+          git -C mono remote add origin "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+          git -C mono fetch --depth 1 origin "$MONO_SHA"
+          git -C mono checkout --detach FETCH_HEAD
+          test "$(git -C mono rev-parse HEAD)" = "$MONO_SHA"
+
+      - name: Install Rust and RDMA build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake libclang-dev libibverbs-dev \
+            librdmacm-dev pkg-config protobuf-compiler
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+
+      - name: Build RDMA Volume server
+        run: |
+          set -euo pipefail
+          cd mono/enterprise/seaweed-volume
+          cargo build --locked --release --features kvcache,rdma,rdma-dc
+          install -D -m 0755 target/release/weed-volume \
+            ../docker/weed-volume-prebuilt/weed-volume-amd64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish server image
+        run: |
+          set -euo pipefail
+          docker build \
+            --file mono/enterprise/docker/Dockerfile.rdma \
+            --build-arg SOURCE_SHA="$MONO_SHA" \
+            --tag "$SERVER_IMAGE" \
+            mono/enterprise
+          docker push "$SERVER_IMAGE"
+          repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$SERVER_IMAGE")
+          test -n "$repo_digest"
+          printf '%s\n' "$repo_digest" > server-image.txt
+          docker run --rm "$repo_digest" weed version | grep -F "$MONO_SHA"
+
+      - name: Upload server image identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvcache-server-image
+          path: server-image.txt
+          if-no-files-found: error
+
+  runtime-image:
+    name: Build and publish LMCache runtime image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af --volumes || true
+
+      - name: Checkout frozen sources
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${#MONO_SHA}" -eq 40
+          test "${#LMCACHE_SHA}" -eq 40
+          git init mono
+          git -C mono remote add origin "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+          git -C mono fetch --depth 1 origin "$MONO_SHA"
+          git -C mono checkout --detach FETCH_HEAD
+          test "$(git -C mono rev-parse HEAD)" = "$MONO_SHA"
+          git clone --filter=blob:none https://github.com/LMCache/LMCache.git lmcache
+          git -C lmcache checkout --detach "$LMCACHE_SHA"
+          test "$(git -C lmcache rev-parse HEAD)" = "$LMCACHE_SHA"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake libclang-dev libibverbs-dev \
+            librdmacm-dev pkg-config protobuf-compiler
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+          python -m pip install --disable-pip-version-check \
+            build 'setuptools>=68' wheel 'pybind11>=2.11'
+
+      - name: Build and verify connector wheel
+        run: |
+          set -euo pipefail
+          cd mono/enterprise/rust
+          cargo build --locked --release -p seaweedfs-sw-rdma-nixl --features mlx5-dc
+          cd ../python/seaweedkv-native
+          SOURCE_DATE_EPOCH="$(git -C ../../../ show -s --format=%ct "$MONO_SHA")"
+          export SOURCE_DATE_EPOCH
+          LMCACHE_ROOT="$GITHUB_WORKSPACE/lmcache" \
+          SW_RDMA_NIXL_LIB_DIR="$GITHUB_WORKSPACE/mono/enterprise/rust/target/release" \
+          CXXFLAGS=-g0 \
+            python -m build --wheel --no-isolation
+          wheel=$(find dist -maxdepth 1 -name 'seaweedkv_native-*.whl' -print -quit)
+          test -n "$wheel"
+          actual=$(sha256sum "$wheel" | awk '{print $1}')
+          test "$actual" = "$EXPECTED_WHEEL_SHA256"
+
+      - name: Build pinned LMCache base image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 \
+            --file docker/Dockerfile.standalone \
+            --tag "lmcache-preview-base:${LMCACHE_SHA}" \
+            "https://github.com/LMCache/LMCache.git#${LMCACHE_SHA}"
+          docker run --rm "lmcache-preview-base:${LMCACHE_SHA}" \
+            python -c "import lmcache._version as v; assert '${LMCACHE_SHA:0:10}' in v.__commit_id__"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish runtime image
+        run: |
+          set -euo pipefail
+          docker build \
+            --file mono/enterprise/python/seaweedkv-native/docker/Dockerfile.runtime \
+            --build-arg "LMCACHE_BASE_IMAGE=lmcache-preview-base:${LMCACHE_SHA}" \
+            --build-arg "SEAWEEDFS_SOURCE_SHA=${MONO_SHA}" \
+            --build-arg "LMCACHE_SOURCE_SHA=${LMCACHE_SHA}" \
+            --build-arg "SEAWEEDKV_WHEEL_SHA256=${EXPECTED_WHEEL_SHA256}" \
+            --tag "$RUNTIME_IMAGE" \
+            mono/enterprise/python/seaweedkv-native
+          docker push "$RUNTIME_IMAGE"
+          repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE")
+          test -n "$repo_digest"
+          printf '%s\n' "$repo_digest" > runtime-image.txt
+          docker run --rm "$repo_digest" \
+            python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'
+
+      - name: Upload runtime image identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvcache-runtime-image
+          path: runtime-image.txt
+          if-no-files-found: error
+
+  publish-attestation:
+    name: Attach registry identities to Artifactory release
+    needs: [server-image, runtime-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download image identities
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kvcache-*-image
+          merge-multiple: true
+
+      - name: Create registry attestation
+        run: |
+          set -euo pipefail
+          server=$(cat server-image.txt)
+          runtime=$(cat runtime-image.txt)
+          jq -n \
+            --arg release "$RELEASE_TAG" \
+            --arg mono "$MONO_SHA" \
+            --arg lmcache "$LMCACHE_SHA" \
+            --arg wheel "$EXPECTED_WHEEL_SHA256" \
+            --arg server "$server" \
+            --arg runtime "$runtime" \
+            '{schema_version:1, release:$release, seaweedfs_source_sha:$mono,
+              lmcache_source_sha:$lmcache, wheel_sha256:$wheel,
+              images:{seaweedfs:$server,lmcache_connector:$runtime}}' \
+            > REGISTRY-IMAGES.json
+          sha256sum REGISTRY-IMAGES.json > REGISTRY-SHA256SUMS
+
+      - name: Upload attestation to existing prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            REGISTRY-IMAGES.json REGISTRY-SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
