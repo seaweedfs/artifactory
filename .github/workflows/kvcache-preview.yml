@@ -127,21 +127,19 @@ jobs:
           git -C lmcache checkout --detach "$LMCACHE_SHA"
           test "$(git -C lmcache rev-parse HEAD)" = "$LMCACHE_SHA"
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
       - name: Install native build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake libclang-dev libibverbs-dev \
-            librdmacm-dev pkg-config protobuf-compiler
+            librdmacm-dev pkg-config protobuf-compiler \
+            python3.12-dev python3.12-venv
           rustup toolchain install 1.93.0 --profile minimal
           rustup default 1.93.0
-          python -m pip install --disable-pip-version-check \
+          python3.12 -m venv "$RUNNER_TEMP/kvcache-build-venv"
+          "$RUNNER_TEMP/kvcache-build-venv/bin/python" -m pip install --disable-pip-version-check \
             build 'setuptools>=68' wheel 'pybind11>=2.11'
+          echo "BUILD_PYTHON=$RUNNER_TEMP/kvcache-build-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Build and verify connector wheel
         run: |
@@ -154,10 +152,12 @@ jobs:
           LMCACHE_ROOT="$GITHUB_WORKSPACE/lmcache" \
           SW_RDMA_NIXL_LIB_DIR="$GITHUB_WORKSPACE/mono/enterprise/rust/target/release" \
           CXXFLAGS=-g0 \
-            python -m build --wheel --no-isolation
+            "$BUILD_PYTHON" -m build --wheel --no-isolation
           wheel=$(find dist -maxdepth 1 -name 'seaweedkv_native-*.whl' -print -quit)
           test -n "$wheel"
           actual=$(sha256sum "$wheel" | awk '{print $1}')
+          echo "wheel_sha256=$actual"
+          echo "expected_wheel_sha256=$EXPECTED_WHEEL_SHA256"
           test "$actual" = "$EXPECTED_WHEEL_SHA256"
 
       - name: Build pinned LMCache base image
