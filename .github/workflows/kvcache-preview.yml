@@ -61,10 +61,14 @@ jobs:
           set -euo pipefail
           if docker pull "$SERVER_IMAGE"; then
             repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$SERVER_IMAGE")
-            test -n "$repo_digest"
-            docker run --rm "$repo_digest" version | grep -F "$MONO_SHA"
-            printf '%s\n' "$repo_digest" > server-image.txt
-            echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            if test -n "$repo_digest" && \
+               docker run --rm "$repo_digest" version | grep -Fq "$MONO_SHA"; then
+              printf '%s\n' "$repo_digest" > server-image.txt
+              echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            else
+              echo "published server image does not match MONO_SHA=$MONO_SHA; rebuilding"
+              echo 'reuse=false' >> "$GITHUB_OUTPUT"
+            fi
           else
             echo 'reuse=false' >> "$GITHUB_OUTPUT"
           fi
@@ -78,14 +82,18 @@ jobs:
           set -euo pipefail
           if docker pull "$RUNTIME_IMAGE"; then
             repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE")
-            test -n "$repo_digest"
-            test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo_digest")" = "$MONO_SHA"
-            test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.source-revision"}}' "$repo_digest")" = "$LMCACHE_SHA"
-            test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.wheel.sha256"}}' "$repo_digest")" = "$EXPECTED_WHEEL_SHA256"
-            docker run --rm "$repo_digest" \
-              python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'
-            printf '%s\n' "$repo_digest" > runtime-image.txt
-            echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            if test -n "$repo_digest" && \
+               test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo_digest")" = "$MONO_SHA" && \
+               test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.source-revision"}}' "$repo_digest")" = "$LMCACHE_SHA" && \
+               test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.wheel.sha256"}}' "$repo_digest")" = "$EXPECTED_WHEEL_SHA256" && \
+               docker run --rm "$repo_digest" \
+                 python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'; then
+              printf '%s\n' "$repo_digest" > runtime-image.txt
+              echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            else
+              echo "published runtime image does not match the requested provenance; rebuilding"
+              echo 'reuse=false' >> "$GITHUB_OUTPUT"
+            fi
           else
             echo 'reuse=false' >> "$GITHUB_OUTPUT"
           fi
