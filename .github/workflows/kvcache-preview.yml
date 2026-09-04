@@ -151,12 +151,11 @@ jobs:
           set -euo pipefail
           docker build \
             --build-arg BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 \
-            --build-arg "LMCACHE_COMMIT_ID=${LMCACHE_SHA}" \
             --file docker/Dockerfile.standalone \
             --tag "lmcache-preview-base:${LMCACHE_SHA}" \
             "https://github.com/LMCache/LMCache.git#${LMCACHE_SHA}"
           docker run --rm "lmcache-preview-base:${LMCACHE_SHA}" \
-            python -c "import lmcache._version as v; assert v.__commit_id__ == '${LMCACHE_SHA}'"
+            python -c 'import lmcache; print(lmcache)'
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -179,6 +178,9 @@ jobs:
           docker push "$RUNTIME_IMAGE"
           repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE")
           test -n "$repo_digest"
+          test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo_digest")" = "$MONO_SHA"
+          test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.source-revision"}}' "$repo_digest")" = "$LMCACHE_SHA"
+          test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.wheel.sha256"}}' "$repo_digest")" = "$EXPECTED_WHEEL_SHA256"
           printf '%s\n' "$repo_digest" > runtime-image.txt
           docker run --rm "$repo_digest" \
             python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'
