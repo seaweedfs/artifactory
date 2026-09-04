@@ -151,11 +151,12 @@ jobs:
           set -euo pipefail
           docker build \
             --build-arg BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 \
+            --build-arg "LMCACHE_COMMIT_ID=${LMCACHE_SHA}" \
             --file docker/Dockerfile.standalone \
             --tag "lmcache-preview-base:${LMCACHE_SHA}" \
             "https://github.com/LMCache/LMCache.git#${LMCACHE_SHA}"
           docker run --rm "lmcache-preview-base:${LMCACHE_SHA}" \
-            python -c "import lmcache._version as v; assert '${LMCACHE_SHA:0:10}' in v.__commit_id__"
+            python -c "import lmcache._version as v; assert v.__commit_id__ == '${LMCACHE_SHA}'"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
