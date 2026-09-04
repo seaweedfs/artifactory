@@ -33,16 +33,27 @@ env:
   RUNTIME_IMAGE: ghcr.io/seaweedfs/lmcache-seaweed:v0.1.0-preview.1
   EXPECTED_WHEEL_SHA256: 4349943eb5198c22fa094e9db55d3206846d96427da94e6d700e4f712868fe37
 
+# One job, not three. Every job is a separate runner acquisition, and this
+# organization queues a median of ~30 minutes per job regardless of label, so
+# three jobs cost three queue waits for 19 minutes of work. See issue #77.
 jobs:
-  server-image:
-    name: Build and publish SeaweedFS RDMA image
+  publish-preview:
+    name: Build and publish KVCache preview images
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Reclaim runner disk
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
           sudo docker system prune -af --volumes || true
+          df -h /
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Reuse verified server image when present
         id: server
@@ -58,8 +69,29 @@ jobs:
             echo 'reuse=false' >> "$GITHUB_OUTPUT"
           fi
 
+      # Mirrors the server check above. Without it the runtime image was rebuilt
+      # from scratch (~17 min) on every run, even when the published image
+      # already carried the expected source SHAs and wheel checksum.
+      - name: Reuse verified runtime image when present
+        id: runtime
+        run: |
+          set -euo pipefail
+          if docker pull "$RUNTIME_IMAGE"; then
+            repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE")
+            test -n "$repo_digest"
+            test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo_digest")" = "$MONO_SHA"
+            test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.source-revision"}}' "$repo_digest")" = "$LMCACHE_SHA"
+            test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.wheel.sha256"}}' "$repo_digest")" = "$EXPECTED_WHEEL_SHA256"
+            docker run --rm "$repo_digest" \
+              python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'
+            printf '%s\n' "$repo_digest" > runtime-image.txt
+            echo 'reuse=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'reuse=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout frozen seaweed-mono source
-        if: steps.server.outputs.reuse != 'true'
+        if: steps.server.outputs.reuse != 'true' || steps.runtime.outputs.reuse != 'true'
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
@@ -90,14 +122,6 @@ jobs:
           install -D -m 0755 target/release/weed-volume \
             ../docker/weed-volume-prebuilt/weed-volume-amd64
 
-      - name: Log in to GHCR
-        if: steps.server.outputs.reuse != 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and publish server image
         if: steps.server.outputs.reuse != 'true'
         run: |
@@ -113,40 +137,32 @@ jobs:
           printf '%s\n' "$repo_digest" > server-image.txt
           docker run --rm "$repo_digest" version | grep -F "$MONO_SHA"
 
-      - name: Upload server image identity
-        uses: actions/upload-artifact@v4
-        with:
-          name: kvcache-server-image
-          path: server-image.txt
-          if-no-files-found: error
-
-  runtime-image:
-    name: Build and publish LMCache runtime image
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - name: Reclaim runner disk
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          sudo docker system prune -af --volumes || true
-
-      - name: Checkout frozen sources
-        env:
-          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+      # The two images used to build on separate runners, each with its own free
+      # disk. In one job those peaks would add up, so release the server build's
+      # footprint before the LMCache/CUDA base build starts. The server image is
+      # already pushed and its digest is recorded in server-image.txt.
+      - name: Reclaim disk before the runtime build
+        if: steps.runtime.outputs.reuse != 'true'
         run: |
           set -euo pipefail
-          test "${#MONO_SHA}" -eq 40
+          rm -rf mono/enterprise/seaweed-volume/target "$HOME/.cargo/registry" "$HOME/.rustup" || true
+          if [ "${{ steps.server.outputs.reuse }}" != 'true' ]; then
+            docker image rm "$SERVER_IMAGE" || true
+          fi
+          docker builder prune -af || true
+          df -h /
+
+      - name: Verify pinned LMCache source
+        if: steps.runtime.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
           test "${#LMCACHE_SHA}" -eq 40
-          git init mono
-          git -C mono remote add origin "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
-          git -C mono fetch --depth 1 origin "$MONO_SHA"
-          git -C mono checkout --detach FETCH_HEAD
-          test "$(git -C mono rev-parse HEAD)" = "$MONO_SHA"
           git clone --filter=blob:none https://github.com/LMCache/LMCache.git lmcache
           git -C lmcache checkout --detach "$LMCACHE_SHA"
           test "$(git -C lmcache rev-parse HEAD)" = "$LMCACHE_SHA"
 
       - name: Download and verify released connector wheel
+        if: steps.runtime.outputs.reuse != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -166,6 +182,7 @@ jobs:
           test "$actual" = "$EXPECTED_WHEEL_SHA256"
 
       - name: Build pinned LMCache base image
+        if: steps.runtime.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           docker build \
@@ -176,14 +193,8 @@ jobs:
           docker run --rm "lmcache-preview-base:${LMCACHE_SHA}" \
             python -c 'import lmcache; print(lmcache)'
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and publish runtime image
+        if: steps.runtime.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           docker build \
@@ -203,24 +214,6 @@ jobs:
           printf '%s\n' "$repo_digest" > runtime-image.txt
           docker run --rm "$repo_digest" \
             python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'
-
-      - name: Upload runtime image identity
-        uses: actions/upload-artifact@v4
-        with:
-          name: kvcache-runtime-image
-          path: runtime-image.txt
-          if-no-files-found: error
-
-  publish-attestation:
-    name: Attach registry identities to Artifactory release
-    needs: [server-image, runtime-image]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download image identities
-        uses: actions/download-artifact@v4
-        with:
-          pattern: kvcache-*-image
-          merge-multiple: true
 
       - name: Create registry attestation
         run: |
@@ -248,3 +241,12 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             REGISTRY-IMAGES.json REGISTRY-SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Upload image identities
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvcache-image-identities
+          path: |
+            server-image.txt
+            runtime-image.txt
+          if-no-files-found: error
