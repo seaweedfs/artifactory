@@ -92,7 +92,7 @@ jobs:
           repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$SERVER_IMAGE")
           test -n "$repo_digest"
           printf '%s\n' "$repo_digest" > server-image.txt
-          docker run --rm "$repo_digest" weed version | grep -F "$MONO_SHA"
+          docker run --rm "$repo_digest" version | grep -F "$MONO_SHA"
 
       - name: Upload server image identity
         uses: actions/upload-artifact@v4
