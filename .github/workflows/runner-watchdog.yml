@@ -1,0 +1,72 @@
+name: "runner watchdog: rescue jobs stuck on tp01"
+
+# There is no "or else" in runs-on: a job pinned to [self-hosted, tp01] queues
+# for up to 24 h if tp01 is offline and never falls back. This scheduled job is
+# the fallback. It judges the symptom, not the runner (listing runners needs
+# admin; the queue does not): a run queued on a self-hosted label for longer
+# than the limit is cancelled and re-dispatched on GitHub-hosted with the same
+# inputs, which the target workflow carries in its run name.
+#
+# It runs on hosted on purpose - a watchdog on tp01 would die with tp01. Runs
+# queued on hosted labels are never touched: that is ordinary queue pressure,
+# not an outage. The re-dispatched run carries runner=hosted, so it is ignored
+# on the next pass and cannot loop.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      max_queue_minutes:
+        description: "Queued longer than this on a self-hosted label means the runner is down"
+        default: "10"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: runner-watchdog
+  cancel-in-progress: false
+
+jobs:
+  rescue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MAX_MIN: ${{ inputs.max_queue_minutes || '10' }}
+      WORKFLOWS: "kvcache-preview.yml"
+    steps:
+      - name: Rescue runs queued on a self-hosted label past the limit
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          for wf in $WORKFLOWS; do
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --status queued --limit 20 \
+              --json databaseId,createdAt,headBranch,displayTitle > queued.json
+            jq -r '.[] | [.databaseId,.createdAt,.headBranch,.displayTitle] | @tsv' queued.json |
+            while IFS=$'\t' read -r id created branch title; do
+              age=$(( (now - $(date -u -d "$created" +%s)) / 60 ))
+              labels=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+                --jq '[.jobs[] | select(.status=="queued") | .labels[]] | unique | join(",")')
+              case ",$labels," in
+                *,self-hosted,*) ;;
+                *) echo "run $id: queued ${age}m on hosted labels [$labels] - ordinary queue, leaving it"; continue ;;
+              esac
+              if [ "$age" -lt "$MAX_MIN" ]; then echo "run $id: queued ${age}m on [$labels] - under the ${MAX_MIN}m limit"; continue; fi
+              mono=$(echo "$title" | grep -oE 'mono:[0-9a-f]+' | cut -d: -f2 || true)
+              tag=$(echo "$title" | grep -oE 'tag:[^ ]+' | cut -d: -f2 || true)
+              echo "run $id: queued ${age}m on [$labels] - RESCUING (branch=$branch mono=${mono:-default} tag=${tag:-default})"
+              gh run cancel "$id" --repo "$GITHUB_REPOSITORY"
+              args=(-f runner=hosted)
+              [ -n "$mono" ] && args+=(-f "mono_sha=$mono")
+              [ -n "$tag" ] && args+=(-f "release_tag=$tag")
+              gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$branch" "${args[@]}"
+              {
+                echo "### Rescued run $id ($wf)"
+                echo "Queued ${age} min on \`$labels\` - the self-hosted runner is down. Cancelled and re-dispatched on hosted: branch \`$branch\`, mono \`${mono:-default}\`, tag \`${tag:-default}\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
+          echo "done"
