@@ -1,5 +1,20 @@
 name: "KVCache: Publish LMCache preview"
 
+# Runs on the tp01 self-hosted runner by default; dispatch with runner=hosted to
+# fall back. Anything this workflow does outside the `apt-get install` step must
+# already exist on a self-hosted host, because GitHub-hosted images preinstall a
+# great deal that is invisible until you leave them. What this workflow assumes:
+#
+#   docker (daemon reachable by the runner account), git, jq, sha256sum,
+#   rustup + cargo, and gh - the GitHub CLI, needed by the final upload step.
+#
+# gh is the one that bit us: a run reached step 17 of 18 and failed with
+# `gh: command not found`. libssl-dev is the same class of problem and is now
+# named explicitly in the apt list rather than inherited from the image.
+#
+# When adding a step, assume nothing is preinstalled. When standing up another
+# runner, install the list above before pointing anything at it.
+
 on:
   workflow_dispatch:
     inputs:
