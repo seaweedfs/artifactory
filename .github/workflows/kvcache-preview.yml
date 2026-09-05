@@ -1,4 +1,8 @@
 name: "KVCache: Publish LMCache preview"
+# The inputs ride in the run name so the runner watchdog (main: runner-watchdog.yml)
+# can cancel a run stuck on an offline tp01 and re-dispatch it on hosted with the
+# same mono_sha / release_tag. Keep the three fields parseable: mono:<sha> tag:<tag> runner:<x>.
+run-name: "${{ github.workflow }} · mono:${{ inputs.mono_sha || '0d5ea8a702ceb85659d562b08457b94a81f894b1' }} · tag:${{ inputs.release_tag || 'kvcache-filer-native-v0.1.0-preview.1' }} · runner:${{ inputs.runner || 'tp01' }}"
 
 # Runs on the tp01 self-hosted runner by default; dispatch with runner=hosted to
 # fall back. Anything this workflow does outside the `apt-get install` step must
