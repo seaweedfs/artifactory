@@ -11,6 +11,12 @@ on:
         description: "Existing artifactory prerelease tag"
         required: true
         default: "kvcache-filer-native-v0.1.0-preview.1"
+      runner:
+        description: "Where to build: tp01 (fast, no queue) or hosted (fallback when tp01 is down)"
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
   push:
     branches:
       - release/kvcache-preview-artifactory
@@ -39,10 +45,13 @@ env:
 jobs:
   publish-preview:
     name: Build and publish KVCache preview images
-    # tp01. The label is specific on purpose: a bare `self-hosted` would let any
-    # other runner claim this job. There is no fallback - if tp01 is down this
-    # workflow queues instead of moving to a hosted runner.
-    runs-on: [self-hosted, tp01]
+    # tp01 by default; dispatch with runner=hosted when tp01 is down. There is no
+    # automatic failover on purpose: `runs-on` cannot express "self-hosted or else
+    # hosted", and a silent fallback would rebuild everything cold with nobody
+    # noticing. A job waiting on an offline tp01 queues and fails after 24h, so the
+    # switch is explicit and one dispatch away. The label is specific rather than a
+    # bare `self-hosted` so no other runner can claim this job.
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-24.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 120
     steps:
       # Hosted runners start with ~14 GB free and are discarded after the job, so
