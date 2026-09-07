@@ -1,5 +1,9 @@
 name: "EC Degraded Read Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 # End-to-end regression guard for distributed EC *degraded reads*
 # (reconstruct-on-read after shard/disk loss), extended to custom EC ratios.
@@ -22,6 +26,12 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -37,7 +47,7 @@ jobs:
   # reads, so this job proves the test itself is correct (it must stay green).
   go-degraded-read-tests:
     name: EC Degraded Read (Go volume server)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 40
     steps:
     - name: Checkout artifactory repo
@@ -113,7 +123,7 @@ jobs:
   # (read_ec_shard_needle_distributed) had returned empty after disk loss.
   rust-degraded-read-tests:
     name: EC Degraded Read (Rust volume server)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
@@ -203,7 +213,7 @@ jobs:
 
   ec-degraded-read-summary:
     name: EC Degraded Read Summary
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     needs: [go-degraded-read-tests, rust-degraded-read-tests]
     if: always()
     steps:

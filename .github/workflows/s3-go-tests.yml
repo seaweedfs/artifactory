@@ -1,5 +1,9 @@
 name: "S3 Go Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,12 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -28,7 +38,7 @@ permissions:
 jobs:
   s3-versioning-tests:
     name: S3 Versioning Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 30
     strategy:
       matrix:
@@ -159,7 +169,7 @@ jobs:
 
   s3-versioning-compatibility:
     name: S3 Versioning Compatibility Test
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 25
 
     steps:
@@ -270,7 +280,7 @@ jobs:
 
   s3-cors-compatibility:
     name: S3 CORS Compatibility Test
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 20
 
     steps:
@@ -326,7 +336,7 @@ jobs:
 
   s3-retention-tests:
     name: S3 Retention Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 30
     strategy:
       matrix:
@@ -401,7 +411,7 @@ jobs:
 
   s3-lifecycle-tests:
     name: S3 Lifecycle Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -480,7 +490,7 @@ jobs:
 
   s3-checksum-tests:
     name: S3 Checksum Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 20
 
     steps:
@@ -543,7 +553,7 @@ jobs:
 
   s3-cors-tests:
     name: S3 CORS Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 30
     strategy:
       matrix:
@@ -618,7 +628,7 @@ jobs:
 
   s3-retention-worm:
     name: S3 Retention WORM Integration Test
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 20
 
     steps:
@@ -675,7 +685,7 @@ jobs:
 
   s3-versioning-stress:
     name: S3 Versioning Stress Test
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 35
 
     steps:
@@ -751,7 +761,7 @@ jobs:
   s3-tagging-tests:
     # CI job for S3 object tagging tests
     name: S3 Tagging Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 20
 
     steps:
@@ -814,7 +824,7 @@ jobs:
 
   s3-remote-cache-tests:
     name: S3 Remote Cache Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 20
 
     steps:
@@ -877,7 +887,7 @@ jobs:
 
   s3-test-summary:
     name: S3 Test Summary
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     needs:
       - s3-versioning-tests
       - s3-versioning-compatibility

@@ -36,7 +36,22 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MAX_MIN: ${{ inputs.max_queue_minutes || '10' }}
-      WORKFLOWS: "kvcache-preview.yml"
+      # Every workflow that can land on a self-hosted label. A workflow missing
+      # from this list queues on an offline tp01 until it times out after 24 h.
+      WORKFLOWS: >-
+        kvcache-preview.yml
+        ec-degraded-read-tests.yml
+        ec-integration-tests.yml
+        ec-repair-plugin.yml
+        go.yml
+        kafka-tests.yml
+        plugin-workers.yml
+        postgres-tests.yml
+        rust-volume-server-tests.yml
+        s3-go-tests.yml
+        seaweed-vfs.yml
+        volume-server-integration-tests.yml
+        volume-tiering-tests.yml
     steps:
       - name: Rescue runs queued on a self-hosted label past the limit
         run: |
@@ -57,15 +72,26 @@ jobs:
               if [ "$age" -lt "$MAX_MIN" ]; then echo "run $id: queued ${age}m on [$labels] - under the ${MAX_MIN}m limit"; continue; fi
               mono=$(echo "$title" | grep -oE 'mono:[0-9a-f]+' | cut -d: -f2 || true)
               tag=$(echo "$title" | grep -oE 'tag:[^ ]+' | cut -d: -f2 || true)
-              echo "run $id: queued ${age}m on [$labels] - RESCUING (branch=$branch mono=${mono:-default} tag=${tag:-default})"
+              gitlab_branch=$(echo "$title" | grep -oE 'branch:[^ ]+' | cut -d: -f2- || true)
+              echo "run $id: queued ${age}m on [$labels] - RESCUING (branch=$branch mono=${mono:-default} tag=${tag:-default} gitlab_branch=${gitlab_branch:-default})"
+              # A dispatch naming an input the target workflow does not declare
+              # is rejected outright ("Unexpected inputs provided"), and the
+              # watched workflows declare different sets: mono_sha/release_tag
+              # belong to kvcache-preview, gitlab_branch to the test suites. So
+              # read the workflow file and pass only what it accepts. The `if`
+              # form matters too: a bare `[ -n "$x" ] && args+=(...)` is the last
+              # command of an && list, so under `set -e` an empty field would
+              # kill the rescue loop instead of skipping the input.
+              declared=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$wf?ref=$branch" --jq .content | base64 -d)
               gh run cancel "$id" --repo "$GITHUB_REPOSITORY"
               args=(-f runner=hosted)
-              [ -n "$mono" ] && args+=(-f "mono_sha=$mono")
-              [ -n "$tag" ] && args+=(-f "release_tag=$tag")
+              if [ -n "$mono" ] && grep -qE '^ +mono_sha:' <<<"$declared"; then args+=(-f "mono_sha=$mono"); fi
+              if [ -n "$tag" ] && grep -qE '^ +release_tag:' <<<"$declared"; then args+=(-f "release_tag=$tag"); fi
+              if [ -n "$gitlab_branch" ] && grep -qE '^ +gitlab_branch:' <<<"$declared"; then args+=(-f "gitlab_branch=$gitlab_branch"); fi
               gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$branch" "${args[@]}"
               {
                 echo "### Rescued run $id ($wf)"
-                echo "Queued ${age} min on \`$labels\` - the self-hosted runner is down. Cancelled and re-dispatched on hosted: branch \`$branch\`, mono \`${mono:-default}\`, tag \`${tag:-default}\`."
+                echo "Queued ${age} min on \`$labels\` - the self-hosted runner is down. Cancelled and re-dispatched on hosted: branch \`$branch\`, mono \`${mono:-default}\`, tag \`${tag:-default}\`, gitlab_branch \`${gitlab_branch:-default}\`."
               } >> "$GITHUB_STEP_SUMMARY"
             done
           done

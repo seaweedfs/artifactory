@@ -1,5 +1,9 @@
 name: "PostgreSQL Gateway Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,12 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -28,7 +38,7 @@ permissions:
 jobs:
   postgres-basic-tests:
     name: PostgreSQL Basic Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 15
     steps:
     - name: Checkout artifactory repo
@@ -51,11 +61,32 @@ jobs:
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
+    # Hosted-only: this rewrites the daemon config and restarts Docker, which on
+    # a shared self-hosted host would clobber the operator's daemon.json and kill
+    # any container the host is running. tp01 is not rate-limited by Docker Hub
+    # the way a hosted runner's shared egress IP is, so it needs no mirror.
     - name: Configure Docker Hub mirror
+      if: runner.environment == 'github-hosted'
       working-directory: ${{ github.workspace }}
       run: |
         echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
         sudo systemctl restart docker
+
+    # Self-hosted housekeeping: keep the layer cache that is the point of a
+    # self-hosted runner, but do not let it grow without bound. Never
+    # `system prune -af --volumes`, which would destroy that cache.
+    - name: Housekeeping when disk is tight
+      if: runner.environment != 'github-hosted'
+      run: |
+        set -euo pipefail
+        free_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+        echo "free: ${free_gb} GB"
+        if [ "$free_gb" -lt 150 ]; then
+          echo "below 150 GB, pruning build cache older than 14 days"
+          docker builder prune -f --filter 'until=336h' || true
+          docker image prune -f --filter 'until=336h' || true
+          df -h /
+        fi
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
