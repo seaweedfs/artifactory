@@ -3,7 +3,7 @@ name: "S3 Go Tests (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -27,7 +27,7 @@ on:
         description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
         required: false
         type: choice
-        default: tp01
+        default: hosted
         options: [tp01, hosted]
 
 concurrency:
@@ -42,7 +42,15 @@ permissions:
 jobs:
   s3-versioning-tests:
     name: S3 Versioning Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 30
     strategy:
       matrix:
@@ -177,7 +185,15 @@ jobs:
 
   s3-versioning-compatibility:
     name: S3 Versioning Compatibility Test
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 25
 
     steps:
@@ -292,7 +308,15 @@ jobs:
 
   s3-cors-compatibility:
     name: S3 CORS Compatibility Test
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
 
     steps:
@@ -352,7 +376,15 @@ jobs:
 
   s3-retention-tests:
     name: S3 Retention Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 30
     strategy:
       matrix:
@@ -431,7 +463,15 @@ jobs:
 
   s3-lifecycle-tests:
     name: S3 Lifecycle Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -514,7 +554,15 @@ jobs:
 
   s3-checksum-tests:
     name: S3 Checksum Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
 
     steps:
@@ -581,7 +629,15 @@ jobs:
 
   s3-cors-tests:
     name: S3 CORS Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 30
     strategy:
       matrix:
@@ -660,7 +716,15 @@ jobs:
 
   s3-retention-worm:
     name: S3 Retention WORM Integration Test
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
 
     steps:
@@ -721,7 +785,15 @@ jobs:
 
   s3-versioning-stress:
     name: S3 Versioning Stress Test
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 35
 
     steps:
@@ -801,7 +873,15 @@ jobs:
   s3-tagging-tests:
     # CI job for S3 object tagging tests
     name: S3 Tagging Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
 
     steps:
@@ -868,7 +948,15 @@ jobs:
 
   s3-remote-cache-tests:
     name: S3 Remote Cache Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
 
     steps:
@@ -935,7 +1023,15 @@ jobs:
 
   s3-test-summary:
     name: S3 Test Summary
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     needs:
       - s3-versioning-tests
       - s3-versioning-compatibility

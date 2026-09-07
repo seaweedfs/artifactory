@@ -3,7 +3,7 @@ name: "Kafka Gateway Tests (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -27,7 +27,7 @@ on:
         description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
         required: false
         type: choice
-        default: tp01
+        default: hosted
         options: [tp01, hosted]
 
 concurrency:
@@ -46,7 +46,15 @@ permissions:
 jobs:
   kafka-unit-tests:
     name: Kafka Unit Tests
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -98,7 +106,15 @@ jobs:
 
   kafka-integration-tests:
     name: Kafka Integration Tests (Critical)
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -149,7 +165,15 @@ jobs:
 
   kafka-e2e-tests:
     name: Kafka End-to-End Tests (with SMQ)
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -326,7 +350,15 @@ jobs:
 
   kafka-consumer-group-tests:
     name: Kafka Consumer Group Tests (Highly Isolated)
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -466,7 +498,15 @@ jobs:
 
   kafka-client-compatibility:
     name: Kafka Client Compatibility (with SMQ)
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -592,7 +632,15 @@ jobs:
 
   kafka-smq-integration-tests:
     name: Kafka SMQ Integration Tests (Full Stack)
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -721,7 +769,15 @@ jobs:
 
   kafka-protocol-tests:
     name: Kafka Protocol Tests (Isolated)
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
