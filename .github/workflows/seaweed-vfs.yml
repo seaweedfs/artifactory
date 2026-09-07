@@ -51,10 +51,7 @@ permissions:
 jobs:
   # Build the Rust workspace (sw-client, sw-fuse, sw-kd) and run unit tests.
   rust:
-    # Staged hosted: needs the tp01 pre-install list (libfuse3-dev, attr,
-    # autoconf, user_allow_other). To move it, replace this line with:
-    #   runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     steps:
       - name: Checkout artifactory repo
@@ -205,10 +202,7 @@ jobs:
 
   # End-to-end FUSE smoke test against a real single-node SeaweedFS cluster.
   fuse-smoke:
-    # Staged hosted: needs the tp01 pre-install list (libfuse3-dev, attr,
-    # autoconf, user_allow_other). To move it, replace this line with:
-    #   runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     steps:
       - name: Checkout artifactory repo
@@ -311,10 +305,7 @@ jobs:
   # ops sw-fuse does not implement yet are listed in
   # seaweed-vfs/tests/pjdfstest/known_failures.txt and skipped.
   pjdfstest:
-    # Staged hosted: needs the tp01 pre-install list (libfuse3-dev, attr,
-    # autoconf, user_allow_other). To move it, replace this line with:
-    #   runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 40
     steps:
       - name: Checkout artifactory repo

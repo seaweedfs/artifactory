@@ -11,6 +11,20 @@ name: "runner watchdog: rescue jobs stuck on tp01"
 # queued on hosted labels are never touched: that is ordinary queue pressure,
 # not an outage. The re-dispatched run carries runner=hosted, so it is ignored
 # on the next pass and cannot loop.
+#
+# BUSY IS NOT OFFLINE. tp01 is one runner instance, so a mono push serialises
+# roughly 85 jobs behind it and a queue many minutes deep is the normal, healthy
+# state - rescuing on queue age alone would evacuate the whole wave to hosted
+# and defeat the runner. The rescue rule is therefore:
+#
+#   rescue only when NO job has STARTED on a tp01 runner in the last N minutes
+#   while jobs are queued for it.
+#
+# A runner that is merely saturated still finishes jobs and starts the next one,
+# so a recent start proves it is alive no matter how long the queue is. Only
+# "queued for N minutes AND nothing has started in N minutes" means offline.
+# The liveness probe reads jobs from recent runs of the watched workflows and
+# looks at runner_name, which the jobs API reports without admin.
 
 on:
   schedule:
@@ -18,8 +32,11 @@ on:
   workflow_dispatch:
     inputs:
       max_queue_minutes:
-        description: "Queued longer than this on a self-hosted label means the runner is down"
+        description: "Queued this long on a self-hosted label with no job start on tp01 means the runner is down"
         default: "10"
+      probe_window_minutes:
+        description: "How far back to look for the last job start on a tp01 runner"
+        default: "120"
 
 permissions:
   actions: write
@@ -36,6 +53,11 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MAX_MIN: ${{ inputs.max_queue_minutes || '10' }}
+      # How far back the liveness probe looks for a job start on tp01. Wider than
+      # MAX_MIN on purpose: it only has to find one start, and a wide window over
+      # a quiet period costs a few API calls, while a narrow one would call an
+      # idle-but-healthy runner dead.
+      PROBE_WINDOW_MIN: ${{ inputs.probe_window_minutes || '120' }}
       # Every workflow that can land on a self-hosted label. A workflow missing
       # from this list queues on an offline tp01 until it times out after 24 h.
       WORKFLOWS: >-
@@ -60,6 +82,28 @@ jobs:
         run: |
           set -euo pipefail
           now=$(date -u +%s)
+
+          # Liveness probe: how many minutes since a job last STARTED on a tp01
+          # runner. A saturated runner keeps starting jobs, so a recent start
+          # proves it is alive however deep the queue is; only silence means
+          # offline. runner_name is reported by the jobs API without admin, and
+          # the prefix match covers additional instances (tp01-2, tp01-3, ...).
+          since=$(date -u -d "-${PROBE_WINDOW_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ)
+          newest=0
+          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=50" \
+                         --jq ".workflow_runs[] | select(.updated_at >= \"$since\") | .id"); do
+            started=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | .started_at | fromdate] | max // 0')
+            if [ "$started" -gt "$newest" ]; then newest=$started; fi
+          done
+          if [ "$newest" -eq 0 ]; then
+            TP01_LAST_START=99999
+            echo "tp01 liveness: no job start seen in the last ${PROBE_WINDOW_MIN}m"
+          else
+            TP01_LAST_START=$(( (now - newest) / 60 ))
+            echo "tp01 liveness: last job started ${TP01_LAST_START}m ago"
+          fi
+
           for wf in $WORKFLOWS; do
             gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --status queued --limit 20 \
               --json databaseId,createdAt,headBranch,displayTitle > queued.json
@@ -73,6 +117,13 @@ jobs:
                 *) echo "run $id: queued ${age}m on hosted labels [$labels] - ordinary queue, leaving it"; continue ;;
               esac
               if [ "$age" -lt "$MAX_MIN" ]; then echo "run $id: queued ${age}m on [$labels] - under the ${MAX_MIN}m limit"; continue; fi
+              # Busy is not offline. One runner serialises a whole mono push, so a
+              # deep queue is the healthy state; evacuating it to hosted would
+              # defeat the runner. Only silence on tp01 counts as an outage.
+              if [ "$TP01_LAST_START" -lt "$MAX_MIN" ]; then
+                echo "run $id: queued ${age}m, but tp01 started a job ${TP01_LAST_START}m ago - busy, not offline; leaving it"
+                continue
+              fi
               mono=$(echo "$title" | grep -oE 'mono:[0-9a-f]+' | cut -d: -f2 || true)
               tag=$(echo "$title" | grep -oE 'tag:[^ ]+' | cut -d: -f2 || true)
               gitlab_branch=$(echo "$title" | grep -oE 'branch:[^ ]+' | cut -d: -f2- || true)
