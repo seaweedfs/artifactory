@@ -212,7 +212,19 @@ one of them will not be accepted.
 5. **Secrets are per-run, not per-host.** Do not write a credential to a file
    outside `$RUNNER_TEMP`, and do not treat `docker login` as persistent host
    state established from inside a job.
-6. **Registration is administrator-held.** Registering or removing a runner
+6. **Some credential classes never reach a shared runner at all.** Signing
+   material (GPG keys, kernel-module signing keys and certificates), payment and
+   mail credentials, and registry **push** credentials must not be present on a
+   self-hosted runner, whatever the speed argument. The reason is structural
+   rather than a judgement about any one workflow: the runner account belongs to
+   the `docker` group, that socket is root-equivalent, and the host executes
+   repository-owned code — so a secret present during any run is readable by
+   every other workflow that runs there. A workflow needing one of these stays on
+   a hosted runner, or moves only once the credential is not resident on the
+   runner: OIDC to the registry, or a publish stage that stays hosted while the
+   build moves. A source-read token is the accepted exception, since the runner
+   is already building that source.
+7. **Registration is administrator-held.** Registering or removing a runner
    needs repository admin. If the runner disappears, migrated workflows queue and
    the watchdog rescues them onto hosted. That is the designed failure mode, and
    it is not fixed from inside a workflow.
