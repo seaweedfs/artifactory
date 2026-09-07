@@ -3,7 +3,7 @@ name: "Volume Server Integration Tests (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -19,6 +19,10 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
       runner:
         description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
         required: false
@@ -53,6 +57,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
       uses: ./.github/actions/mono-source-link
@@ -62,6 +69,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6

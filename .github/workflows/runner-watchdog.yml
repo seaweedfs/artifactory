@@ -40,15 +40,18 @@ jobs:
       # from this list queues on an offline tp01 until it times out after 24 h.
       WORKFLOWS: >-
         kvcache-preview.yml
+        e2e.yml
         ec-degraded-read-tests.yml
         ec-integration-tests.yml
         ec-repair-plugin.yml
+        fuse-integration.yml
         go.yml
         kafka-tests.yml
         plugin-workers.yml
         postgres-tests.yml
         rust-volume-server-tests.yml
         s3-go-tests.yml
+        s3tests.yml
         seaweed-vfs.yml
         volume-server-integration-tests.yml
         volume-tiering-tests.yml

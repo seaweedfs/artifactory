@@ -1,5 +1,9 @@
 name: "Ceph S3 tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -28,11 +42,14 @@ permissions:
 jobs:
   basic-s3-tests:
     name: Basic S3 tests (KV store)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
 
       - name: Link to seaweed-mono source
         if: github.event_name == 'repository_dispatch'
@@ -43,6 +60,7 @@ jobs:
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
@@ -351,17 +369,21 @@ jobs:
 
   versioning-tests:
     name: S3 Versioning & Object Lock tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
@@ -378,8 +400,14 @@ jobs:
         run: |
           .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update -qq
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
+          # Hosted-only: apt-retry.sh runs apt-get under sudo and tp01's runner
+          # account has no sudo. These are lxml's build deps; on a self-hosted
+          # runner they are a host prerequisite (libxml2-dev libxslt1-dev
+          # zlib1g-dev), and a missing one fails the pip build below loudly.
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update -qq
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
+          fi
           pip install -r requirements.txt
           pip install tox
           pip install -e .
@@ -527,17 +555,21 @@ jobs:
 
   cors-tests:
     name: S3 CORS tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 10
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
@@ -554,8 +586,14 @@ jobs:
         run: |
           .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update -qq
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
+          # Hosted-only: apt-retry.sh runs apt-get under sudo and tp01's runner
+          # account has no sudo. These are lxml's build deps; on a self-hosted
+          # runner they are a host prerequisite (libxml2-dev libxslt1-dev
+          # zlib1g-dev), and a missing one fails the pip build below loudly.
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update -qq
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
+          fi
           pip install -r requirements.txt
           pip install tox
           pip install -e .
@@ -658,17 +696,21 @@ jobs:
 
   copy-tests:
     name: SeaweedFS Custom S3 Copy tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 10
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
@@ -768,17 +810,21 @@ jobs:
 
   sql-store-tests:
     name: Basic S3 tests (SQL store)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
@@ -795,8 +841,14 @@ jobs:
         run: |
           .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
           cd s3-tests
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update -qq
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
+          # Hosted-only: apt-retry.sh runs apt-get under sudo and tp01's runner
+          # account has no sudo. These are lxml's build deps; on a self-hosted
+          # runner they are a host prerequisite (libxml2-dev libxslt1-dev
+          # zlib1g-dev), and a missing one fails the pip build below loudly.
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update -qq
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y -qq libxml2-dev libxslt1-dev zlib1g-dev
+          fi
           pip install -r requirements.txt
           pip install tox
           pip install -e .

@@ -1,5 +1,9 @@
 name: "End to End (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -28,11 +42,14 @@ permissions:
 jobs:
   e2e:
     name: FUSE Mount
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
     timeout-minutes: 60
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -43,9 +60,14 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
-    # Free disk space for large builds
+    # Free disk space for large builds. Hosted-only: these paths exist only on
+    # the hosted images, and `docker system prune -af --volumes` would destroy
+    # the warm layer cache that is the whole point of a self-hosted runner. The
+    # self-hosted equivalent is the bounded housekeeping step above.
     - name: Free Disk Space
+      if: runner.environment == 'github-hosted'
       run: |
         echo "Available disk space before cleanup:"
         df -h
@@ -62,7 +84,12 @@ jobs:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
       id: go
 
+    # Hosted-only: this rewrites the daemon config and restarts Docker, which on
+    # a shared self-hosted host would clobber the operator's daemon.json and kill
+    # any container the host is running. tp01 is not rate-limited by Docker Hub
+    # the way a hosted runner's shared egress IP is, so it needs no mirror.
     - name: Configure Docker Hub mirror
+      if: runner.environment == 'github-hosted'
       run: |
         echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
         sudo systemctl restart docker
@@ -84,19 +111,30 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-buildx-e2e-
 
+    # The apt half is hosted-only: apt-retry.sh runs apt-get under sudo, and
+    # tp01's runner account has no sudo. The sources.list rewrite is a hosted
+    # workaround anyway — on a persistent host it would permanently delete every
+    # other apt source. fuse is preinstalled on tp01; the verification below runs
+    # on both and fails the job if it ever is not.
     - name: Install dependencies
       run: |
-        # Use faster mirrors and install with timeout
-        sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        echo "deb http://azure.archive.ubuntu.com/ubuntu/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list
-        echo "deb http://azure.archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+        if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+          # Use faster mirrors and install with timeout
+          sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
+          echo "deb http://azure.archive.ubuntu.com/ubuntu/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list
+          echo "deb http://azure.archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
 
-        $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update --fix-missing
-        $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y --no-install-recommends fuse
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update --fix-missing
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y --no-install-recommends fuse
+        fi
 
         # Verify FUSE installation
         echo "FUSE version: $(fusermount --version 2>&1 || echo 'fusermount not found')"
         echo "FUSE device: $(ls -la /dev/fuse 2>&1 || echo '/dev/fuse not found')"
+        # The mount runs inside the compose container, so what the host must
+        # supply is the device node. Assert it rather than discovering it as a
+        # confusing mount failure twenty minutes into the run.
+        test -c /dev/fuse
 
     - name: Start SeaweedFS
       timeout-minutes: 20

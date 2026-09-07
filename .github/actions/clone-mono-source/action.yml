@@ -16,6 +16,17 @@ inputs:
     description: Branch to clone when no commit was dispatched (manual runs); defaults to main
     required: false
     default: ''
+  sha:
+    description: >
+      Exact seaweed-mono commit to clone on a manual (workflow_dispatch) run.
+      Lets the runner watchdog reproduce a repository_dispatch run after it
+      rescues one off an offline self-hosted runner: without it the rescued run
+      would clone the branch head, which is a different commit. Ignored on
+      repository_dispatch, where client_payload.sha already carries it. Falls
+      back to the branch, same as a dispatched commit that is no longer
+      fetchable.
+    required: false
+    default: ''
   path:
     description: Directory to clone into
     required: false
@@ -33,6 +44,7 @@ runs:
         PAYLOAD_REF: ${{ github.event.client_payload.ref }}
         PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
         INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_SHA: ${{ inputs.sha }}
       run: |
         set -euo pipefail
         # Determine branch from webhook or manual input
@@ -45,6 +57,16 @@ runs:
           exit 1
         fi
         SHA=""
+        # A manual run may name the commit explicitly (the watchdog does, when
+        # it re-dispatches a rescued repository_dispatch run on hosted). Same
+        # validation, same branch fallback as the dispatched path.
+        if [ "$EVENT_NAME" != "repository_dispatch" ] && [ -n "${INPUT_SHA:-}" ] && [ "$INPUT_SHA" != "null" ]; then
+          if ! printf '%s' "$INPUT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Refusing invalid requested sha: $INPUT_SHA" >&2
+            exit 1
+          fi
+          SHA="$INPUT_SHA"
+        fi
         if [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "${PAYLOAD_SHA:-}" ] && [ "$PAYLOAD_SHA" != "null" ]; then
           if ! printf '%s' "$PAYLOAD_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "Refusing invalid dispatched sha: $PAYLOAD_SHA" >&2
