@@ -51,7 +51,7 @@ jobs:
   # reads, so this job proves the test itself is correct (it must stay green).
   go-degraded-read-tests:
     name: EC Degraded Read (Go volume server)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 40
     steps:
     - name: Checkout artifactory repo
@@ -131,7 +131,7 @@ jobs:
   # (read_ec_shard_needle_distributed) had returned empty after disk loss.
   rust-degraded-read-tests:
     name: EC Degraded Read (Rust volume server)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
@@ -225,7 +225,7 @@ jobs:
 
   ec-degraded-read-summary:
     name: EC Degraded Read Summary
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     needs: [go-degraded-read-tests, rust-degraded-read-tests]
     if: always()
     steps:

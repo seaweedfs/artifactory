@@ -42,7 +42,7 @@ permissions:
 jobs:
   postgres-basic-tests:
     name: PostgreSQL Basic Tests
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 15
     steps:
     - name: Checkout artifactory repo

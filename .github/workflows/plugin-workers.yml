@@ -39,7 +39,7 @@ permissions:
 jobs:
   plugin-workers:
     name: "Plugin Worker: ${{ matrix.worker }}"
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 15
     strategy:
       fail-fast: false

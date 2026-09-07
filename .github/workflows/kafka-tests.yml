@@ -46,7 +46,7 @@ permissions:
 jobs:
   kafka-unit-tests:
     name: Kafka Unit Tests
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -98,7 +98,7 @@ jobs:
 
   kafka-integration-tests:
     name: Kafka Integration Tests (Critical)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -149,7 +149,7 @@ jobs:
 
   kafka-e2e-tests:
     name: Kafka End-to-End Tests (with SMQ)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -326,7 +326,7 @@ jobs:
 
   kafka-consumer-group-tests:
     name: Kafka Consumer Group Tests (Highly Isolated)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -466,7 +466,7 @@ jobs:
 
   kafka-client-compatibility:
     name: Kafka Client Compatibility (with SMQ)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -592,7 +592,7 @@ jobs:
 
   kafka-smq-integration-tests:
     name: Kafka SMQ Integration Tests (Full Stack)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -721,7 +721,7 @@ jobs:
 
   kafka-protocol-tests:
     name: Kafka Protocol Tests (Isolated)
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false

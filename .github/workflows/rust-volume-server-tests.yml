@@ -42,7 +42,7 @@ permissions:
 jobs:
   rust-unit-tests:
     name: Rust Unit Tests
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 15
 
     steps:
@@ -85,7 +85,7 @@ jobs:
 
   rust-integration-tests:
     name: Rust Integration Tests
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 30
 
     steps:
@@ -164,7 +164,7 @@ jobs:
 
   rust-volume-go-tests:
     name: Go Tests with Rust Volume (${{ matrix.test-type }} - Shard ${{ matrix.shard }})
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false

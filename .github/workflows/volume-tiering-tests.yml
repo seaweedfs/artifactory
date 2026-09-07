@@ -56,7 +56,7 @@ permissions:
 jobs:
   volume-tiering-tests:
     name: Volume Tiering E2E (${{ matrix.layout }})
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-22.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 40
     strategy:
       # Report both layouts independently; one failing must not cancel the other.

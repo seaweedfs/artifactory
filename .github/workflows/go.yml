@@ -43,7 +43,7 @@ jobs:
 
   vet:
     name: Go Vet
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
@@ -84,7 +84,7 @@ jobs:
 
   vet-32bit:
     name: Go Vet 32-bit
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
@@ -114,7 +114,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
@@ -180,7 +180,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
@@ -208,7 +208,7 @@ jobs:
 
   test-32bit:
     name: Test 32-bit
-    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","tp01"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
