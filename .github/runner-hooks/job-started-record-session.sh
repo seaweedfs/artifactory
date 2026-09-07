@@ -25,8 +25,13 @@ set -uo pipefail
 TAG="gh-runner-reap"
 STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner}"
 SID_FILE="${STATE_DIR}/job.sid"
+START_FILE="${STATE_DIR}/job.start"
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# Job start time, so the completed hook can tell containers this job created
+# from ones that belong to the host. Recorded before anything else runs.
+date +%s > "$START_FILE" 2>/dev/null || true
 
 SID="$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')"
 if [ -n "$SID" ]; then

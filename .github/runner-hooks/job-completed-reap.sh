@@ -42,6 +42,7 @@ set -uo pipefail
 TAG="gh-runner-reap"
 STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner}"
 SID_FILE="${STATE_DIR}/job.sid"
+START_FILE="${STATE_DIR}/job.start"
 DRYRUN="${RUNNER_REAP_DRYRUN:-0}"
 GRACE_SECONDS="${RUNNER_REAP_GRACE:-5}"
 
@@ -49,7 +50,11 @@ GRACE_SECONDS="${RUNNER_REAP_GRACE:-5}"
 # listener that belongs to the runner account.
 PORTS="${RUNNER_REAP_PORTS:-9333 19333 8888 18888 8333 8084 18084 9533 8004 26777 16777}"
 
-log() { echo "[$TAG] $*"; }
+# stderr, not stdout: sweep_ports returns its result through stdout via command
+# substitution, so a log line written to stdout would be captured INTO the port
+# list and reported back as if it were a port number. The runner captures both
+# streams into the job log either way.
+log() { echo "[$TAG] $*" >&2; }
 
 RUNNER_USER="$(id -un)"
 SELF_SID="$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')"
@@ -110,17 +115,41 @@ reap_session() {
 
 # ---------------------------------------------------------------- port sweep
 
+port_listening() {
+  # Is anything listening at all? This works unprivileged.
+  [ -n "$(ss -lntH "sport = :$1" 2>/dev/null | head -1)" ]
+}
+
 port_holder_pid() {
-  # ss prints users:(("comm",pid=N,fd=M)). Take the pid, not the name.
+  # ss prints users:(("comm",pid=N,fd=M)) -- but ONLY for sockets we own. As an
+  # unprivileged user a root-owned listener shows the LISTEN line with no pid
+  # at all. Treating "no pid" as "no listener" is a false negative, and it is
+  # not hypothetical: a leaked container held 9333, 8888 and 8333 for six hours
+  # while this hook reported every watched port free, because docker-proxy runs
+  # as root and the pid field was simply absent.
   ss -lntpH "sport = :$1" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2
 }
 
 sweep_ports() {
   local still=""
   for port in $PORTS; do
+    port_listening "$port" || continue
     local pid
     pid="$(port_holder_pid "$port")"
-    [ -z "$pid" ] && continue
+    if [ -z "$pid" ]; then
+      # Listening, but the owner is invisible to us: another account, almost
+      # always a container's docker-proxy. Report it precisely rather than
+      # silently calling the port free.
+      local owner_hint
+      owner_hint="$(docker ps --format '{{.ID}} {{.Image}} {{.Ports}}' 2>/dev/null                     | grep -F ":$port->" | head -1)"
+      if [ -n "$owner_hint" ]; then
+        log "port $port HELD by a container: $owner_hint - see the container sweep below"
+      else
+        log "port $port HELD by another account (pid not visible to $RUNNER_USER) - cannot clear it here"
+      fi
+      still="$still $port"
+      continue
+    fi
     local owner comm
     owner="$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')"
     comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
@@ -168,18 +197,44 @@ else
   log "WARNING: could not determine the job session id; skipping the session reap"
 fi
 
-remaining="$(sweep_ports | tr -s ' ')"
-
-# Docker containers the job left behind. Removed by id, and only ones started
-# after this job began, so a long-lived container on the host is not touched.
-if command -v docker >/dev/null 2>&1 && [ "$DRYRUN" != "1" ]; then
-  since="${RUNNER_REAP_SINCE:-}"
-  leftovers="$(docker ps -q 2>/dev/null || true)"
-  if [ -n "$leftovers" ]; then
-    log "containers still running after the job: $(echo "$leftovers" | tr '\n' ' ')"
-    log "leaving them: removing a container the host owns would be worse than a stale one"
+# Containers the job left behind. THIS is the leak that actually bites. A
+# compose stack whose job was cancelled never runs `down`, and its published
+# ports stay bound by docker-proxy. dockerd owns those processes, so no amount
+# of session reaping touches them: two containers from one cancelled job held
+# 9333, 8888 and 8333 for six hours and failed every port-binding suite after
+# it.
+#
+# Attribution is by creation time, never by name or image: anything created at
+# or after this job started belongs to this job; anything older belongs to the
+# host and is left alone.
+if command -v docker >/dev/null 2>&1; then
+  started_at=""
+  [ -r "$START_FILE" ] && started_at="$(cat "$START_FILE" 2>/dev/null)"
+  if [ -z "$started_at" ]; then
+    log "no job start timestamp; not removing any container (cannot tell ours from the host's)"
+  else
+    for cid in $(docker ps -q 2>/dev/null); do
+      created="$(docker inspect -f '{{.Created}}' "$cid" 2>/dev/null)"
+      [ -z "$created" ] && continue
+      c_epoch="$(date -d "$created" +%s 2>/dev/null || echo 0)"
+      if [ "$c_epoch" -ge "$started_at" ]; then
+        info="$(docker inspect -f '{{.Name}} {{.Config.Image}}' "$cid" 2>/dev/null)"
+        if [ "$DRYRUN" = "1" ]; then
+          log "DRYRUN would remove container $cid ($info) created during this job"
+        else
+          log "removing container $cid ($info) - created during this job and still running"
+          docker rm -f "$cid" >/dev/null 2>&1 || log "  could not remove $cid"
+        fi
+      else
+        log "container $cid predates this job - leaving it alone"
+      fi
+    done
   fi
 fi
+
+# Ports are checked AFTER the containers are gone: removing them is usually
+# what frees the port, so checking first would report a problem we just fixed.
+remaining="$(sweep_ports | tr -s ' ')"
 
 if [ -n "${remaining// /}" ]; then
   log "PORTS STILL BOUND after cleanup:${remaining} - the next job on these ports will fail"
