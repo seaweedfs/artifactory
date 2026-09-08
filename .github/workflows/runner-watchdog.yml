@@ -27,8 +27,30 @@ name: "runner watchdog: rescue jobs stuck on tp01"
 # looks at runner_name, which the jobs API reports without admin.
 
 on:
+  # The schedule is BEST EFFORT, not a guarantee. Measured over 20 consecutive
+  # scheduled runs on this repository: median gap 159 minutes, worst 5.5 hours,
+  # every run succeeding. GitHub does not dispatch a */10 cron every 10 minutes
+  # on a busy repo, so a rescue that depends only on this can be hours late.
   schedule:
     - cron: "*/10 * * * *"
+
+  # So also run after the workflows that can land on the self-hosted runner.
+  # This fires when there is real traffic - which is exactly when a stuck queue
+  # matters and when the schedule is least likely to have run recently. It adds
+  # nothing when the repository is quiet, which is when a delay costs least.
+  #
+  # workflow_run fires on completion, including a run that was itself cancelled
+  # or that never started jobs, so a batch-1 dispatch landing while tp01 is down
+  # still produces a rescue pass shortly afterwards.
+  workflow_run:
+    workflows:
+      - "go: build binary (seaweed-mono)"
+      - "Plugin Worker Tests (seaweed-mono)"
+      - "EC Repair Plugin Worker (seaweed-mono)"
+      - "FUSE Integration Tests (seaweed-mono)"
+      - "KVCache: Publish LMCache preview"
+    types: [completed]
+
   workflow_dispatch:
     inputs:
       max_queue_minutes:
