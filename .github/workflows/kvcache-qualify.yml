@@ -140,6 +140,14 @@ jobs:
 
     - name: Run tier-1 gate pack (functional + T4/T5/T7 + T6-with-MySQL-container)
       id: run_gates
+      # Belt-and-braces on top of the in-script `set +e` capture below: if
+      # the shell itself dies (OOM, segfault, a signal) rather than testops
+      # returning a normal exit code, GITHUB_OUTPUT is never written at all,
+      # not even with `set +e`. continue-on-error here means that failure
+      # mode still reaches Upload/Render (both already `if: always()`) and
+      # the explicit Enforce step below, instead of the job just stopping
+      # silently at this step with no artifact and no explanation.
+      continue-on-error: true
       working-directory: seaweedfs-source/enterprise
       env:
         COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
@@ -225,3 +233,19 @@ jobs:
           esac
           echo "| $name | $label ($status) |" >> "$GITHUB_STEP_SUMMARY"
         done < <(jq -r '.gates[] | [(.scenario // .gate_id), .status] | @tsv' "$SUMMARY_JSON")
+
+    # continue-on-error on the gate-pack step means GitHub shows that step
+    # (and, without this, the job) as green no matter what testops returned.
+    # This is the step that actually decides the job's pass/fail: missing
+    # entirely (the shell died before writing any output) counts as a
+    # failure, same as a captured non-zero exit code.
+    - name: Enforce gate result
+      if: always()
+      env:
+        EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
+      run: |
+        if [ -z "$EXIT_CODE" ]; then
+          echo "::error::run_gates produced no exit_code output -- the shell likely died before it could write one (OOM, signal, crash)"
+          exit 1
+        fi
+        exit "$EXIT_CODE"
