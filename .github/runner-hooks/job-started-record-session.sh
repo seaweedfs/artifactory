@@ -73,6 +73,41 @@ if [ -n "${GITHUB_ENV:-}" ] && [ -w "${GITHUB_ENV}" ]; then
 fi
 echo "[$TAG] this job's container prefix is $JOB_PREFIX"
 
+# Per-instance port band, for suites that bind fixed host ports (SeaweedFS
+# master/volume/filer/S3). Two runner instances on one host means two jobs can
+# be genuinely simultaneous -- one per instance -- and a literal port that
+# worked with a single runner now collides. Exported only when RUNNER_INSTANCE
+# is set, which is true only on tp01 (hosted runners never run this hook at
+# all, so CI_PORT_BASE is simply absent there and every suite keeps its
+# literal defaults -- "hosted unaffected" is automatic, not a branch to get
+# wrong).
+#
+# Base 10000, banded by 1000 per instance: instance 0 -> 10000-10999, instance
+# 1 -> 11000-11999. Both bands sit below the ephemeral port range on this host
+# (32768+, checked on tp01, worth re-checking on any kernel change) and above
+# every literal port these suites use today (all under 10000), so a suite that
+# has NOT been converted yet cannot collide with one that has.
+#
+# Fixed offsets within the band, not one port per suite: every suite that
+# starts a master+volume+filer(+S3) SeaweedFS cluster wants the same four
+# roles, so one convention serves all three suites in scope (kafka-tests,
+# s3-go-tests, s3tests) without per-suite bookkeeping. gRPC ports are NOT
+# listed here -- SeaweedFS derives them automatically as port+10000, which a
+# suite gets for free from setting CI_MASTER_PORT/CI_VOLUME_PORT and needs no
+# separate variable.
+if [ -n "${RUNNER_INSTANCE:-}" ] && [ -n "${GITHUB_ENV:-}" ] && [ -w "${GITHUB_ENV}" ]; then
+  CI_PORT_BASE=$((10000 + RUNNER_INSTANCE * 1000))
+  {
+    printf 'CI_INSTANCE=%s\n' "$RUNNER_INSTANCE"
+    printf 'CI_PORT_BASE=%s\n' "$CI_PORT_BASE"
+    printf 'CI_MASTER_PORT=%s\n' "$((CI_PORT_BASE + 10))"
+    printf 'CI_VOLUME_PORT=%s\n' "$((CI_PORT_BASE + 20))"
+    printf 'CI_FILER_PORT=%s\n' "$((CI_PORT_BASE + 30))"
+    printf 'CI_S3_PORT=%s\n' "$((CI_PORT_BASE + 40))"
+  } >> "$GITHUB_ENV" 2>/dev/null || true
+  echo "[$TAG] this job's port band is instance $RUNNER_INSTANCE, base $CI_PORT_BASE"
+fi
+
 # Per-instance "what is this instance doing right now" for the dashboard host
 # strip. Written here rather than sourced from GitHub, because a fine-grained
 # PAT owned by an outside collaborator cannot be granted repository
