@@ -3,7 +3,7 @@ name: "EC Repair Plugin Worker (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   repository_dispatch:
@@ -24,7 +24,7 @@ on:
         description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
         required: false
         type: choice
-        default: tp01
+        default: hosted
         options: [tp01, hosted]
 
 concurrency:
@@ -39,7 +39,7 @@ permissions:
 jobs:
   ec-repair-plugin:
     name: EC Repair Plugin Worker E2E
-    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
     steps:
     - name: Checkout artifactory repo
