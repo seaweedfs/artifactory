@@ -29,11 +29,16 @@ on:
         type: choice
         default: hosted
         options: [tp01, hosted]
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
-  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/s3-go-tests
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/s3-go-tests
   cancel-in-progress: true
 
 permissions:
