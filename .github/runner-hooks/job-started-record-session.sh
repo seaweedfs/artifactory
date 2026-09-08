@@ -108,6 +108,25 @@ if [ -n "${RUNNER_INSTANCE:-}" ] && [ -n "${GITHUB_ENV:-}" ] && [ -w "${GITHUB_E
   echo "[$TAG] this job's port band is instance $RUNNER_INSTANCE, base $CI_PORT_BASE"
 fi
 
+# CPU allocation for build/test parallelism, when this instance has a fixed
+# core share (CI_CORES, set in the runner's own .env alongside RUNNER_INSTANCE
+# -- absent by default, so a build tool falls back to its own default of "all
+# visible CPUs", exactly today's behaviour, when no partition is configured).
+#
+# Without this, GOMAXPROCS and CARGO_BUILD_JOBS default to the FULL host core
+# count regardless of how many instances are running, so two build-heavy jobs
+# each try to use all 16 threads at once -- oversubscription, not sharing,
+# and the direct cause of the master-startup timeouts seen under concurrent
+# kafka-tests instances. Exported only when CI_CORES is set, so an unpartitioned
+# host (CI_CORES unset) sees no change from this block at all.
+if [ -n "${CI_CORES:-}" ] && [ -n "${GITHUB_ENV:-}" ] && [ -w "${GITHUB_ENV}" ]; then
+  {
+    printf 'GOMAXPROCS=%s\n' "$CI_CORES"
+    printf 'CARGO_BUILD_JOBS=%s\n' "$CI_CORES"
+  } >> "$GITHUB_ENV" 2>/dev/null || true
+  echo "[$TAG] this job's CPU allocation is $CI_CORES core(s) (GOMAXPROCS/CARGO_BUILD_JOBS)"
+fi
+
 # Per-instance "what is this instance doing right now" for the dashboard host
 # strip. Written here rather than sourced from GitHub, because a fine-grained
 # PAT owned by an outside collaborator cannot be granted repository
