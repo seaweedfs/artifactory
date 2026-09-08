@@ -121,11 +121,21 @@ jobs:
     # 9022fc5e): the testops entry point is built once, then `ci run` itself
     # builds weed, weed-volume (Rust, no RDMA features) and sw-test-runner
     # from the same checkout -- no separate weed build step here.
+    #
+    # Built to $RUNNER_TEMP, not `enterprise/testops` as CI.md's own example
+    # literally shows: enterprise/testops/ is ALSO the testops package's own
+    # source root (agent.go, coordinator.go, cmd/, ...), so `go build -o
+    # testops` there is a same-name collision -- go silently places the
+    # binary INSIDE that directory instead of overwriting it, and the
+    # `./testops` invocation that follows fails with "Is a directory" (found
+    # live on the first hosted proof run, 34260061227). Same collision-
+    # avoidance pattern already used for `weed` in kafka-tests.yml/s3tests.yml.
     - name: Build testops
       working-directory: seaweedfs-source/enterprise
       run: |
-        go build -o testops ./testops/cmd/testops
-        ./testops version || ./testops --version
+        mkdir -p "$RUNNER_TEMP/bin"
+        go build -o "$RUNNER_TEMP/bin/testops" ./testops/cmd/testops
+        "$RUNNER_TEMP/bin/testops" version || "$RUNNER_TEMP/bin/testops" --version
 
     - name: Run tier-1 gate pack (functional + T4/T5/T7 + T6-with-MySQL-container)
       id: run_gates
@@ -142,7 +152,7 @@ jobs:
         export TESTOPS_LOCK_FILE="$RUNNER_TEMP/testops-ci.lock"
         export TESTOPS_CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-target"
 
-        ./testops ci run \
+        "$RUNNER_TEMP/bin/testops" ci run \
           --pack kv-tier1 \
           --target local \
           --commit "$COMMIT_SHA" \
