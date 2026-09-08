@@ -144,7 +144,15 @@ jobs:
       env:
         COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
       run: |
-        set -uo pipefail
+        # GitHub invokes run: blocks as `bash -e {0}`; `set -uo pipefail`
+        # alone does NOT cancel that inherited -e. testops exiting 1 (RED) or
+        # 2 (INFRA_ERROR) is an expected, meaningful result here, not a
+        # script bug -- without `set +e` the shell aborts right at that exit
+        # and every line below (the exit-code capture, both outputs) never
+        # runs, silently skipping Upload/Render downstream (found live on
+        # 34261444330: a real RED T6 gate never reached the summary at all,
+        # same inherited-set-e class of bug as job-completed-reap.sh).
+        set +e -uo pipefail
         OUT_DIR="$RUNNER_TEMP/seaweed-kvcache-qualification"
         mkdir -p "$OUT_DIR"
         # Host-owned absolute paths per CI.md; RUNNER_TEMP is unique per job
