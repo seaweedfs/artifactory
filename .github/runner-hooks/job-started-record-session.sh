@@ -23,7 +23,12 @@
 set -uo pipefail
 
 TAG="gh-runner-reap"
-STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner}"
+# Per instance, never shared. With two runner instances on one host a single
+# state dir means the second instance's JOB_STARTED overwrites the first's
+# job.sid and job.prefix, and the first instance's reaper then cleans up using
+# the SECOND instance's identifiers -- killing a live job's processes and
+# containers. The instance index comes from the runner's own .env.
+STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner/${RUNNER_INSTANCE:-0}}"
 SID_FILE="${STATE_DIR}/job.sid"
 START_FILE="${STATE_DIR}/job.start"
 PREFIX_FILE="${STATE_DIR}/job.prefix"
@@ -67,6 +72,30 @@ if [ -n "${GITHUB_ENV:-}" ] && [ -w "${GITHUB_ENV}" ]; then
   } >> "$GITHUB_ENV" 2>/dev/null || true
 fi
 echo "[$TAG] this job's container prefix is $JOB_PREFIX"
+
+# Per-instance "what is this instance doing right now" for the dashboard host
+# strip. Written here rather than sourced from GitHub, because a fine-grained
+# PAT owned by an outside collaborator cannot be granted repository
+# Administration on an org repo at all -- there is no token that can read
+# GitHub's own runner-status API from this host. tp01 telling the truth about
+# itself is the only source that exists.
+CURRENT_FILE="${STATE_DIR}/current.json"
+# json.dumps handles quoting correctly in one place instead of a hand-rolled
+# sed escape, which is exactly the kind of thing that looks right and silently
+# breaks on the first job name or branch that contains a character it didn't
+# expect.
+CURRENT_FILE="$CURRENT_FILE" RUNNER_INSTANCE="${RUNNER_INSTANCE:-0}" GITHUB_JOB="${GITHUB_JOB:-}" \
+GITHUB_WORKFLOW="${GITHUB_WORKFLOW:-}" GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
+python3 -c '
+import json, os, time
+json.dump({
+    "instance": int(os.environ.get("RUNNER_INSTANCE", "0")),
+    "job": os.environ.get("GITHUB_JOB", ""),
+    "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+    "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+    "started_epoch": int(time.time()),
+}, open(os.environ["CURRENT_FILE"], "w"))
+' 2>/dev/null || true
 
 SID="$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')"
 if [ -n "$SID" ]; then
