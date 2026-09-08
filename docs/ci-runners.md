@@ -133,7 +133,12 @@ supported way to exercise a migration before flipping its default.
 to 24 hours if that runner is offline and never falls back on its own. The
 scheduled workflow `.github/workflows/runner-watchdog.yml` is that fallback.
 
-- **Cadence.** Every 10 minutes, plus `workflow_dispatch` for an immediate pass.
+- **Cadence — measure this, do not assume it.** The workflow asks for every 10
+  minutes. GitHub does not honour that on a busy repository: over 20 consecutive
+  scheduled runs here the **median gap was 159 minutes and the worst was 5.5
+  hours**. Every one of those runs succeeded — nothing is failing, the schedule
+  simply is not being dispatched on time. Treat the cron as best-effort and
+  `workflow_dispatch` as the way to force an immediate pass.
 - **What it judges.** The symptom, not the runner. Listing runners requires repo
   admin; reading the queue does not. It looks at runs in the `queued` state for
   the workflows it is configured to watch, and reads the labels of their queued
@@ -150,8 +155,22 @@ scheduled workflow `.github/workflows/runner-watchdog.yml` is that fallback.
 - **Where it runs.** On a hosted runner, on purpose. A watchdog living on `tp01`
   would die with `tp01`.
 
-The practical consequence: an offline self-hosted runner costs a delay of up to
-about ten minutes, not a broken pipeline.
+The practical consequence, stated honestly:
+
+| Path back to hosted | How long |
+|---|---|
+| `runner=hosted` on a dispatch | immediate, and needs no watchdog |
+| The watchdog's automatic rescue | whenever GitHub next runs the schedule — **measured median 159 min, worst 5.5 h** |
+
+An offline self-hosted runner is therefore not "a ten minute delay". It is a
+delay of unpredictable length whose upper bound is set by GitHub's scheduler,
+unless someone dispatches the workflow manually or re-runs the affected job with
+`runner=hosted`. The automatic rescue is a backstop against *forgetting*, not a
+latency guarantee.
+
+Detecting the outage is a separate matter and is not subject to the same
+scheduler: a health check running outside GitHub notices a dead runner in
+minutes and is what should page a human.
 
 **When adding a workflow to `tp01`, add its filename to the watchdog's
 `WORKFLOWS` list.** A migrated workflow the watchdog does not watch has no
