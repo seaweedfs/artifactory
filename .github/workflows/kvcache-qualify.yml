@@ -114,8 +114,9 @@ jobs:
       # Every other required host tool (bash, cargo, curl, docker, git, go,
       # jq, sha256sum, ss) is already on both ubuntu-22.04 and tp01; grpcurl
       # is the one gap. go install puts it on GOPATH/bin, already on PATH via
-      # actions/setup-go.
-      run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
+      # actions/setup-go. Pinned, not @latest: a qualification workflow must
+      # build the same tool on every run, not whatever grpcurl shipped today.
+      run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
 
     # Per enterprise/testops/packs/kv/CI.md (test/testops-phase1-upstream,
     # 9022fc5e): the testops entry point is built once, then `ci run` itself
