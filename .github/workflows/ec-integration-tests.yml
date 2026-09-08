@@ -3,7 +3,7 @@ name: "EC Integration Tests (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -27,7 +27,7 @@ on:
         description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
         required: false
         type: choice
-        default: hosted
+        default: tp01
         options: [tp01, hosted]
       measurement:
         description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
@@ -47,7 +47,7 @@ permissions:
 jobs:
   ec-integration-tests:
     name: EC Integration Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
@@ -159,7 +159,7 @@ jobs:
   # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
   ec-custom-ratio-tests:
     name: EC Custom Ratio Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
@@ -251,7 +251,7 @@ jobs:
   # Regression test job
   ec-regression-tests:
     name: EC Regression Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
     steps:
     - name: Checkout artifactory repo
@@ -313,7 +313,7 @@ jobs:
   #     TeardownEmptyVolume callback cluster-wide.
   ec-vacuum-2pc-tests:
     name: EC Vacuum 2PC Switch Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 30
     steps:
     - name: Checkout artifactory repo
@@ -397,7 +397,7 @@ jobs:
   # filer, admin and workers stay Go — they are the orchestrators.
   ec-vacuum-2pc-rust-tests:
     name: EC Vacuum 2PC Switch Tests (Rust volumes)
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     # A cold cargo cache means a full release build of the crate before the
     # test starts, on top of the test's own 35m budget.
     timeout-minutes: 55
@@ -471,7 +471,7 @@ jobs:
   # before it — which would push the main EC integration job over budget.
   ec-2pc-interruption-tests:
     name: EC 2PC Interruption Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 70
     steps:
     - name: Checkout artifactory repo
