@@ -10,25 +10,50 @@ name: "kvcache: qualify (seaweed-mono)"
 # and on tp01 second, so the runner default here is hosted, unlike the
 # build/test suites.
 #
+# Two-ref design (ruled 2026-09-08, codex01's contract a): a release-
+# qualification action pins the TOOLING and varies the PRODUCT. mono_ref is
+# the PRODUCT SHA under test (Go weed + Rust volume); testops_ref is the
+# HARNESS SHA (testops + sw-test-runner + scenarios/scripts/assertions),
+# defaulting to the #598 branch head. Two clean, independent checkouts --
+# never one ref standing in for both -- because a reference commit
+# (chrislusf's own, pre-hardening) does not carry the harness at all: the
+# first attempt at this (single checkout, ref = mono_ref for everything)
+# failed hard on 61748b3f5 with "testops/cmd/testops: directory not found"
+# (run 34272566294). `mode` selects the expected-outcome shape: release-
+# candidate (all gates GREEN) vs reference-comparison (functional GREEN,
+# contract gates RED is expected, not a failure).
+#
+# STATUS: scaffolding only -- the actual `testops ci run` invocation below
+# is NOT wired to the two checkouts yet. codex01's CLI has no product-
+# override flag (--product-dir / --weed-bin / --volume-bin) as of this
+# commit ("current CLI has no such split, so no invented invocation
+# offered"). Per the ruling, this workflow is prepared now and DOES NOT
+# DISPATCH until codex01's exact invocation lands -- see the placeholder
+# comment on the gate-pack step below.
+#
 # Tier 2 (T3 real RDMA + the three fault gates needing root scope) is
 # "self-hosted only" from GitHub's view: a future phase-2 job that lands on
 # tp01 and drives the CX-5 pair (M01 client / M02 server) over the lab link --
 # tp01 itself has no RDMA. Parked pending the owner's credential ruling; not
 # implemented by this workflow yet.
-#
-# Invocation wired verbatim from enterprise/testops/packs/kv/CI.md
-# (test/testops-phase1-upstream @ 9022fc5e, PR #598): kv-tier1 = functional
-# control + T4 deleted-needle + T5 publish churn + T6 (containerized MySQL)
-# + T7 assign isolation, 9 gate rows. testops' own exit code (0 GREEN, 1 a
-# real RED assertion, 2 INFRA_ERROR) decides this job's pass/fail.
-run-name: ${{ github.workflow }} · mono_ref:${{ inputs.mono_ref }} · tier:${{ inputs.tier }} · runner:${{ inputs.runner || 'hosted' }}
+run-name: ${{ github.workflow }} · mode:${{ inputs.mode || 'release-candidate' }} · product:${{ inputs.mono_ref }} · harness:${{ inputs.testops_ref }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   workflow_dispatch:
     inputs:
       mono_ref:
-        description: 'seaweed-mono ref to qualify: a tag, or a full 40-char commit sha'
+        description: 'PRODUCT: seaweed-mono ref under test (Go weed + Rust volume) -- a tag, branch, or full 40-char commit sha'
         required: true
+      testops_ref:
+        description: 'HARNESS: seaweed-mono ref supplying testops + sw-test-runner + scenarios/scripts/assertions -- a tag, branch, or full 40-char commit sha'
+        required: false
+        default: 'test/testops-phase1-upstream'
+      mode:
+        description: 'release-candidate expects all gates GREEN; reference-comparison expects functional GREEN and contract gates RED'
+        required: false
+        type: choice
+        default: release-candidate
+        options: [release-candidate, reference-comparison]
       tier:
         description: 'Gate tier to run (only tier 1 is implemented -- host-agnostic gates)'
         required: false
@@ -55,9 +80,11 @@ concurrency:
   # support, and serializing avoids any doubt about which run's artifact a
   # reviewer is looking at. Never auto-cancel a qualification that is
   # running: a cancelled gate run is not the same as a passing or failing one.
-  # One holder per (runner, mono_ref): a hosted candidate and a tp01 reference must
-  # not queue behind each other; only true duplicates (same target, same ref) wait.
-  group: kvcache-qualify${{ inputs.measurement && '/measure' || '' }}/${{ inputs.runner || 'hosted' }}/${{ inputs.mono_ref }}
+  # One holder per (runner, product ref, harness ref): a hosted candidate and
+  # a tp01 reference must not queue behind each other, and neither should a
+  # release-candidate run and a reference-comparison run on the same product
+  # ref with different harnesses; only true duplicates (same everything) wait.
+  group: kvcache-qualify${{ inputs.measurement && '/measure' || '' }}/${{ inputs.runner || 'hosted' }}/${{ inputs.mono_ref }}/${{ inputs.testops_ref }}
   cancel-in-progress: false
 
 permissions:
@@ -76,8 +103,8 @@ jobs:
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
 
-    - name: Resolve mono_ref to a commit sha
-      id: resolve
+    - name: Resolve product ref (mono_ref) to a commit sha
+      id: resolve_product
       env:
         MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
         MONO_REF: ${{ inputs.mono_ref }}
@@ -93,18 +120,53 @@ jobs:
         else
           SHA="$(git ls-remote "$REMOTE" "refs/tags/${MONO_REF}" "refs/heads/${MONO_REF}" | awk '{print $1}' | head -1)"
           if [ -z "$SHA" ]; then
-            echo "::error::mono_ref '$MONO_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            echo "::error::mono_ref (product) '$MONO_REF' did not resolve to a tag or branch on seaweed-mono" >&2
             exit 1
           fi
         fi
         echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-        echo "Resolved mono_ref '$MONO_REF' -> $SHA"
+        echo "Resolved product mono_ref '$MONO_REF' -> $SHA"
 
-    - name: Clone seaweed-mono (enterprise) source at the resolved ref
+    - name: Resolve harness ref (testops_ref) to a commit sha
+      id: resolve_harness
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        TESTOPS_REF: ${{ inputs.testops_ref || 'test/testops-phase1-upstream' }}
+      run: |
+        set -euo pipefail
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        if printf '%s' "$TESTOPS_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+          SHA="$TESTOPS_REF"
+        else
+          SHA="$(git ls-remote "$REMOTE" "refs/tags/${TESTOPS_REF}" "refs/heads/${TESTOPS_REF}" | awk '{print $1}' | head -1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::testops_ref (harness) '$TESTOPS_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            exit 1
+          fi
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved harness testops_ref '$TESTOPS_REF' -> $SHA"
+
+    # PRODUCT checkout: Go weed + Rust volume under test. Path kept as
+    # `seaweedfs-source` (existing convention elsewhere in this repo).
+    - name: Clone seaweed-mono (product) source at the resolved product sha
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
-        sha: ${{ steps.resolve.outputs.sha }}
+        sha: ${{ steps.resolve_product.outputs.sha }}
+        path: seaweedfs-source
+
+    # HARNESS checkout: testops + sw-test-runner + scenarios/scripts/
+    # assertions. Independent tree, independent sha -- this is the whole
+    # point of the two-ref design: a reference commit that predates the
+    # harness must still be qualifiable, by supplying the harness from a
+    # ref that has it.
+    - name: Clone seaweed-mono (harness) source at the resolved harness sha
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        sha: ${{ steps.resolve_harness.outputs.sha }}
+        path: seaweedfs-harness
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -120,21 +182,19 @@ jobs:
       # build the same tool on every run, not whatever grpcurl shipped today.
       run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
 
-    # Per enterprise/testops/packs/kv/CI.md (test/testops-phase1-upstream,
-    # 9022fc5e): the testops entry point is built once, then `ci run` itself
-    # builds weed, weed-volume (Rust, no RDMA features) and sw-test-runner
-    # from the same checkout -- no separate weed build step here.
-    #
-    # Built to $RUNNER_TEMP, not `enterprise/testops` as CI.md's own example
-    # literally shows: enterprise/testops/ is ALSO the testops package's own
-    # source root (agent.go, coordinator.go, cmd/, ...), so `go build -o
-    # testops` there is a same-name collision -- go silently places the
-    # binary INSIDE that directory instead of overwriting it, and the
-    # `./testops` invocation that follows fails with "Is a directory" (found
-    # live on the first hosted proof run, 34260061227). Same collision-
-    # avoidance pattern already used for `weed` in kafka-tests.yml/s3tests.yml.
-    - name: Build testops
-      working-directory: seaweedfs-source/enterprise
+    # Built from the HARNESS checkout, not the product one -- this is the
+    # fix for the failure the single-checkout design hit on 61748b3f5
+    # (testops/cmd/testops did not exist at that product commit; run
+    # 34272566294). Built to $RUNNER_TEMP, not `enterprise/testops` as
+    # CI.md's own example literally shows: enterprise/testops/ is ALSO the
+    # testops package's own source root (agent.go, coordinator.go, cmd/,
+    # ...), so `go build -o testops` there is a same-name collision -- go
+    # silently places the binary INSIDE that directory instead of
+    # overwriting it, and `./testops` then fails with "Is a directory"
+    # (found live on 34260061227). Same collision-avoidance pattern already
+    # used for `weed` in kafka-tests.yml/s3tests.yml.
+    - name: Build testops (from the harness checkout)
+      working-directory: seaweedfs-harness/enterprise
       run: |
         mkdir -p "$RUNNER_TEMP/bin"
         go build -o "$RUNNER_TEMP/bin/testops" ./testops/cmd/testops
@@ -150,9 +210,11 @@ jobs:
       # the explicit Enforce step below, instead of the job just stopping
       # silently at this step with no artifact and no explanation.
       continue-on-error: true
-      working-directory: seaweedfs-source/enterprise
+      working-directory: seaweedfs-harness/enterprise
       env:
-        COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+        HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
+        PRODUCT_DIR: ${{ github.workspace }}/seaweedfs-source/enterprise
       run: |
         # GitHub invokes run: blocks as `bash -e {0}`; `set -uo pipefail`
         # alone does NOT cancel that inherited -e. testops exiting 1 (RED) or
@@ -171,17 +233,16 @@ jobs:
         export TESTOPS_LOCK_FILE="$RUNNER_TEMP/testops-ci.lock"
         export TESTOPS_CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-target"
 
-        "$RUNNER_TEMP/bin/testops" ci run \
-          --pack kv-tier1 \
-          --target local \
-          --commit "$COMMIT_SHA" \
-          --output-dir "$OUT_DIR" \
-          --timeout "${{ inputs.timeout_minutes }}m"
-        # 0 GREEN, 1 a real RED assertion, 2 INFRA_ERROR (preflight/build/
-        # timeout/evidence) -- capture rather than let set -e stop the job
-        # before the summary/upload steps below can run, then re-exit with it
-        # so this step's own conclusion (and the job's) still reflects testops'.
-        EXIT_CODE=$?
+        # PLACEHOLDER pending codex01's RESULT (ruled 2026-09-08): the exact
+        # flag for pointing testops ci run at a product build from a
+        # separate checkout (--product-dir / --weed-bin / --volume-bin) does
+        # not exist in the CLI yet -- "current CLI has no such split, so no
+        # invented invocation offered." Do NOT dispatch this workflow until
+        # that RESULT lands and this command is updated to match it exactly;
+        # PRODUCT_DIR/PRODUCT_SHA/HARNESS_SHA above are already wired and
+        # ready to slot into whatever flag names codex01 gives.
+        echo "::error::gate-pack invocation not wired yet -- awaiting codex01's product-override flag; see PLACEHOLDER comment in this step" >&2
+        EXIT_CODE=2
         echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
         echo "output_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
         exit "$EXIT_CODE"
@@ -190,7 +251,7 @@ jobs:
       if: always() && steps.run_gates.outputs.output_dir != ''
       uses: actions/upload-artifact@v4
       with:
-        name: kvcache-qualify-${{ steps.resolve.outputs.sha }}
+        name: kvcache-qualify-${{ steps.resolve_product.outputs.sha }}-${{ steps.resolve_harness.outputs.sha }}
         path: ${{ steps.run_gates.outputs.output_dir }}
         retention-days: 30
 
@@ -199,20 +260,28 @@ jobs:
     # finished_at,duration_s,gates:[{gate_id,scenario,status,run_id,
     # duration_s,result_file}]}. testops' own exit code (0/1/2, captured by
     # the previous step) already decides the job's pass/fail -- this step
-    # only renders the table for a human reader.
+    # only renders the table for a human reader. Product SHA, harness SHA
+    # and mode are always echoed (ruled 2026-09-08: results must record both
+    # SHAs, expected vs actual outcome shape) regardless of whether a
+    # summary.json exists.
     - name: Render gate summary
       if: always() && steps.run_gates.outputs.output_dir != ''
       env:
         OUT_DIR: ${{ steps.run_gates.outputs.output_dir }}
-        MONO_SHA: ${{ steps.resolve.outputs.sha }}
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+        HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
         EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
       run: |
         set -uo pipefail
         SUMMARY_JSON="$OUT_DIR/summary.json"
         {
-          echo "## KVCache qualification — tier ${{ inputs.tier }}"
+          echo "## KVCache qualification — tier ${{ inputs.tier }}, mode \`${{ inputs.mode || 'release-candidate' }}\`"
           echo ""
-          echo "mono ref \`${{ inputs.mono_ref }}\` @ \`$MONO_SHA\`, runner \`${{ inputs.runner || 'hosted' }}\`, testops exit \`$EXIT_CODE\`"
+          echo "product (mono_ref) \`${{ inputs.mono_ref }}\` @ \`$PRODUCT_SHA\`"
+          echo ""
+          echo "harness (testops_ref) \`${{ inputs.testops_ref || 'test/testops-phase1-upstream' }}\` @ \`$HARNESS_SHA\`"
+          echo ""
+          echo "runner \`${{ inputs.runner || 'hosted' }}\`, testops exit \`$EXIT_CODE\`"
           echo ""
         } >> "$GITHUB_STEP_SUMMARY"
         if [ ! -f "$SUMMARY_JSON" ]; then
