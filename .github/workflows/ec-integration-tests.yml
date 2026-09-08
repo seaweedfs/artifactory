@@ -1,5 +1,9 @@
 name: "EC Integration Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -28,11 +42,14 @@ permissions:
 jobs:
   ec-integration-tests:
     name: EC Integration Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -43,6 +60,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -136,17 +154,21 @@ jobs:
   # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
   ec-custom-ratio-tests:
     name: EC Custom Ratio Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -224,17 +246,21 @@ jobs:
   # Regression test job
   ec-regression-tests:
     name: EC Regression Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 20
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -282,17 +308,21 @@ jobs:
   #     TeardownEmptyVolume callback cluster-wide.
   ec-vacuum-2pc-tests:
     name: EC Vacuum 2PC Switch Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 30
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -362,7 +392,7 @@ jobs:
   # filer, admin and workers stay Go — they are the orchestrators.
   ec-vacuum-2pc-rust-tests:
     name: EC Vacuum 2PC Switch Tests (Rust volumes)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     # A cold cargo cache means a full release build of the crate before the
     # test starts, on top of the test's own 35m budget.
     timeout-minutes: 55
@@ -372,11 +402,15 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -432,7 +466,7 @@ jobs:
   # before it — which would push the main EC integration job over budget.
   ec-2pc-interruption-tests:
     name: EC 2PC Interruption Tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 70
     steps:
     - name: Checkout artifactory repo
@@ -440,11 +474,15 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6

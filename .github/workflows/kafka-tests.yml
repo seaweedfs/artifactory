@@ -1,5 +1,9 @@
 name: "Kafka Gateway Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -32,7 +46,15 @@ permissions:
 jobs:
   kafka-unit-tests:
     name: Kafka Unit Tests
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -46,6 +68,9 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
       uses: ./.github/actions/mono-source-link
@@ -55,6 +80,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -80,7 +106,15 @@ jobs:
 
   kafka-integration-tests:
     name: Kafka Integration Tests (Critical)
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -95,11 +129,15 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -127,7 +165,15 @@ jobs:
 
   kafka-e2e-tests:
     name: Kafka End-to-End Tests (with SMQ)
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -142,11 +188,15 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -300,7 +350,15 @@ jobs:
 
   kafka-consumer-group-tests:
     name: Kafka Consumer Group Tests (Highly Isolated)
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -315,11 +373,15 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -436,7 +498,15 @@ jobs:
 
   kafka-client-compatibility:
     name: Kafka Client Compatibility (with SMQ)
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -451,11 +521,15 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -558,7 +632,15 @@ jobs:
 
   kafka-smq-integration-tests:
     name: Kafka SMQ Integration Tests (Full Stack)
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -573,11 +655,15 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -683,7 +769,15 @@ jobs:
 
   kafka-protocol-tests:
     name: Kafka Protocol Tests (Isolated)
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -698,11 +792,15 @@ jobs:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6

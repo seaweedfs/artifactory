@@ -1,0 +1,35 @@
+name: Self-hosted runner housekeeping
+description: >
+  Reclaim Docker build cache and old images on a self-hosted runner, but only
+  when the disk is genuinely tight. A hosted runner is discarded after the job,
+  so this is a no-op there.
+
+  Deliberately bounded. `docker system prune -af --volumes` would destroy the
+  warm layer cache that is the entire reason for using a self-hosted runner, and
+  would break any job running beside this one. This prunes only build cache and
+  images untouched for 14 days, and only below the free-space floor.
+
+inputs:
+  min-free-gb:
+    description: Prune only when free space on / drops below this many GB
+    required: false
+    default: '150'
+
+runs:
+  using: composite
+  steps:
+    - name: Prune Docker build cache when disk is tight
+      if: runner.environment != 'github-hosted'
+      shell: bash
+      env:
+        MIN_FREE_GB: ${{ inputs.min-free-gb }}
+      run: |
+        set -euo pipefail
+        free_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+        echo "free: ${free_gb} GB (floor: ${MIN_FREE_GB} GB)"
+        if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
+          echo "below the floor, pruning build cache and images older than 14 days"
+          docker builder prune -f --filter 'until=336h' || true
+          docker image prune -f --filter 'until=336h' || true
+          df -h /
+        fi

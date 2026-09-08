@@ -1,5 +1,9 @@
 name: "seaweed-vfs (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -17,6 +21,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
 
   # Nightly against main — catches distro kernel bumps that break the shipped
   # module source even when nothing in seaweed-mono changed (the reported issue:
@@ -37,13 +51,24 @@ permissions:
 jobs:
   # Build the Rust workspace (sw-client, sw-fuse, sw-kd) and run unit tests.
   rust:
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
         with:
           persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
 
       - name: Link to seaweed-mono source
         if: github.event_name == 'repository_dispatch'
@@ -54,9 +79,18 @@ jobs:
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Install build deps
-        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler libfuse3-dev pkg-config
+        run: |
+          # Hosted-only: apt-retry.sh runs apt-get under sudo and tp01's runner
+          # account has no sudo. On a self-hosted runner these are host
+          # prerequisites; the check below fails the job if one is missing.
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler libfuse3-dev pkg-config
+          fi
+          command -v protoc
+          pkg-config --exists fuse3
       - name: Build
         working-directory: seaweedfs-source/seaweed-vfs
         run: cargo build --workspace --locked
@@ -68,7 +102,15 @@ jobs:
   # matching the deployment/dev kernel. (ubuntu-latest's own kernel headers
   # drift across VFS API changes, e.g. the 6.13 i_op->mkdir signature.)
   kernel:
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     steps:
       - name: Checkout artifactory repo
@@ -76,11 +118,15 @@ jobs:
         with:
           persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
       - name: Clone seaweed-mono source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Build seaweedvfs.ko in debian:trixie
         run: |
@@ -103,7 +149,15 @@ jobs:
   # source against a span of kernels — crucially 7.0 (sid) and rawhide, NEWER than
   # the deploy kernel — and assert the package version is internally consistent.
   dkms-package:
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     # rawhide is a non-blocking canary; the fixed-kernel entries are required.
     continue-on-error: ${{ matrix.optional || false }}
@@ -133,11 +187,15 @@ jobs:
         with:
           persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
       - name: Clone seaweed-mono source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Install nfpm
         run: |
@@ -168,7 +226,15 @@ jobs:
 
   # End-to-end FUSE smoke test against a real single-node SeaweedFS cluster.
   fuse-smoke:
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
     steps:
       - name: Checkout artifactory repo
@@ -176,14 +242,27 @@ jobs:
         with:
           persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
       - name: Clone seaweed-mono source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Install deps
-        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
+        run: |
+          # Hosted-only: apt-retry.sh runs apt-get under sudo and tp01's runner
+          # account has no sudo. On a self-hosted runner these are host
+          # prerequisites; the check below fails the job if one is missing.
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr
+          fi
+          command -v protoc && command -v curl && command -v attr && command -v fusermount3
+          pkg-config --exists fuse3
+          test -c /dev/fuse
       - name: Repair the fusermount3 setuid bit
         uses: ./.github/actions/fix-fusermount-setuid
       - name: Install weed
@@ -198,8 +277,14 @@ jobs:
             echo "weed download attempt $i failed (release asset not ready?); retrying in 15s..."
             sleep 15
           done
-          sudo tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C /usr/local/bin weed
-          weed version
+          # A per-job bin directory rather than /usr/local/bin: that is
+          # root-owned and tp01's runner account has no sudo. It also keeps
+          # one run's binary from leaking into the next on a persistent host.
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C "$RUNNER_TEMP/bin" weed
+          chmod 0755 "$RUNNER_TEMP/bin/weed"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/weed" version
       - name: Start SeaweedFS (master+volume+filer)
         run: |
           mkdir -p "$RUNNER_TEMP/sw"
@@ -252,7 +337,15 @@ jobs:
   # ops sw-fuse does not implement yet are listed in
   # seaweed-vfs/tests/pjdfstest/known_failures.txt and skipped.
   pjdfstest:
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 40
     steps:
       - name: Checkout artifactory repo
@@ -260,14 +353,27 @@ jobs:
         with:
           persist-credentials: false   # don't leave a token in .git/config (bind-mounted into containers)
 
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
       - name: Clone seaweed-mono source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Install deps
-        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
+        run: |
+          # Hosted-only: apt-retry.sh runs apt-get under sudo and tp01's runner
+          # account has no sudo. On a self-hosted runner these are host
+          # prerequisites; the check below fails the job if one is missing.
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler fuse3 libfuse3-dev pkg-config curl attr autoconf build-essential
+          fi
+          command -v protoc && command -v curl && command -v attr && command -v autoconf && command -v cc
+          pkg-config --exists fuse3
+          test -c /dev/fuse
 
       - name: Repair the fusermount3 setuid bit
         uses: ./.github/actions/fix-fusermount-setuid
@@ -284,11 +390,23 @@ jobs:
             echo "weed download attempt $i failed (release asset not ready?); retrying in 15s..."
             sleep 15
           done
-          sudo tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C /usr/local/bin weed
-          weed version
+          # A per-job bin directory rather than /usr/local/bin: that is
+          # root-owned and tp01's runner account has no sudo. It also keeps
+          # one run's binary from leaking into the next on a persistent host.
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C "$RUNNER_TEMP/bin" weed
+          chmod 0755 "$RUNNER_TEMP/bin/weed"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/weed" version
 
+      # Editing /etc/fuse.conf needs root. On a self-hosted runner
+      # `user_allow_other` is a host prerequisite, asserted rather than set.
       - name: Enable FUSE allow_other
-        run: echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
+        run: |
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
+          fi
+          grep -q '^user_allow_other' /etc/fuse.conf
 
       - name: Build sw-fuse
         working-directory: seaweedfs-source/seaweed-vfs

@@ -1,5 +1,9 @@
 name: "FUSE Integration Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -31,12 +45,15 @@ env:
 jobs:
   fuse-integration:
     name: FUSE Integration Testing
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 50
 
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -47,6 +64,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -54,18 +72,28 @@ jobs:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
+    # Installing and editing /etc/fuse.conf both need root, and tp01's runner
+    # account has no sudo. On a self-hosted runner these are host prerequisites
+    # (libfuse3-dev installed, `user_allow_other` uncommented in /etc/fuse.conf);
+    # the verification below runs on both and fails the job if either is missing,
+    # rather than letting it surface as an opaque mount error later.
     - name: Install FUSE and dependencies
       run: |
-        $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
-        # fuse3 is pre-installed on ubuntu-22.04 runners and conflicts
-        # with the legacy fuse package, so only install the dev headers.
-        $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y libfuse3-dev
-        # Allow non-root FUSE mounts with allow_other
-        echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
-        sudo chmod 644 /etc/fuse.conf
+        if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
+          # fuse3 is pre-installed on ubuntu-22.04 runners and conflicts
+          # with the legacy fuse package, so only install the dev headers.
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y libfuse3-dev
+          # Allow non-root FUSE mounts with allow_other
+          echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
+          sudo chmod 644 /etc/fuse.conf
+        fi
         # Verify FUSE installation
         fusermount3 --version || fusermount --version || true
         ls -la /dev/fuse
+        test -c /dev/fuse
+        grep -q '^user_allow_other' /etc/fuse.conf
+        pkg-config --exists fuse3
 
     - name: Repair the fusermount3 setuid bit
       uses: ./.github/actions/fix-fusermount-setuid
@@ -76,8 +104,13 @@ jobs:
         go build -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -o weed .
         chmod +x weed
         ./weed version
-        # Make weed binary available in PATH for the test framework
-        sudo cp weed /usr/local/bin/weed
+        # Make weed available in PATH for the test framework. A per-job bin
+        # directory rather than /usr/local/bin: that is root-owned, and tp01's
+        # runner account has no sudo. It also keeps one run's binary from
+        # leaking into the next on a persistent runner.
+        mkdir -p "$RUNNER_TEMP/bin"
+        install -m 0755 weed "$RUNNER_TEMP/bin/weed"
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
     - name: Install test dependencies
       working-directory: seaweedfs-source/enterprise/test/fuse_integration

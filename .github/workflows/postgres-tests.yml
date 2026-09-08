@@ -1,5 +1,9 @@
 name: "PostgreSQL Gateway Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -28,11 +42,22 @@ permissions:
 jobs:
   postgres-basic-tests:
     name: PostgreSQL Basic Tests
-    runs-on: ubuntu-latest
+    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
+    # one job at a time on a shared host, so on tp01 every port-binding job
+    # across every suite takes the same single repository-wide slot. A hosted
+    # runner is a fresh VM per job, so it gets a key unique to this job and
+    # matrix leg and never waits.
+    concurrency:
+      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 15
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -43,6 +68,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go 1.x
       uses: actions/setup-go@v6
@@ -51,7 +77,12 @@ jobs:
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
       id: go
 
+    # Hosted-only: this rewrites the daemon config and restarts Docker, which on
+    # a shared self-hosted host would clobber the operator's daemon.json and kill
+    # any container the host is running. tp01 is not rate-limited by Docker Hub
+    # the way a hosted runner's shared egress IP is, so it needs no mirror.
     - name: Configure Docker Hub mirror
+      if: runner.environment == 'github-hosted'
       working-directory: ${{ github.workspace }}
       run: |
         echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json

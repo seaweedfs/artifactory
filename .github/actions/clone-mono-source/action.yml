@@ -16,6 +16,17 @@ inputs:
     description: Branch to clone when no commit was dispatched (manual runs); defaults to main
     required: false
     default: ''
+  sha:
+    description: >
+      Exact seaweed-mono commit to clone on a manual (workflow_dispatch) run.
+      Lets the runner watchdog reproduce a repository_dispatch run after it
+      rescues one off an offline self-hosted runner: without it the rescued run
+      would clone the branch head, which is a different commit. Ignored on
+      repository_dispatch, where client_payload.sha already carries it. Falls
+      back to the branch, same as a dispatched commit that is no longer
+      fetchable.
+    required: false
+    default: ''
   path:
     description: Directory to clone into
     required: false
@@ -33,6 +44,10 @@ runs:
         PAYLOAD_REF: ${{ github.event.client_payload.ref }}
         PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
         INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_SHA: ${{ inputs.sha }}
+        # Local bare mirror, self-hosted only. Absent on a hosted runner, where
+        # the variable stays empty and every mirror step below is skipped.
+        MONO_MIRROR: ${{ runner.environment != 'github-hosted' && '/opt/ci-cache/seaweed-mono.git' || '' }}
       run: |
         set -euo pipefail
         # Determine branch from webhook or manual input
@@ -45,6 +60,16 @@ runs:
           exit 1
         fi
         SHA=""
+        # A manual run may name the commit explicitly (the watchdog does, when
+        # it re-dispatches a rescued repository_dispatch run on hosted). Same
+        # validation, same branch fallback as the dispatched path.
+        if [ "$EVENT_NAME" != "repository_dispatch" ] && [ -n "${INPUT_SHA:-}" ] && [ "$INPUT_SHA" != "null" ]; then
+          if ! printf '%s' "$INPUT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Refusing invalid requested sha: $INPUT_SHA" >&2
+            exit 1
+          fi
+          SHA="$INPUT_SHA"
+        fi
         if [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "${PAYLOAD_SHA:-}" ] && [ "$PAYLOAD_SHA" != "null" ]; then
           if ! printf '%s' "$PAYLOAD_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "Refusing invalid dispatched sha: $PAYLOAD_SHA" >&2
@@ -57,15 +82,34 @@ runs:
         # fallback: by then the branch is usually deleted and there is nothing
         # left to clone. Retry every network step before giving up on it.
         RETRY="$GITHUB_ACTION_PATH/../../scripts/git-retry.sh"
+
+        # A local bare mirror on the self-hosted runner turns a full clone into a
+        # delta fetch. It is strictly an optimisation: --reference-if-able ignores
+        # a mirror that is missing or unreadable, so a job never fails because of
+        # it. There is deliberately NO token on the runner host to maintain it --
+        # the mirror is refreshed below, inside the job, with the token this job
+        # already holds.
+        REF_ARGS=""
+        if [ -n "${MONO_MIRROR:-}" ] && [ -d "$MONO_MIRROR" ]; then
+          REF_ARGS="--reference-if-able $MONO_MIRROR"
+          echo "Using local mono mirror: $MONO_MIRROR"
+        fi
+
         clone_branch() {
           # git only cleans up a directory it created itself, and the commit
           # path above may have left one behind.
           rm -rf "$CLONE_PATH"
-          "$RETRY" clone -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
+          # shellcheck disable=SC2086  # REF_ARGS is intentionally word-split
+          "$RETRY" clone $REF_ARGS -b "$BRANCH" "$REMOTE" "$CLONE_PATH"
         }
         if [ -n "$SHA" ]; then
           echo "Fetching dispatched commit: $SHA (branch: $BRANCH)"
           git init -q "$CLONE_PATH"
+          # The clone-by-commit path cannot take --reference, so borrow the
+          # mirror's objects the way --reference does, by hand.
+          if [ -n "$REF_ARGS" ]; then
+            echo "$MONO_MIRROR/objects" > "$CLONE_PATH/.git/objects/info/alternates"
+          fi
           git -C "$CLONE_PATH" remote add origin "$REMOTE"
           if "$RETRY" -C "$CLONE_PATH" fetch origin "$SHA"; then
             git -C "$CLONE_PATH" checkout -q FETCH_HEAD
@@ -77,6 +121,29 @@ runs:
           echo "Cloning branch: $BRANCH"
           clone_branch
         fi
+        # Refresh the mirror with the token this job already has, so the next job
+        # on this runner fetches deltas instead of a whole repository. Never
+        # prune and never gc: a clone created above is borrowing objects from
+        # this mirror for the rest of the job, and removing an object it depends
+        # on would break it mid-run. Growth is bounded by the repository, and the
+        # whole step is best-effort -- a failure here must not fail the job.
+        if [ -n "${MONO_MIRROR:-}" ]; then
+          (
+            set +e
+            if [ ! -d "$MONO_MIRROR" ]; then
+              echo "Seeding mono mirror at $MONO_MIRROR (first run on this host)"
+              mkdir -p "$(dirname "$MONO_MIRROR")" &&
+                git clone --bare --mirror "$REMOTE" "$MONO_MIRROR.tmp" &&
+                mv "$MONO_MIRROR.tmp" "$MONO_MIRROR" &&
+                git --git-dir="$MONO_MIRROR" config gc.auto 0
+            else
+              git --git-dir="$MONO_MIRROR" fetch --no-prune --no-tags "$REMOTE"                 '+refs/heads/*:refs/heads/*'
+            fi
+            # The mirror must never keep the token either.
+            git --git-dir="$MONO_MIRROR" remote set-url origin               https://github.com/seaweedfs/seaweed-mono.git 2>/dev/null
+          ) || echo "Mirror refresh failed; continuing (it is only a cache)"
+        fi
+
         # Drop the embedded token from .git/config: the workspace can be
         # bind-mounted into build containers, so the remote URL must not
         # carry the secret.

@@ -1,5 +1,9 @@
 name: "go: build binary (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'tp01' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +19,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -29,11 +43,14 @@ jobs:
 
   vet:
     name: Go Vet
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -44,6 +61,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -66,17 +84,21 @@ jobs:
 
   vet-32bit:
     name: Go Vet 32-bit
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -92,17 +114,21 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -154,17 +180,21 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -178,17 +208,21 @@ jobs:
 
   test-32bit:
     name: Test 32-bit
-    runs-on: ubuntu-latest
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     - name: Set up Go
       uses: actions/setup-go@v6

@@ -1,5 +1,9 @@
 name: "Volume Tiering Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
 
 # End-to-end guard for the storage-class tiering DSL. A real cluster is driven
 # both through `weed shell` and through the plugin worker (RunDetection ->
@@ -29,6 +33,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -42,7 +56,7 @@ permissions:
 jobs:
   volume-tiering-tests:
     name: Volume Tiering E2E (${{ matrix.layout }})
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 40
     strategy:
       # Report both layouts independently; one failing must not cancel the other.
@@ -59,6 +73,9 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
       uses: ./.github/actions/mono-source-link
@@ -68,6 +85,7 @@ jobs:
       with:
         token: ${{ secrets.MONO_TOKEN }}
         branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
 
     # Branches predating the suite have no directory; branches predating the
     # multi-disk layout have the directory but no test-multidisk target. Skip
@@ -97,9 +115,16 @@ jobs:
 
     # The suite's teardown waits for the cluster's ports to be released before a
     # following start, which it checks with lsof.
+    # apt-retry.sh runs apt-get under sudo, and tp01's runner account has no
+    # sudo at all, so this step can only run on a hosted image. lsof is already
+    # installed on tp01 (/usr/bin/lsof) — keep it installed there.
     - name: Install lsof
-      if: steps.check.outputs.present == 'true'
+      if: steps.check.outputs.present == 'true' && runner.environment == 'github-hosted'
       run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y lsof
+
+    - name: Verify lsof is present (self-hosted)
+      if: steps.check.outputs.present == 'true' && runner.environment != 'github-hosted'
+      run: command -v lsof
 
     - name: Run volume tiering E2E suite (${{ matrix.layout }})
       if: steps.check.outputs.present == 'true'
