@@ -55,7 +55,9 @@ concurrency:
   # support, and serializing avoids any doubt about which run's artifact a
   # reviewer is looking at. Never auto-cancel a qualification that is
   # running: a cancelled gate run is not the same as a passing or failing one.
-  group: kvcache-qualify${{ inputs.measurement && '/measure' || '' }}
+  # One holder per (runner, mono_ref): a hosted candidate and a tp01 reference must
+  # not queue behind each other; only true duplicates (same target, same ref) wait.
+  group: kvcache-qualify${{ inputs.measurement && '/measure' || '' }}/${{ inputs.runner || 'hosted' }}/${{ inputs.mono_ref }}
   cancel-in-progress: false
 
 permissions:
