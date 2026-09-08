@@ -51,13 +51,13 @@ permissions:
 jobs:
   kafka-unit-tests:
     name: Kafka Unit Tests
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-unit-tests-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
@@ -111,13 +111,13 @@ jobs:
 
   kafka-integration-tests:
     name: Kafka Integration Tests (Critical)
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-integration-tests-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
@@ -170,13 +170,13 @@ jobs:
 
   kafka-e2e-tests:
     name: Kafka End-to-End Tests (with SMQ)
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-e2e-tests-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
@@ -231,29 +231,44 @@ jobs:
       working-directory: seaweedfs-source/enterprise
       run: |
         set -e
-        # Build weed binary
-        go build -o /usr/local/bin/weed ./weed
+        # Build to a per-job bin directory, not /usr/local/bin: that is a single
+        # shared system path, and two jobs on two different runner instances
+        # building to it at once race and one gets "permission denied" mid-write
+        # (found live on this host once tp01-2 could genuinely run alongside tp01).
+        # $RUNNER_TEMP is unique per job by construction, so this also cannot leak
+        # one run's binary into the next on a persistent runner.
+        mkdir -p "$RUNNER_TEMP/bin"
+        export PATH="$RUNNER_TEMP/bin:$PATH"
+        go build -o "$RUNNER_TEMP/bin/weed" ./weed
         # Start SeaweedFS components with MQ brokers
         export WEED_DATA_DIR=/tmp/seaweedfs-e2e-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
         # Start SeaweedFS server (master, volume, filer) with consistent IP advertising
+        # CI_MASTER_PORT/CI_VOLUME_PORT/CI_FILER_PORT come from the tp01 runner hook
+        # (absent on hosted, so the :- defaults below are hosted's actual behaviour).
+        # gRPC and metrics are not exported directly: gRPC is SeaweedFS's own
+        # port+10000 convention, and metrics only needs to avoid the SAME collision
+        # as the others, so it is derived from the same instance band.
+        CI_MASTER_GRPC_PORT=$(( ${CI_MASTER_PORT:-9333} + 10000 ))
+        CI_METRICS_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 50))}"
+        CI_METRICS_PORT="${CI_METRICS_PORT:-9325}"
         nohup weed -v 1 server \
           -ip="127.0.0.1" \
           -ip.bind="0.0.0.0" \
           -dir="$WEED_DATA_DIR" \
           -master.raftHashicorp \
-          -master.port=9333 \
-          -volume.port=8081 \
-          -filer.port=8888 \
+          -master.port=${CI_MASTER_PORT:-9333} \
+          -volume.port=${CI_VOLUME_PORT:-8081} \
+          -filer.port=${CI_FILER_PORT:-8888} \
           -filer=true \
-          -metricsPort=9325 \
+          -metricsPort=${CI_METRICS_PORT} \
           -master.peers=none \
-          > /tmp/weed-server.log 2>&1 &
+          > "$RUNNER_TEMP/weed-server.log" 2>&1 &
 
         # Wait for master to be ready
         for i in $(seq 1 30); do
-          if curl -s http://127.0.0.1:9333/cluster/status >/dev/null; then
+          if curl -s http://127.0.0.1:${CI_MASTER_PORT:-9333}/cluster/status >/dev/null; then
             echo "SeaweedFS master HTTP is up"; break
           fi
           echo "Waiting for SeaweedFS master HTTP... ($i/30)"; sleep 1
@@ -262,8 +277,8 @@ jobs:
         # Wait for master gRPC to be ready (this is what broker discovery uses)
         echo "Waiting for master gRPC port..."
         for i in $(seq 1 30); do
-          if nc -z 127.0.0.1 19333 2>/dev/null; then
-            echo "SeaweedFS master gRPC is up (port 19333)"
+          if nc -z 127.0.0.1 $CI_MASTER_GRPC_PORT 2>/dev/null; then
+            echo "SeaweedFS master gRPC is up (port $CI_MASTER_GRPC_PORT)"
             break
           fi
           echo "  Waiting for master gRPC... ($i/30)"; sleep 1
@@ -279,18 +294,20 @@ jobs:
 
         # Start MQ broker with maximum verbosity for debugging
         echo "Starting MQ broker..."
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
-          -master="127.0.0.1:9333" \
+          -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
-          > /tmp/weed-mq-broker.log 2>&1 &
+          > "$RUNNER_TEMP/weed-mq-broker.log" 2>&1 &
 
         # Wait for broker to be ready with better error reporting
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then
             echo "SeaweedFS MQ broker is up"
             broker_ready=true
             break
@@ -303,15 +320,15 @@ jobs:
           echo "Allowing broker to register with master..."
           sleep 30
           echo "Cluster status after broker registration:"
-          curl -s "http://127.0.0.1:9333/cluster/status" || echo "Could not check cluster status"
+          curl -s "http://127.0.0.1:${CI_MASTER_PORT:-9333}/cluster/status" || echo "Could not check cluster status"
         fi
 
         # Check if broker failed to start and show logs
         if [ "$broker_ready" = false ]; then
           echo "ERROR: MQ broker failed to start. Broker logs:"
-          cat /tmp/weed-mq-broker.log || echo "No broker logs found"
+          cat "$RUNNER_TEMP/weed-mq-broker.log" || echo "No broker logs found"
           echo "Server logs:"
-          tail -20 /tmp/weed-server.log || echo "No server logs found"
+          tail -20 "$RUNNER_TEMP/weed-server.log" || echo "No server logs found"
           exit 1
         fi
 
@@ -332,16 +349,16 @@ jobs:
           echo "Tests failed! Showing debug information:"
           echo "========================================="
           echo "Server logs (last 50 lines):"
-          tail -50 /tmp/weed-server.log || echo "No server logs"
+          tail -50 "$RUNNER_TEMP/weed-server.log" || echo "No server logs"
           echo "========================================="
           echo "Broker logs (last 50 lines):"
-          tail -50 /tmp/weed-mq-broker.log || echo "No broker logs"
+          tail -50 "$RUNNER_TEMP/weed-mq-broker.log" || echo "No broker logs"
           echo "========================================="
           exit 1
         fi
       env:
         GOMAXPROCS: 2
-        SEAWEEDFS_MASTERS: 127.0.0.1:9333
+        SEAWEEDFS_MASTERS: 127.0.0.1:${{ env.CI_MASTER_PORT || '9333' }}
 
     - name: Upload test logs on failure
       if: failure()
@@ -349,19 +366,19 @@ jobs:
       with:
         name: kafka-e2e-logs-${{ env.COMMIT_SHA }}
         path: |
-          /tmp/weed-server.log
-          /tmp/weed-mq-broker.log
+          ${{ runner.temp }}/weed-server.log
+          ${{ runner.temp }}/weed-mq-broker.log
         retention-days: 3
 
   kafka-consumer-group-tests:
     name: Kafka Consumer Group Tests (Highly Isolated)
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-consumer-group-tests-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
@@ -413,7 +430,9 @@ jobs:
       working-directory: seaweedfs-source/enterprise
       run: |
         set -e
-        go build -o /usr/local/bin/weed ./weed
+        mkdir -p "$RUNNER_TEMP/bin"
+        export PATH="$RUNNER_TEMP/bin:$PATH"
+        go build -o "$RUNNER_TEMP/bin/weed" ./weed
         export WEED_DATA_DIR=/tmp/seaweedfs-mq-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
@@ -422,24 +441,24 @@ jobs:
           -ip.bind="0.0.0.0" \
           -dir="$WEED_DATA_DIR" \
           -master.raftHashicorp \
-          -master.port=9333 \
-          -volume.port=8081 \
-          -filer.port=8888 \
+          -master.port=${CI_MASTER_PORT:-9333} \
+          -volume.port=${CI_VOLUME_PORT:-8081} \
+          -filer.port=${CI_FILER_PORT:-8888} \
           -filer=true \
-          -metricsPort=9325 \
+          -metricsPort=${CI_METRICS_PORT} \
           -master.peers=none \
-          > /tmp/weed-server.log 2>&1 &
+          > "$RUNNER_TEMP/weed-server.log" 2>&1 &
 
         for i in $(seq 1 30); do
-          if curl -s http://127.0.0.1:9333/cluster/status >/dev/null; then
+          if curl -s http://127.0.0.1:${CI_MASTER_PORT:-9333}/cluster/status >/dev/null; then
             echo "SeaweedFS master HTTP is up"; break
           fi
           echo "Waiting for SeaweedFS master HTTP... ($i/30)"; sleep 1
         done
 
         for i in $(seq 1 30); do
-          if nc -z 127.0.0.1 19333 2>/dev/null; then
-            echo "SeaweedFS master gRPC is up (port 19333)"
+          if nc -z 127.0.0.1 $CI_MASTER_GRPC_PORT 2>/dev/null; then
+            echo "SeaweedFS master gRPC is up (port $CI_MASTER_GRPC_PORT)"
             break
           fi
           echo "  Waiting for master gRPC... ($i/30)"; sleep 1
@@ -451,17 +470,19 @@ jobs:
         echo "Allowing extra time for master gRPC streaming services to initialize..."
         sleep 10
 
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
-          -master="127.0.0.1:9333" \
+          -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
-          > /tmp/weed-mq-broker.log 2>&1 &
+          > "$RUNNER_TEMP/weed-mq-broker.log" 2>&1 &
 
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then
             broker_ready=true
             break
           fi
@@ -475,8 +496,8 @@ jobs:
 
         if [ "$broker_ready" = false ]; then
           echo "ERROR: MQ broker failed to start. Broker logs:"
-          cat /tmp/weed-mq-broker.log || echo "No broker logs found"
-          tail -20 /tmp/weed-server.log || echo "No server logs found"
+          cat "$RUNNER_TEMP/weed-mq-broker.log" || echo "No broker logs found"
+          tail -20 "$RUNNER_TEMP/weed-server.log" || echo "No server logs found"
           exit 1
         fi
 
@@ -489,7 +510,7 @@ jobs:
         timeout 240s go test -v -run "^TestConsumerGroups" -timeout 180s ./integration/...
       env:
         GOMAXPROCS: 1
-        SEAWEEDFS_MASTERS: 127.0.0.1:9333
+        SEAWEEDFS_MASTERS: 127.0.0.1:${{ env.CI_MASTER_PORT || '9333' }}
 
     - name: Upload test logs on failure
       if: failure()
@@ -497,19 +518,19 @@ jobs:
       with:
         name: kafka-consumer-group-logs-${{ env.COMMIT_SHA }}
         path: |
-          /tmp/weed-server.log
-          /tmp/weed-mq-broker.log
+          ${{ runner.temp }}/weed-server.log
+          ${{ runner.temp }}/weed-mq-broker.log
         retention-days: 3
 
   kafka-client-compatibility:
     name: Kafka Client Compatibility (with SMQ)
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-client-compatibility-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 25
@@ -561,7 +582,9 @@ jobs:
       working-directory: seaweedfs-source/enterprise
       run: |
         set -e
-        go build -o /usr/local/bin/weed ./weed
+        mkdir -p "$RUNNER_TEMP/bin"
+        export PATH="$RUNNER_TEMP/bin:$PATH"
+        go build -o "$RUNNER_TEMP/bin/weed" ./weed
         export WEED_DATA_DIR=/tmp/seaweedfs-client-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
@@ -570,21 +593,21 @@ jobs:
           -ip.bind="0.0.0.0" \
           -dir="$WEED_DATA_DIR" \
           -master.raftHashicorp \
-          -master.port=9333 \
-          -volume.port=8081 \
-          -filer.port=8888 \
+          -master.port=${CI_MASTER_PORT:-9333} \
+          -volume.port=${CI_VOLUME_PORT:-8081} \
+          -filer.port=${CI_FILER_PORT:-8888} \
           -filer=true \
-          -metricsPort=9325 \
+          -metricsPort=${CI_METRICS_PORT} \
           -master.peers=none \
-          > /tmp/weed-server.log 2>&1 &
+          > "$RUNNER_TEMP/weed-server.log" 2>&1 &
 
         for i in $(seq 1 30); do
-          if curl -s http://127.0.0.1:9333/cluster/status >/dev/null; then break; fi
+          if curl -s http://127.0.0.1:${CI_MASTER_PORT:-9333}/cluster/status >/dev/null; then break; fi
           sleep 1
         done
 
         for i in $(seq 1 30); do
-          if nc -z 127.0.0.1 19333 2>/dev/null; then break; fi
+          if nc -z 127.0.0.1 $CI_MASTER_GRPC_PORT 2>/dev/null; then break; fi
           sleep 1
         done
 
@@ -594,17 +617,19 @@ jobs:
         echo "Allowing extra time for master gRPC streaming services to initialize..."
         sleep 10
 
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
-          -master="127.0.0.1:9333" \
+          -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
-          > /tmp/weed-mq-broker.log 2>&1 &
+          > "$RUNNER_TEMP/weed-mq-broker.log" 2>&1 &
 
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then broker_ready=true; break; fi
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then broker_ready=true; break; fi
           sleep 1
         done
 
@@ -612,8 +637,8 @@ jobs:
           sleep 30
         else
           echo "ERROR: MQ broker failed to start. Broker logs:"
-          cat /tmp/weed-mq-broker.log || true
-          tail -20 /tmp/weed-server.log || true
+          cat "$RUNNER_TEMP/weed-mq-broker.log" || true
+          tail -20 "$RUNNER_TEMP/weed-server.log" || true
           exit 1
         fi
 
@@ -623,7 +648,7 @@ jobs:
         go test -v -run "^TestClientCompatibility" -timeout 180s ./integration/...
       env:
         GOMAXPROCS: 1
-        SEAWEEDFS_MASTERS: 127.0.0.1:9333
+        SEAWEEDFS_MASTERS: 127.0.0.1:${{ env.CI_MASTER_PORT || '9333' }}
 
     - name: Upload test logs on failure
       if: failure()
@@ -631,19 +656,19 @@ jobs:
       with:
         name: kafka-client-compat-logs-${{ env.COMMIT_SHA }}
         path: |
-          /tmp/weed-server.log
-          /tmp/weed-mq-broker.log
+          ${{ runner.temp }}/weed-server.log
+          ${{ runner.temp }}/weed-mq-broker.log
         retention-days: 3
 
   kafka-smq-integration-tests:
     name: Kafka SMQ Integration Tests (Full Stack)
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-smq-integration-tests-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
@@ -695,7 +720,9 @@ jobs:
       working-directory: seaweedfs-source/enterprise
       run: |
         set -e
-        go build -o /usr/local/bin/weed ./weed
+        mkdir -p "$RUNNER_TEMP/bin"
+        export PATH="$RUNNER_TEMP/bin:$PATH"
+        go build -o "$RUNNER_TEMP/bin/weed" ./weed
         export WEED_DATA_DIR=/tmp/seaweedfs-smq-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
@@ -704,21 +731,21 @@ jobs:
           -ip.bind="0.0.0.0" \
           -dir="$WEED_DATA_DIR" \
           -master.raftHashicorp \
-          -master.port=9333 \
-          -volume.port=8081 \
-          -filer.port=8888 \
+          -master.port=${CI_MASTER_PORT:-9333} \
+          -volume.port=${CI_VOLUME_PORT:-8081} \
+          -filer.port=${CI_FILER_PORT:-8888} \
           -filer=true \
-          -metricsPort=9325 \
+          -metricsPort=${CI_METRICS_PORT} \
           -master.peers=none \
-          > /tmp/weed-server.log 2>&1 &
+          > "$RUNNER_TEMP/weed-server.log" 2>&1 &
 
         for i in $(seq 1 30); do
-          if curl -s http://127.0.0.1:9333/cluster/status >/dev/null; then break; fi
+          if curl -s http://127.0.0.1:${CI_MASTER_PORT:-9333}/cluster/status >/dev/null; then break; fi
           sleep 1
         done
 
         for i in $(seq 1 30); do
-          if nc -z 127.0.0.1 19333 2>/dev/null; then break; fi
+          if nc -z 127.0.0.1 $CI_MASTER_GRPC_PORT 2>/dev/null; then break; fi
           sleep 1
         done
 
@@ -728,17 +755,19 @@ jobs:
         echo "Allowing extra time for master gRPC streaming services to initialize..."
         sleep 10
 
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
-          -master="127.0.0.1:9333" \
+          -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
-          > /tmp/weed-mq-broker.log 2>&1 &
+          > "$RUNNER_TEMP/weed-mq-broker.log" 2>&1 &
 
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then broker_ready=true; break; fi
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then broker_ready=true; break; fi
           sleep 1
         done
 
@@ -746,8 +775,8 @@ jobs:
           sleep 30
         else
           echo "ERROR: MQ broker failed to start. Broker logs:"
-          cat /tmp/weed-mq-broker.log || true
-          tail -20 /tmp/weed-server.log || true
+          cat "$RUNNER_TEMP/weed-mq-broker.log" || true
+          tail -20 "$RUNNER_TEMP/weed-server.log" || true
           exit 1
         fi
 
@@ -760,7 +789,7 @@ jobs:
         go test -v -run "^TestSMQIntegration" -timeout 180s ./integration/...
       env:
         GOMAXPROCS: 1
-        SEAWEEDFS_MASTERS: 127.0.0.1:9333
+        SEAWEEDFS_MASTERS: 127.0.0.1:${{ env.CI_MASTER_PORT || '9333' }}
 
     - name: Upload test logs on failure
       if: failure()
@@ -768,19 +797,19 @@ jobs:
       with:
         name: kafka-smq-integration-logs-${{ env.COMMIT_SHA }}
         path: |
-          /tmp/weed-server.log
-          /tmp/weed-mq-broker.log
+          ${{ runner.temp }}/weed-server.log
+          ${{ runner.temp }}/weed-mq-broker.log
         retention-days: 3
 
   kafka-protocol-tests:
     name: Kafka Protocol Tests (Isolated)
-    # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
-    # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # tp01 exports a per-instance port band (CI_MASTER_PORT etc., see the tp01
+    # runbook) so two different instances can run this suite's fixed ports at
+    # once without colliding; the concurrency key below only needs to stop a
+    # literal retry of the SAME run+job+shard piling up, on tp01 or hosted
+    # alike.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) }}
+      group: ${{ format('{0}-{1}-kafka-protocol-tests-{2}', inputs.runner || 'hosted', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
