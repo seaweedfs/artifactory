@@ -3,23 +3,18 @@ name: "kvcache: qualify (seaweed-mono)"
 # seaweed-vfs-cut-release.yml gives chrislusf for artifactory releases: a mono
 # ref in, a gate table out.
 #
-# Two jobs, one combined summary:
-#   1. functional  -- Chris's own kvcache functional suite. PLACEHOLDER until
-#      he lands it (mono path + invocation TBD) -- currently emits a single
-#      stub gate so the combined table stays well-formed.
-#   2. qualify      -- our tier-1 gates (contracts + fault gates; the
-#      functional gate here is a smoke check only -- save/load/exists/delete
-#      one size -- to avoid duplicating Chris's coverage). Depends on (1) and
-#      merges its gate JSON into one table.
+# One job: our tier-1 gate pack (full functional gate + T4/T5/T7 +
+# T6-with-MySQL-as-a-container -- codex01's host-agnostic classification of
+# the 17 KV gates). Host-agnostic by construction: plain Linux + Docker, no
+# sudo, no lab literals -- must run GREEN on hosted first (the parity proof)
+# and on tp01 second, so the runner default here is hosted, unlike the
+# build/test suites.
 #
-# Tier 1 only, host-agnostic: plain Linux + Docker, no sudo, no lab literals,
-# MySQL as a container, weed-mini local -- must run GREEN on hosted first (the
-# parity proof) and on tp01 second, so the runner default is hosted here,
-# unlike the build/test suites. Tier 2 (T3 real RDMA + the three fault gates
-# needing root scope) is "self-hosted only" from GitHub's view: the job lands
-# on tp01 and drives the CX-5 pair (M01 client / M02 server) over the lab
-# link -- tp01 itself has no RDMA. Parked pending the owner's credential
-# ruling; not implemented by this workflow yet, see the design doc.
+# Tier 2 (T3 real RDMA + the three fault gates needing root scope) is
+# "self-hosted only" from GitHub's view: a future phase-2 job that lands on
+# tp01 and drives the CX-5 pair (M01 client / M02 server) over the lab link --
+# tp01 itself has no RDMA. Parked pending the owner's credential ruling; not
+# implemented by this workflow yet.
 run-name: ${{ github.workflow }} · mono_ref:${{ inputs.mono_ref }} · tier:${{ inputs.tier }} · runner:${{ inputs.runner || 'hosted' }}
 
 on:
@@ -56,13 +51,10 @@ permissions:
   contents: read
 
 jobs:
-
-  functional:
-    name: Functional (Chris's suite)
+  qualify:
+    name: Qualify (tier ${{ inputs.tier }})
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
-    timeout-minutes: 60
-    outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
+    timeout-minutes: 90
     steps:
 
     - name: Checkout artifactory repo
@@ -101,49 +93,6 @@ jobs:
         token: ${{ secrets.MONO_TOKEN }}
         sha: ${{ steps.resolve.outputs.sha }}
 
-    # PLACEHOLDER pending Chris's own RESULT: mono path + invocation for his
-    # kvcache functional suite are not yet known. This stub keeps the
-    # combined gate table well-formed (one INFRA_ERROR row) without blocking
-    # job 2. Swap this step for the real invocation once he lands it -- job 2
-    # and the summary-merge step do not need to change, only this step's
-    # gates.json content.
-    - name: Run functional suite (placeholder)
-      id: run_functional
-      run: |
-        set -euo pipefail
-        mkdir -p "$RUNNER_TEMP/kvcache-functional"
-        cat > "$RUNNER_TEMP/kvcache-functional/summary.json" <<'JSON'
-        {"gates": [{"name": "chris-functional-suite", "status": "INFRA_ERROR", "detail": "placeholder: not yet wired to Chris's suite"}]}
-        JSON
-        echo "output_dir=$RUNNER_TEMP/kvcache-functional" >> "$GITHUB_OUTPUT"
-
-    - name: Upload functional gate JSON
-      if: always() && steps.run_functional.outputs.output_dir != ''
-      uses: actions/upload-artifact@v4
-      with:
-        name: kvcache-qualify-functional-${{ steps.resolve.outputs.sha }}
-        path: ${{ steps.run_functional.outputs.output_dir }}
-        retention-days: 30
-
-  qualify:
-    name: Qualify (tier ${{ inputs.tier }})
-    needs: functional
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
-    timeout-minutes: 90
-    steps:
-
-    - name: Checkout artifactory repo
-      uses: actions/checkout@v6
-
-    - name: Runner housekeeping (self-hosted only)
-      uses: ./.github/actions/runner-housekeeping
-
-    - name: Clone seaweed-mono (enterprise) source at the resolved ref
-      uses: ./.github/actions/clone-mono-source
-      with:
-        token: ${{ secrets.MONO_TOKEN }}
-        sha: ${{ needs.functional.outputs.sha }}
-
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
@@ -166,11 +115,11 @@ jobs:
         go build -o testops ./cmd/testops
         ./testops version || ./testops --version
 
-    - name: Run tier-1 gate pack (smoke + contracts + fault gates)
+    - name: Run tier-1 gate pack (functional + T4/T5/T7 + T6-with-MySQL-container)
       id: run_gates
       working-directory: seaweedfs-source/enterprise
       env:
-        COMMIT_SHA: ${{ needs.functional.outputs.sha }}
+        COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
       run: |
         set -euo pipefail
         mkdir -p "$RUNNER_TEMP/kvcache-qualify"
@@ -182,63 +131,55 @@ jobs:
           --timeout "${{ inputs.timeout_minutes }}m"
         echo "output_dir=$RUNNER_TEMP/kvcache-qualify" >> "$GITHUB_OUTPUT"
 
-    - name: Download functional gate JSON
-      if: always()
-      uses: actions/download-artifact@v4
-      with:
-        name: kvcache-qualify-functional-${{ needs.functional.outputs.sha }}
-        path: ${{ runner.temp }}/kvcache-functional
-
-    - name: Upload tier-1 gate JSON
+    - name: Upload gate JSON
       if: always() && steps.run_gates.outputs.output_dir != ''
       uses: actions/upload-artifact@v4
       with:
-        name: kvcache-qualify-tier1-${{ needs.functional.outputs.sha }}
+        name: kvcache-qualify-${{ steps.resolve.outputs.sha }}
         path: ${{ steps.run_gates.outputs.output_dir }}
         retention-days: 30
 
-    # PLACEHOLDER pending codex01's RESULT: assumes each summary.json is
-    # shaped as {"gates": [{"name": str, "status": "GREEN"|"RED"|
+    # PLACEHOLDER pending codex01's RESULT: assumes a summary.json in
+    # output-dir shaped as {"gates": [{"name": str, "status": "GREEN"|"RED"|
     # "INFRA_ERROR"}, ...]}. Adjust the jq filter below, not the step
-    # structure, once the actual schema is confirmed. Merges job 1's
-    # (functional) and job 2's (tier-1) gates into one table, as requested.
-    - name: Render combined gate summary
-      if: always()
+    # structure, once the actual schema is confirmed.
+    - name: Render gate summary
+      if: always() && steps.run_gates.outputs.output_dir != ''
       env:
-        FUNC_JSON: ${{ runner.temp }}/kvcache-functional/summary.json
-        TIER1_JSON: ${{ steps.run_gates.outputs.output_dir }}/summary.json
-        MONO_SHA: ${{ needs.functional.outputs.sha }}
+        OUT_DIR: ${{ steps.run_gates.outputs.output_dir }}
+        MONO_SHA: ${{ steps.resolve.outputs.sha }}
       run: |
         set -uo pipefail
+        SUMMARY_JSON="$OUT_DIR/summary.json"
         {
           echo "## KVCache qualification — tier ${{ inputs.tier }}"
           echo ""
           echo "mono ref \`${{ inputs.mono_ref }}\` @ \`$MONO_SHA\`, runner \`${{ inputs.runner || 'hosted' }}\`"
           echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ ! -f "$SUMMARY_JSON" ]; then
+          echo "::warning::no summary.json in $OUT_DIR — gate table skipped, see uploaded artifact for raw output"
+          echo "**No summary.json produced; see the uploaded artifact.**" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        {
           echo "| Gate | Status |"
           echo "|---|---|"
         } >> "$GITHUB_STEP_SUMMARY"
         RED_COUNT=0
-        for f in "$FUNC_JSON" "$TIER1_JSON"; do
-          if [ ! -f "$f" ]; then
-            echo "::warning::missing $f — its gates are absent from the combined table"
-            continue
-          fi
-          while IFS=$'\t' read -r name status; do
-            case "$status" in
-              GREEN) label="success" ;;
-              RED) label="failure"; RED_COUNT=$((RED_COUNT + 1)) ;;
-              INFRA_ERROR) label="neutral" ;;
-              *) label="unknown" ;;
-            esac
-            echo "| $name | $label ($status) |" >> "$GITHUB_STEP_SUMMARY"
-          done < <(jq -r '.gates[] | [.name, .status] | @tsv' "$f")
-        done
+        while IFS=$'\t' read -r name status; do
+          case "$status" in
+            GREEN) label="success" ;;
+            RED) label="failure"; RED_COUNT=$((RED_COUNT + 1)) ;;
+            INFRA_ERROR) label="neutral" ;;
+            *) label="unknown" ;;
+          esac
+          echo "| $name | $label ($status) |" >> "$GITHUB_STEP_SUMMARY"
+        done < <(jq -r '.gates[] | [.name, .status] | @tsv' "$SUMMARY_JSON")
         # A RED gate is a real regression and fails the job. An INFRA_ERROR
-        # gate (host/tooling gap, or -- right now -- Chris's suite not being
-        # wired up yet, not the code under test) is reported but does not
-        # fail the job: the "neutral" mapping from the REQUEST, distinct from
-        # both a pass and a genuine failure.
+        # gate (host/tooling gap, not the code under test) is reported but
+        # does not fail the job -- that is the "neutral" mapping from the
+        # REQUEST: distinct from both a pass and a genuine failure.
         if [ "$RED_COUNT" -gt 0 ]; then
           echo "::error::$RED_COUNT gate(s) RED"
           exit 1
