@@ -43,6 +43,7 @@ TAG="gh-runner-reap"
 STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner}"
 SID_FILE="${STATE_DIR}/job.sid"
 START_FILE="${STATE_DIR}/job.start"
+PREFIX_FILE="${STATE_DIR}/job.prefix"
 DRYRUN="${RUNNER_REAP_DRYRUN:-0}"
 GRACE_SECONDS="${RUNNER_REAP_GRACE:-5}"
 
@@ -204,29 +205,72 @@ fi
 # 9333, 8888 and 8333 for six hours and failed every port-binding suite after
 # it.
 #
-# Attribution is by creation time, never by name or image: anything created at
-# or after this job started belongs to this job; anything older belongs to the
-# host and is left alone.
+# Attribution is by THIS JOB'S PREFIX first and creation time second. The
+# JOB_STARTED hook stamps every container the job creates with a name unique to
+# the job (via COMPOSE_PROJECT_NAME); the reaper removes only containers
+# carrying it, and only ones newer than the job's start.
+#
+# Creation time alone is not enough and stops being safe the moment a second
+# runner instance shares the host: "created after my job started" then also
+# matches the OTHER instance's containers, which are running its tests right
+# now. Removing those turns a passing job red for a reason its own log never
+# explains. Without a prefix this hook removes nothing at all -- a leaked
+# container is the next job's port conflict, which is the cheaper failure.
 if command -v docker >/dev/null 2>&1; then
   started_at=""
   [ -r "$START_FILE" ] && started_at="$(cat "$START_FILE" 2>/dev/null)"
+  job_prefix=""
+  [ -r "$PREFIX_FILE" ] && job_prefix="$(cat "$PREFIX_FILE" 2>/dev/null)"
+
   if [ -z "$started_at" ]; then
     log "no job start timestamp; not removing any container (cannot tell ours from the host's)"
+  elif [ -z "$job_prefix" ]; then
+    # Fail SAFE, not thorough. Without the prefix the only test left is creation
+    # time, and on a host running two runner instances that test also matches
+    # the other instance's live containers. Leaking a container costs the next
+    # job on those ports; killing another instance's containers costs a red
+    # build on a job that passed, and nothing in that job's log explains it.
+    log "WARNING: no job prefix recorded; NOT removing any container. A leftover here becomes the next job's port conflict, which is the cheaper failure."
   else
     for cid in $(docker ps -q 2>/dev/null); do
       created="$(docker inspect -f '{{.Created}}' "$cid" 2>/dev/null)"
       [ -z "$created" ] && continue
       c_epoch="$(date -d "$created" +%s 2>/dev/null || echo 0)"
-      if [ "$c_epoch" -ge "$started_at" ]; then
-        info="$(docker inspect -f '{{.Name}} {{.Config.Image}}' "$cid" 2>/dev/null)"
-        if [ "$DRYRUN" = "1" ]; then
-          log "DRYRUN would remove container $cid ($info) created during this job"
-        else
-          log "removing container $cid ($info) - created during this job and still running"
-          docker rm -f "$cid" >/dev/null 2>&1 || log "  could not remove $cid"
-        fi
+
+      # Both tests must pass: the container must carry THIS job's prefix (which
+      # is what makes it ours rather than a concurrent job's) and it must be
+      # newer than this job's start (which catches a stale container from an
+      # earlier run that happened to reuse the name).
+      name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')"
+      project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$cid" 2>/dev/null)"
+      mine=0
+      case "$name" in "$job_prefix"*) mine=1 ;; esac
+      [ "$project" = "$job_prefix" ] && mine=1
+
+      if [ "$mine" != "1" ]; then
+        log "container $cid ($name) is not this job's ($job_prefix) - leaving it alone"
+        continue
+      fi
+      if [ "$c_epoch" -lt "$started_at" ]; then
+        log "container $cid ($name) carries our prefix but predates this job - leaving it alone"
+        continue
+      fi
+
+      info="$(docker inspect -f '{{.Name}} {{.Config.Image}}' "$cid" 2>/dev/null)"
+      if [ "$DRYRUN" = "1" ]; then
+        log "DRYRUN would remove container $cid ($info) created by this job"
       else
-        log "container $cid predates this job - leaving it alone"
+        log "removing container $cid ($info) - created by this job and still running"
+        docker rm -f "$cid" >/dev/null 2>&1 || log "  could not remove $cid"
+      fi
+    done
+
+    # Compose leaves its network behind even when every container is gone.
+    for net in $(docker network ls --format '{{.Name}}' 2>/dev/null | grep -F "$job_prefix" || true); do
+      if [ "$DRYRUN" = "1" ]; then
+        log "DRYRUN would remove network $net"
+      else
+        docker network rm "$net" >/dev/null 2>&1 && log "removed network $net" || true
       fi
     done
   fi
@@ -242,7 +286,7 @@ else
   log "all watched ports free"
 fi
 
-rm -f "$SID_FILE" 2>/dev/null || true
+rm -f "$SID_FILE" "$PREFIX_FILE" 2>/dev/null || true
 log "done"
 # Always succeed. A job that passed must not be failed by its own cleanup.
 exit 0
