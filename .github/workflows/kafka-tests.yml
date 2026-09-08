@@ -287,10 +287,12 @@ jobs:
 
         # Start MQ broker with maximum verbosity for debugging
         echo "Starting MQ broker..."
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
           > /tmp/weed-mq-broker.log 2>&1 &
 
@@ -298,7 +300,7 @@ jobs:
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then
             echo "SeaweedFS MQ broker is up"
             broker_ready=true
             break
@@ -459,17 +461,19 @@ jobs:
         echo "Allowing extra time for master gRPC streaming services to initialize..."
         sleep 10
 
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
           > /tmp/weed-mq-broker.log 2>&1 &
 
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then
             broker_ready=true
             break
           fi
@@ -602,17 +606,19 @@ jobs:
         echo "Allowing extra time for master gRPC streaming services to initialize..."
         sleep 10
 
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
           > /tmp/weed-mq-broker.log 2>&1 &
 
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then broker_ready=true; break; fi
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then broker_ready=true; break; fi
           sleep 1
         done
 
@@ -736,17 +742,19 @@ jobs:
         echo "Allowing extra time for master gRPC streaming services to initialize..."
         sleep 10
 
+        CI_BROKER_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 60))}"
+        CI_BROKER_PORT="${CI_BROKER_PORT:-17777}"
         nohup weed -v 3 mq.broker \
           -master="127.0.0.1:${CI_MASTER_PORT:-9333}" \
           -ip="127.0.0.1" \
-          -port=17777 \
+          -port=$CI_BROKER_PORT \
           -logFlushInterval=0 \
           > /tmp/weed-mq-broker.log 2>&1 &
 
         sleep 15
         broker_ready=false
         for i in $(seq 1 20); do
-          if nc -z 127.0.0.1 17777 2>/dev/null; then broker_ready=true; break; fi
+          if nc -z 127.0.0.1 $CI_BROKER_PORT 2>/dev/null; then broker_ready=true; break; fi
           sleep 1
         done
 
