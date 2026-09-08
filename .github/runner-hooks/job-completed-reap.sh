@@ -38,6 +38,29 @@
 #   RUNNER_REAP_STATE=/tmp/reap RUNNER_REAP_DRYRUN=1 ./job-completed-reap.sh
 
 set -uo pipefail
+# NOT -e. The runner invokes every hook as `bash -e ... {0}` (confirmed from a
+# job's own log: `shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}`),
+# so -e is already active before this line runs -- and `set -uo pipefail` does
+# not clear an inherited -e. That combination turned this hook's own SUCCESS
+# into a job failure: `reap_session` deliberately `return`s the number of
+# processes it just terminated as a count for the caller to read via `$?`;
+# called as a bare statement (`reap_session ... TERM`), a non-zero return under
+# -e aborts the script on the spot. Found live on 2026-09-08: a kafka-tests
+# e2e job passed every assertion (`PASS`, all subtests green), the reaper then
+# found and correctly TERM'd its two leftover `weed` processes, and that
+# correct behaviour crashed the hook mid-sweep -- skipping the KILL follow-up,
+# the container sweep, the port sweep, and the state-file cleanup entirely --
+# and GitHub reported the whole JOB as failed despite the tests passing. This
+# had been latent since the hook was written: with one runner instance, jobs
+# rarely left anything for `reap_session` to find, so it almost always
+# returned 0 and never tripped -e. Two instances running real work is what
+# finally made "the reaper works" and "the job survives" mutually exclusive.
+# `set +e` here neutralises the runner's -e for the rest of this script,
+# which is correct for what this hook already is: every individual risky
+# command already guards itself with `|| true`, precisely because a hook that
+# can fail the job it is cleaning up after is worse than one that does
+# nothing.
+set +e
 
 TAG="gh-runner-reap"
 # Per instance, never shared. With two runner instances on one host a single
