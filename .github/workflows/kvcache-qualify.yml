@@ -1,0 +1,208 @@
+name: "kvcache: qualify (seaweed-mono)"
+# One-click release qualification for Seaweed KVCache, the same shape as
+# seaweed-vfs-cut-release.yml gives chrislusf for artifactory releases: a mono
+# ref in, a gate table out.
+#
+# One job: our tier-1 gate pack (full functional gate + T4/T5/T7 +
+# T6-with-MySQL-as-a-container -- codex01's host-agnostic classification of
+# the 17 KV gates). Host-agnostic by construction: plain Linux + Docker, no
+# sudo, no lab literals -- must run GREEN on hosted first (the parity proof)
+# and on tp01 second, so the runner default here is hosted, unlike the
+# build/test suites.
+#
+# Tier 2 (T3 real RDMA + the three fault gates needing root scope) is
+# "self-hosted only" from GitHub's view: a future phase-2 job that lands on
+# tp01 and drives the CX-5 pair (M01 client / M02 server) over the lab link --
+# tp01 itself has no RDMA. Parked pending the owner's credential ruling; not
+# implemented by this workflow yet.
+#
+# Invocation wired verbatim from enterprise/testops/packs/kv/CI.md
+# (test/testops-phase1-upstream @ 9022fc5e, PR #598): kv-tier1 = functional
+# control + T4 deleted-needle + T5 publish churn + T6 (containerized MySQL)
+# + T7 assign isolation, 9 gate rows. testops' own exit code (0 GREEN, 1 a
+# real RED assertion, 2 INFRA_ERROR) decides this job's pass/fail.
+run-name: ${{ github.workflow }} · mono_ref:${{ inputs.mono_ref }} · tier:${{ inputs.tier }} · runner:${{ inputs.runner || 'hosted' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mono_ref:
+        description: 'seaweed-mono ref to qualify: a tag, or a full 40-char commit sha'
+        required: true
+      tier:
+        description: 'Gate tier to run (only tier 1 is implemented -- host-agnostic gates)'
+        required: false
+        default: '1'
+      runner:
+        description: 'Where to run: hosted (parity proof, default) or tp01'
+        required: false
+        type: choice
+        default: hosted
+        options: [hosted, tp01]
+      timeout_minutes:
+        description: 'Wall-clock budget for the tier-1 pack itself (not the job)'
+        required: false
+        default: '45'
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  # One qualification run at a time, full stop -- two refs qualifying
+  # concurrently on the same lane is not a case this workflow needs to
+  # support, and serializing avoids any doubt about which run's artifact a
+  # reviewer is looking at. Never auto-cancel a qualification that is
+  # running: a cancelled gate run is not the same as a passing or failing one.
+  group: kvcache-qualify${{ inputs.measurement && '/measure' || '' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Qualify (tier ${{ inputs.tier }})
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    timeout-minutes: 90
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
+    - name: Resolve mono_ref to a commit sha
+      id: resolve
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        MONO_REF: ${{ inputs.mono_ref }}
+      run: |
+        set -euo pipefail
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        # Accept a bare 40-char sha as-is; otherwise resolve a tag (or branch)
+        # via ls-remote so clone-mono-source, which only takes an exact sha,
+        # always gets one -- a tag on a private mirror does not fast-forward
+        # the way a branch ref does, so this must be a real resolve, not a guess.
+        if printf '%s' "$MONO_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+          SHA="$MONO_REF"
+        else
+          SHA="$(git ls-remote "$REMOTE" "refs/tags/${MONO_REF}" "refs/heads/${MONO_REF}" | awk '{print $1}' | head -1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::mono_ref '$MONO_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            exit 1
+          fi
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved mono_ref '$MONO_REF' -> $SHA"
+
+    - name: Clone seaweed-mono (enterprise) source at the resolved ref
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        sha: ${{ steps.resolve.outputs.sha }}
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Install grpcurl
+      # Every other required host tool (bash, cargo, curl, docker, git, go,
+      # jq, sha256sum, ss) is already on both ubuntu-22.04 and tp01; grpcurl
+      # is the one gap. go install puts it on GOPATH/bin, already on PATH via
+      # actions/setup-go.
+      run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
+
+    # Per enterprise/testops/packs/kv/CI.md (test/testops-phase1-upstream,
+    # 9022fc5e): the testops entry point is built once, then `ci run` itself
+    # builds weed, weed-volume (Rust, no RDMA features) and sw-test-runner
+    # from the same checkout -- no separate weed build step here.
+    - name: Build testops
+      working-directory: seaweedfs-source/enterprise
+      run: |
+        go build -o testops ./testops/cmd/testops
+        ./testops version || ./testops --version
+
+    - name: Run tier-1 gate pack (functional + T4/T5/T7 + T6-with-MySQL-container)
+      id: run_gates
+      working-directory: seaweedfs-source/enterprise
+      env:
+        COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
+      run: |
+        set -uo pipefail
+        OUT_DIR="$RUNNER_TEMP/seaweed-kvcache-qualification"
+        mkdir -p "$OUT_DIR"
+        # Host-owned absolute paths per CI.md; RUNNER_TEMP is unique per job
+        # so two qualify runs (this concurrency group serializes them anyway)
+        # never share a lock file or cargo target dir.
+        export TESTOPS_LOCK_FILE="$RUNNER_TEMP/testops-ci.lock"
+        export TESTOPS_CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-target"
+
+        ./testops ci run \
+          --pack kv-tier1 \
+          --target local \
+          --commit "$COMMIT_SHA" \
+          --output-dir "$OUT_DIR" \
+          --timeout "${{ inputs.timeout_minutes }}m"
+        # 0 GREEN, 1 a real RED assertion, 2 INFRA_ERROR (preflight/build/
+        # timeout/evidence) -- capture rather than let set -e stop the job
+        # before the summary/upload steps below can run, then re-exit with it
+        # so this step's own conclusion (and the job's) still reflects testops'.
+        EXIT_CODE=$?
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "output_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+        exit "$EXIT_CODE"
+
+    - name: Upload gate JSON
+      if: always() && steps.run_gates.outputs.output_dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: kvcache-qualify-${{ steps.resolve.outputs.sha }}
+        path: ${{ steps.run_gates.outputs.output_dir }}
+        retention-days: 30
+
+    # Schema per enterprise/testops/packs/kv/CI.md (testops.ci.summary/v1):
+    # top-level {schema,pack,target,commit,status,exit_code,started_at,
+    # finished_at,duration_s,gates:[{gate_id,scenario,status,run_id,
+    # duration_s,result_file}]}. testops' own exit code (0/1/2, captured by
+    # the previous step) already decides the job's pass/fail -- this step
+    # only renders the table for a human reader.
+    - name: Render gate summary
+      if: always() && steps.run_gates.outputs.output_dir != ''
+      env:
+        OUT_DIR: ${{ steps.run_gates.outputs.output_dir }}
+        MONO_SHA: ${{ steps.resolve.outputs.sha }}
+        EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
+      run: |
+        set -uo pipefail
+        SUMMARY_JSON="$OUT_DIR/summary.json"
+        {
+          echo "## KVCache qualification — tier ${{ inputs.tier }}"
+          echo ""
+          echo "mono ref \`${{ inputs.mono_ref }}\` @ \`$MONO_SHA\`, runner \`${{ inputs.runner || 'hosted' }}\`, testops exit \`$EXIT_CODE\`"
+          echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ ! -f "$SUMMARY_JSON" ]; then
+          echo "::warning::no summary.json in $OUT_DIR — gate table skipped, see uploaded artifact for raw output"
+          echo "**No summary.json produced (exit $EXIT_CODE); see the uploaded artifact.**" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        {
+          echo "overall pack status: \`$(jq -r '.status' "$SUMMARY_JSON")\`, duration $(jq -r '.duration_s' "$SUMMARY_JSON")s"
+          echo ""
+          echo "| Gate | Status |"
+          echo "|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+        while IFS=$'\t' read -r name status; do
+          case "$status" in
+            GREEN) label="success" ;;
+            RED) label="failure" ;;
+            INFRA_ERROR) label="neutral" ;;
+            *) label="unknown" ;;
+          esac
+          echo "| $name | $label ($status) |" >> "$GITHUB_STEP_SUMMARY"
+        done < <(jq -r '.gates[] | [(.scenario // .gate_id), .status] | @tsv' "$SUMMARY_JSON")
