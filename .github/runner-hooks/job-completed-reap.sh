@@ -40,7 +40,12 @@
 set -uo pipefail
 
 TAG="gh-runner-reap"
-STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner}"
+# Per instance, never shared. With two runner instances on one host a single
+# state dir means the second instance's JOB_STARTED overwrites the first's
+# job.sid and job.prefix, and the first instance's reaper then cleans up using
+# the SECOND instance's identifiers -- killing a live job's processes and
+# containers. The instance index comes from the runner's own .env.
+STATE_DIR="${RUNNER_REAP_STATE:-/run/github-runner/${RUNNER_INSTANCE:-0}}"
 SID_FILE="${STATE_DIR}/job.sid"
 START_FILE="${STATE_DIR}/job.start"
 PREFIX_FILE="${STATE_DIR}/job.prefix"
@@ -286,7 +291,11 @@ else
   log "all watched ports free"
 fi
 
-rm -f "$SID_FILE" "$PREFIX_FILE" 2>/dev/null || true
+# Mark this instance idle for the dashboard host strip. The last thing this
+# hook does, so a strip reading "idle" is trustworthy: everything above it --
+# the session reap, the container sweep -- has already finished.
+CURRENT_FILE="${STATE_DIR}/current.json"
+rm -f "$SID_FILE" "$PREFIX_FILE" "$CURRENT_FILE" 2>/dev/null || true
 log "done"
 # Always succeed. A job that passed must not be failed by its own cleanup.
 exit 0
