@@ -24,12 +24,16 @@ name: "kvcache: qualify (seaweed-mono)"
 # contract gates RED is expected, not a failure).
 #
 # Invocation wired verbatim from enterprise/testops/packs/kv/CI.md at
-# tooling commit 6f29559 (test/testops-phase1-upstream, applying codex01's
-# docs/patches/testops-two-ref.patch from fix/kvcache-batches-hardening-v2 @
-# bb797501): --source-dir/--tooling-commit for the harness checkout,
-# --product-dir/--commit for the product checkout. There is no --mode flag
-# in the CLI -- `mode` is a workflow-level label only, echoed into the
-# summary, not passed to testops.
+# tooling commit 4016a7e (test/testops-phase1-upstream): --source-dir/
+# --tooling-commit for the harness checkout, --product-dir/--commit for the
+# product checkout, --mode release-candidate|reference-comparison (default
+# release-candidate expects all five gates GREEN; reference-comparison
+# expects functional GREEN and T4/T5/T6/T7 RED -- an unexpected GREEN fails
+# the comparison, INFRA_ERROR never counts as an expected RED). testops now
+# computes the comparison verdict itself: exit 0 every gate matched its
+# expected status, 1 a mismatch, 2 INFRA_ERROR. Each gate in summary.json
+# carries status/actual (the real outcome) and expected (from the mode)
+# separately from the top-level comparison verdict -- render both columns.
 #
 # Tier 2 (T3 real RDMA + the three fault gates needing root scope) is
 # "self-hosted only" from GitHub's view: a future phase-2 job that lands on
@@ -235,16 +239,16 @@ jobs:
         export TESTOPS_CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-target"
 
         # Wired verbatim from enterprise/testops/packs/kv/CI.md (tooling
-        # 6f29559, applying codex01's testops-two-ref.patch): --source-dir /
-        # --tooling-commit supply sw-test-runner, scenarios, scripts and the
-        # T7 fixture from the harness checkout; --product-dir / --commit
-        # supply Go weed + Rust weed-volume from the product checkout. There
-        # is no --mode flag in the CLI -- release-candidate vs
-        # reference-comparison is a workflow-level label only (echoed into
-        # the summary below), not something testops itself takes.
+        # 4016a7e): --source-dir / --tooling-commit supply sw-test-runner,
+        # scenarios, scripts and the T7 fixture from the harness checkout;
+        # --product-dir / --commit supply Go weed + Rust weed-volume from
+        # the product checkout; --mode tells testops itself which per-gate
+        # outcome to expect and computes the comparison verdict (this
+        # workflow no longer computes expected-vs-actual on its own).
         "$RUNNER_TEMP/bin/testops" ci run \
           --pack kv-tier1 \
           --target local \
+          --mode "${{ inputs.mode || 'release-candidate' }}" \
           --source-dir "$TOOLING_DIR" \
           --tooling-commit "$HARNESS_SHA" \
           --product-dir "$PRODUCT_DIR" \
@@ -313,20 +317,21 @@ jobs:
           exit 0
         fi
         {
-          echo "overall pack status: \`$(jq -r '.status' "$SUMMARY_JSON")\`, duration $(jq -r '.duration_s' "$SUMMARY_JSON")s"
+          echo "comparison verdict: \`$(jq -r '.status' "$SUMMARY_JSON")\` (0 every gate matched its expected status, 1 a mismatch, 2 INFRA_ERROR), duration $(jq -r '.duration_s' "$SUMMARY_JSON")s"
           echo ""
-          echo "| Gate | Status |"
-          echo "|---|---|"
+          echo "| Gate | Expected | Actual | Match |"
+          echo "|---|---|---|---|"
         } >> "$GITHUB_STEP_SUMMARY"
-        while IFS=$'\t' read -r name status; do
-          case "$status" in
-            GREEN) label="success" ;;
-            RED) label="failure" ;;
-            INFRA_ERROR) label="neutral" ;;
-            *) label="unknown" ;;
-          esac
-          echo "| $name | $label ($status) |" >> "$GITHUB_STEP_SUMMARY"
-        done < <(jq -r '.gates[] | [(.scenario // .gate_id), .status] | @tsv' "$SUMMARY_JSON")
+        while IFS=$'\t' read -r name expected actual; do
+          if [ "$actual" = "INFRA_ERROR" ]; then
+            match="neutral"
+          elif [ "$actual" = "$expected" ]; then
+            match="success"
+          else
+            match="failure"
+          fi
+          echo "| $name | $expected | $actual | $match |" >> "$GITHUB_STEP_SUMMARY"
+        done < <(jq -r '.gates[] | [(.scenario // .gate_id), .expected, .actual] | @tsv' "$SUMMARY_JSON")
 
     # continue-on-error on the gate-pack step means GitHub shows that step
     # (and, without this, the job) as green no matter what testops returned.
