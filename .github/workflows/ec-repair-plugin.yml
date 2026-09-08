@@ -24,7 +24,7 @@ on:
         description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
         required: false
         type: choice
-        default: tp01
+        default: hosted
         options: [tp01, hosted]
       measurement:
         description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
