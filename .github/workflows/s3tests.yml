@@ -983,7 +983,7 @@ jobs:
             -master.port=9337 -volume.port=8085 -filer.port=8892 -s3.port=8004 -metricsPort=9328 \
             -s3.allowDeleteBucketNotEmpty=true -s3.config="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3.json" \
             -master.peers=none \
-            > /tmp/seaweedfs-sql-server.log 2>&1 &
+            > "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>&1 &
           pid=$!
 
           echo "=== Server started with PID: $pid ==="
@@ -995,7 +995,7 @@ jobs:
           if ! kill -0 $pid 2>/dev/null; then
             echo "❌ Server process died immediately after start"
             echo "=== Immediate Log Check ==="
-            tail -20 /tmp/seaweedfs-sql-server.log 2>/dev/null || echo "No log available"
+            tail -20 "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>/dev/null || echo "No log available"
             exit 1
           fi
 
@@ -1010,7 +1010,7 @@ jobs:
             # Check if server process is still alive
             if ! kill -0 $pid 2>/dev/null; then
               echo "❌ Server process died while waiting for master"
-              tail -20 /tmp/seaweedfs-sql-server.log 2>/dev/null
+              tail -20 "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>/dev/null
               exit 1
             fi
             sleep 2
@@ -1024,7 +1024,7 @@ jobs:
             echo "Waiting for volume server... ($i/30)"
             if ! kill -0 $pid 2>/dev/null; then
               echo "❌ Server process died while waiting for volume"
-              tail -20 /tmp/seaweedfs-sql-server.log 2>/dev/null
+              tail -20 "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>/dev/null
               exit 1
             fi
             sleep 2
@@ -1038,7 +1038,7 @@ jobs:
             echo "Waiting for filer (SQLite)... ($i/30)"
             if ! kill -0 $pid 2>/dev/null; then
               echo "❌ Server process died while waiting for filer"
-              tail -20 /tmp/seaweedfs-sql-server.log 2>/dev/null
+              tail -20 "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>/dev/null
               exit 1
             fi
             sleep 2
@@ -1056,7 +1056,7 @@ jobs:
             echo "Waiting for S3 server... ($i/30)"
             if ! kill -0 $pid 2>/dev/null; then
               echo "❌ Server process died while waiting for S3"
-              tail -20 /tmp/seaweedfs-sql-server.log 2>/dev/null
+              tail -20 "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>/dev/null
               exit 1
             fi
             sleep 2
@@ -1096,7 +1096,7 @@ jobs:
           # Debug: Check server logs
           echo "=== Recent Server Logs ==="
           echo "--- SQL Server Log ---"
-          tail -20 /tmp/seaweedfs-sql-server.log 2>/dev/null || echo "No SQL server log found"
+          tail -20 "$RUNNER_TEMP/seaweedfs-sql-server.log" 2>/dev/null || echo "No SQL server log found"
           echo "--- Other Logs ---"
           ls -la /tmp/seaweedfs-*.log 2>/dev/null || echo "No other log files found"
 
