@@ -23,13 +23,13 @@ name: "kvcache: qualify (seaweed-mono)"
 # candidate (all gates GREEN) vs reference-comparison (functional GREEN,
 # contract gates RED is expected, not a failure).
 #
-# STATUS: scaffolding only -- the actual `testops ci run` invocation below
-# is NOT wired to the two checkouts yet. codex01's CLI has no product-
-# override flag (--product-dir / --weed-bin / --volume-bin) as of this
-# commit ("current CLI has no such split, so no invented invocation
-# offered"). Per the ruling, this workflow is prepared now and DOES NOT
-# DISPATCH until codex01's exact invocation lands -- see the placeholder
-# comment on the gate-pack step below.
+# Invocation wired verbatim from enterprise/testops/packs/kv/CI.md at
+# tooling commit 6f29559 (test/testops-phase1-upstream, applying codex01's
+# docs/patches/testops-two-ref.patch from fix/kvcache-batches-hardening-v2 @
+# bb797501): --source-dir/--tooling-commit for the harness checkout,
+# --product-dir/--commit for the product checkout. There is no --mode flag
+# in the CLI -- `mode` is a workflow-level label only, echoed into the
+# summary, not passed to testops.
 #
 # Tier 2 (T3 real RDMA + the three fault gates needing root scope) is
 # "self-hosted only" from GitHub's view: a future phase-2 job that lands on
@@ -214,7 +214,8 @@ jobs:
       env:
         PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
         HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
-        PRODUCT_DIR: ${{ github.workspace }}/seaweedfs-source/enterprise
+        TOOLING_DIR: ${{ github.workspace }}/seaweedfs-harness
+        PRODUCT_DIR: ${{ github.workspace }}/seaweedfs-source
       run: |
         # GitHub invokes run: blocks as `bash -e {0}`; `set -uo pipefail`
         # alone does NOT cancel that inherited -e. testops exiting 1 (RED) or
@@ -233,16 +234,28 @@ jobs:
         export TESTOPS_LOCK_FILE="$RUNNER_TEMP/testops-ci.lock"
         export TESTOPS_CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-target"
 
-        # PLACEHOLDER pending codex01's RESULT (ruled 2026-09-08): the exact
-        # flag for pointing testops ci run at a product build from a
-        # separate checkout (--product-dir / --weed-bin / --volume-bin) does
-        # not exist in the CLI yet -- "current CLI has no such split, so no
-        # invented invocation offered." Do NOT dispatch this workflow until
-        # that RESULT lands and this command is updated to match it exactly;
-        # PRODUCT_DIR/PRODUCT_SHA/HARNESS_SHA above are already wired and
-        # ready to slot into whatever flag names codex01 gives.
-        echo "::error::gate-pack invocation not wired yet -- awaiting codex01's product-override flag; see PLACEHOLDER comment in this step" >&2
-        EXIT_CODE=2
+        # Wired verbatim from enterprise/testops/packs/kv/CI.md (tooling
+        # 6f29559, applying codex01's testops-two-ref.patch): --source-dir /
+        # --tooling-commit supply sw-test-runner, scenarios, scripts and the
+        # T7 fixture from the harness checkout; --product-dir / --commit
+        # supply Go weed + Rust weed-volume from the product checkout. There
+        # is no --mode flag in the CLI -- release-candidate vs
+        # reference-comparison is a workflow-level label only (echoed into
+        # the summary below), not something testops itself takes.
+        "$RUNNER_TEMP/bin/testops" ci run \
+          --pack kv-tier1 \
+          --target local \
+          --source-dir "$TOOLING_DIR" \
+          --tooling-commit "$HARNESS_SHA" \
+          --product-dir "$PRODUCT_DIR" \
+          --commit "$PRODUCT_SHA" \
+          --output-dir "$OUT_DIR" \
+          --timeout "${{ inputs.timeout_minutes }}m"
+        # 0 GREEN, 1 a real RED assertion, 2 INFRA_ERROR (preflight/build/
+        # timeout/evidence) -- capture rather than let set -e stop the job
+        # before the summary/upload steps below can run, then re-exit with it
+        # so this step's own conclusion (and the job's) still reflects testops'.
+        EXIT_CODE=$?
         echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
         echo "output_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
         exit "$EXIT_CODE"
@@ -284,6 +297,16 @@ jobs:
           echo "runner \`${{ inputs.runner || 'hosted' }}\`, testops exit \`$EXIT_CODE\`"
           echo ""
         } >> "$GITHUB_STEP_SUMMARY"
+        PROVENANCE_JSON="$OUT_DIR/build-provenance.json"
+        if [ -f "$PROVENANCE_JSON" ]; then
+          {
+            echo "binary digests (build-provenance.json):"
+            echo '```json'
+            cat "$PROVENANCE_JSON"
+            echo '```'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
         if [ ! -f "$SUMMARY_JSON" ]; then
           echo "::warning::no summary.json in $OUT_DIR — gate table skipped, see uploaded artifact for raw output"
           echo "**No summary.json produced (exit $EXIT_CODE); see the uploaded artifact.**" >> "$GITHUB_STEP_SUMMARY"
