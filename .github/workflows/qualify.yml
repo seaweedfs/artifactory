@@ -390,10 +390,11 @@ jobs:
   # M02 worker are one shared resource, not one per ref), and
   # workflow_dispatch only -- a lab run must be a deliberate human action,
   # never reachable through kvcache-qualify.yml's workflow_call forward or
-  # any future caller. tp01 itself has no RDMA/root scope; this job only
-  # builds testops and a submission payload, then hands execution to
-  # codex01's submit client on M02 over SSH -- the actual gate run, and the
-  # bounded sudo scope it needs, stay on M02, never on the shared runner.
+  # any future caller. tp01 itself has no RDMA/root scope; this job never
+  # checks out or builds product/harness locally -- it only resolves the two
+  # refs to shas and hands (pack, product sha, harness sha, mode) to
+  # codex01's submit client on M02 over SSH. The actual checkout, build,
+  # gate run, and the bounded sudo scope it needs all stay on M02.
   qualify-lab:
     if: (inputs.pack == 'rdma' || inputs.pack == 'faults') && github.event_name == 'workflow_dispatch'
     name: Qualify (pack ${{ inputs.pack }}, lab)
@@ -469,14 +470,17 @@ jobs:
         echo "sha=$SHA" >> "$GITHUB_OUTPUT"
         echo "Resolved harness testops_ref '$TESTOPS_REF' -> $SHA"
 
-    # PROVISIONAL from here down: codex01's M02 submit client (a no-sudo
-    # 'ci' user whose authorized_keys `command=` pins it to `testops ci run`
-    # with the lab target only) is still being built as of 2026-09-09. The
-    # SSH invocation shape below -- arguments, stdout contract, exit-code
-    # meaning -- is this assembler's best-guess wiring against the ruling's
-    # description, not a confirmed protocol. Do not treat this job as
-    # validated until the proof dispatch (pack=rdma, T3 only) round-trips a
-    # real gate table; the first real run is the actual spec.
+    # Binding accepted 2026-09-09 (envelope 6aa10c81): the 'ci' user on M02
+    # has no sudo: its authorized_keys `command=` reaches only a fixed
+    # submit client talking to a local Unix-socket adapter under the
+    # executor identity. The adapter does immediate TryLock (refuse if
+    # held), direct single-job admission (pack, product sha, harness sha,
+    # mode -- nothing else, no queue, no shell, no free-form args), and
+    # reuses the existing executor's run + journal cleanup. `ci run --pack
+    # rdma|faults --target lab` is the only invocation shape that lifts the
+    # lab refusal, and only through this adapter. Not yet proof-dispatched
+    # end-to-end (that proof is the next step, pack=rdma/T3 only) -- treat
+    # this as implementing the ruled protocol, not as validated by a real run.
     - name: Submit gate pack to the M02 lab worker over SSH
       id: run_gates
       continue-on-error: true
@@ -490,20 +494,20 @@ jobs:
         mkdir -p "$OUT_DIR"
         ssh -i /etc/github-runner/lab-link-ed25519 \
             -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10 \
-            "ci@${LAB_HOST}" \
-            --pack "${{ inputs.pack }}" \
+            "ci@${LAB_HOST}" -- \
+            ci run --pack "${{ inputs.pack }}" --target lab \
             --mode "${{ inputs.mode || 'release-candidate' }}" \
             --tooling-commit "$HARNESS_SHA" \
             --commit "$PRODUCT_SHA" \
             --timeout "${{ inputs.timeout_minutes || '45' }}m" \
             > "$OUT_DIR/submit-response.json" 2> "$OUT_DIR/submit-stderr.log"
         EXIT_CODE=$?
-        # The forced command on M02 is expected to hand back the same
-        # testops.ci.summary/v1 JSON dir shape the hosted/tp01 job unpacks
-        # below (or its own summary.json on stdout) -- if it comes back as
-        # something else, treat that as an integration bug to fix once the
-        # real protocol lands, surfaced here as INFRA_ERROR rather than
-        # silently reshaping unknown output into a fake gate table.
+        # The adapter is expected to hand back the same testops.ci.summary/v1
+        # JSON dir shape the hosted/tp01 job unpacks below (or its own
+        # summary.json on stdout) -- if it comes back as something else,
+        # treat that as an integration bug to fix once the proof dispatch
+        # lands, surfaced here as INFRA_ERROR rather than silently
+        # reshaping unknown output into a fake gate table.
         if [ -s "$OUT_DIR/submit-response.json" ] && jq -e . "$OUT_DIR/submit-response.json" >/dev/null 2>&1; then
           cp "$OUT_DIR/submit-response.json" "$OUT_DIR/summary.json"
         elif [ "$EXIT_CODE" -eq 0 ]; then
