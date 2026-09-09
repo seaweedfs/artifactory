@@ -232,8 +232,22 @@ jobs:
       # imports grpc, google.protobuf and boto3. Neither ubuntu-22.04 nor tp01
       # ships them (run 34355466658: every #561 row INFRA_ERROR on
       # "No module named 'grpc'"). Pinned for the same reason grpcurl is.
+      #
+      # tp01 (Ubuntu 24.04, Python 3.12) enforces PEP 668 -- a bare `pip
+      # install --user` there fails outright with
+      # "externally-managed-environment" (found live, run 34387586941, every
+      # async dispatch on tp01 failing at this step before it ever reached a
+      # gate). --break-system-packages fixes that but is itself only a valid
+      # pip flag from 23.0.1 on; ubuntu-22.04's older pip may not recognise
+      # it at all. Try without it first (works on ubuntu-22.04, and on any
+      # tp01 pip old enough not to enforce PEP 668 either), fall back to
+      # adding it only if the first attempt actually fails.
       if: inputs.pack == 'async' || inputs.pack == 'all'
-      run: python3 -m pip install --user --quiet grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36
+      run: |
+        set -uo pipefail
+        PKGS="grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36"
+        python3 -m pip install --user --quiet $PKGS \
+          || python3 -m pip install --user --break-system-packages --quiet $PKGS
 
     # Built from the HARNESS checkout, not the product one -- see
     # kvcache-qualify.yml's history for why (run 34272566294,
