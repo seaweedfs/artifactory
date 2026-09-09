@@ -227,6 +227,14 @@ jobs:
       # build the same tool on every run, not whatever grpcurl shipped today.
       run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
 
+    - name: Install Python deps for the async pack
+      # The async pack's #561 process gate (packs/epoch/testdata/561/gate561.py)
+      # imports grpc, google.protobuf and boto3. Neither ubuntu-22.04 nor tp01
+      # ships them (run 34355466658: every #561 row INFRA_ERROR on
+      # "No module named 'grpc'"). Pinned for the same reason grpcurl is.
+      if: inputs.pack == 'async' || inputs.pack == 'all'
+      run: python3 -m pip install --user --quiet grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36
+
     # Built from the HARNESS checkout, not the product one -- see
     # kvcache-qualify.yml's history for why (run 34272566294,
     # 34260061227). Built to $RUNNER_TEMP, not `enterprise/testops`, since
