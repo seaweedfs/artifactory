@@ -5,18 +5,21 @@ name: "qualify (seaweed-mono)"
 # a single hardcoded KVCache tier.
 #
 # Pack taxonomy (owner-ruled 2026-09-09, supersedes the earlier
-# 'general|async' split): host-agnostic packs runnable here --
+# 'general|async' split): host-agnostic packs, run in the `qualify` job on
+# hosted or tp01 per `runner` --
 #   general   functional smoke + T4 + T7
 #   rotation  KV batch lifecycle: T5-safety/liveness, T6 multi-filer, lifecycle counters
 #   async     Epoch executor cores #530/#551/#552/#559/#528/#561, host-agnostic gates only
 #   lm-e2e    LMCache connector end-to-end (save/load/batch/exists/delete, hit-rate, no-heat rotation)
 #   all       every one of the four packs above
-# lab-only packs -- NOT runnable by this workflow, refused up front --
+# lab-only packs, unparked 2026-09-09 with the ruled credential model, run
+# in the separate `qualify-lab` job (tp01 instance 0 only, over SSH to an
+# M02 submit client -- see that job's own comments) --
 #   rdma      T3 + #578-2 read path, DC/RC baselines (M01/M02 CX-5 link only)
 #   faults    role SIGKILL, disk-full, partition, 544b crash gates (root scope)
 # Pack definitions and scenario membership live in TestOps' own registry
-# (seaweed-mono, owned by codex01/codex02); this workflow only validates the
-# lab-only/host-agnostic split and passes `pack` straight through to testops.
+# (seaweed-mono, owned by codex01/codex02); this workflow only routes each
+# pack to the right job and passes `pack` straight through to testops.
 #
 # Two-ref design (ruled 2026-09-08, codex01's contract a) -- unchanged from
 # kvcache-qualify.yml: mono_ref is the PRODUCT sha under test (Go weed + Rust
@@ -42,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       pack:
-        description: 'Gate pack to run. all = every host-agnostic pack. rdma/faults are lab-only and refused by this workflow (tier 2).'
+        description: 'Gate pack to run. all = every host-agnostic pack. rdma/faults are lab-only (tier 2): routed to the M02 lab worker, manual dispatch only.'
         required: false
         type: choice
         default: all
@@ -112,40 +115,32 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  # One holder per (pack, runner, product ref, harness ref) -- adding pack to
-  # the old kvcache-qualify.yml key means a general-pack run and an
-  # async-pack run for the same refs no longer queue behind each other; they
-  # are different gate sets, not duplicates. Never auto-cancel a qualification
-  # that is running: a cancelled gate run is not the same as a passing or
-  # failing one.
-  group: qualify${{ inputs.measurement && '/measure' || '' }}/${{ inputs.pack || 'all' }}/${{ inputs.runner || 'hosted' }}/${{ inputs.mono_ref }}/${{ inputs.testops_ref }}
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
 jobs:
+  # Host-agnostic packs: general, rotation, async, lm-e2e, all. Runs on
+  # hosted or tp01 per `runner`, exactly as before. rdma/faults are excluded
+  # here (see qualify-lab below) rather than refused inside the job, so a
+  # lab-pack dispatch never pays this job's checkout/build cost only to fail.
   qualify:
+    if: inputs.pack != 'rdma' && inputs.pack != 'faults'
     name: Qualify (pack ${{ inputs.pack || 'all' }})
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
     timeout-minutes: 90
+    concurrency:
+      # One holder per (pack, runner, product ref, harness ref) -- adding
+      # pack to the old kvcache-qualify.yml key means a general-pack run and
+      # an async-pack run for the same refs no longer queue behind each
+      # other; they are different gate sets, not duplicates. Never
+      # auto-cancel a qualification that is running: a cancelled gate run is
+      # not the same as a passing or failing one. Job-level (not
+      # workflow-level) concurrency because qualify-lab below needs its own,
+      # differently-shaped group -- GitHub Actions concurrency is one group
+      # per job, not per workflow run.
+      group: qualify${{ inputs.measurement && '/measure' || '' }}/${{ inputs.pack || 'all' }}/${{ inputs.runner || 'hosted' }}/${{ inputs.mono_ref }}/${{ inputs.testops_ref }}
+      cancel-in-progress: false
     steps:
-
-    - name: Validate pack selection
-      # rdma and faults are lab-only (tier 2): rdma needs the M01/M02 CX-5
-      # link, faults needs root scope. Neither is runnable on hosted or tp01
-      # by this workflow. Fail fast, before any checkout/build cost, with a
-      # message that points at where tier 2 actually lives rather than a
-      # bare non-zero exit.
-      run: |
-        set -euo pipefail
-        case "${{ inputs.pack || 'all' }}" in
-          rdma|faults)
-            echo "::error::pack '${{ inputs.pack }}' is lab-only (tier 2 -- needs M01/M02 RDMA lab access or root scope) and is not runnable by this host-agnostic workflow. Tier 2 is parked pending the owner's credential ruling; see the CI runbook." >&2
-            exit 1
-            ;;
-        esac
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -376,6 +371,199 @@ jobs:
     # This is the step that actually decides the job's pass/fail: missing
     # entirely (the shell died before writing any output) counts as a
     # failure, same as a captured non-zero exit code.
+    - name: Enforce gate result
+      if: always()
+      env:
+        EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
+      run: |
+        if [ -z "$EXIT_CODE" ]; then
+          echo "::error::run_gates produced no exit_code output -- the shell likely died before it could write one (OOM, signal, crash)"
+          exit 1
+        fi
+        exit "$EXIT_CODE"
+
+  # Lab-only packs: rdma, faults (tier 2, unparked 2026-09-09 with the
+  # ruled credential model). Distinct from `qualify` above in every way that
+  # matters for a lab-scoped runner: its own runs-on label (only tp01
+  # instance 0 carries it -- instance 1 stays a plain hosted-equivalent
+  # worker), its own single global concurrency group (the lab link and the
+  # M02 worker are one shared resource, not one per ref), and
+  # workflow_dispatch only -- a lab run must be a deliberate human action,
+  # never reachable through kvcache-qualify.yml's workflow_call forward or
+  # any future caller. tp01 itself has no RDMA/root scope; this job only
+  # builds testops and a submission payload, then hands execution to
+  # codex01's submit client on M02 over SSH -- the actual gate run, and the
+  # bounded sudo scope it needs, stay on M02, never on the shared runner.
+  qualify-lab:
+    if: (inputs.pack == 'rdma' || inputs.pack == 'faults') && github.event_name == 'workflow_dispatch'
+    name: Qualify (pack ${{ inputs.pack }}, lab)
+    runs-on: [self-hosted, lab]
+    timeout-minutes: 90
+    concurrency:
+      # Single global holder, not per-ref: the lab link and the M02 worker
+      # are one shared physical resource (one CX-5 pair), so two lab runs
+      # queuing behind each other is correct, not a bug to route around the
+      # way qualify's per-ref group is. Never auto-cancel -- same reasoning
+      # as qualify's group.
+      group: lab
+      cancel-in-progress: false
+    steps:
+
+    - name: Refuse anything but a manual dispatch
+      # Belt-and-braces on top of the job-level `if:` above (which already
+      # restricts this job to workflow_dispatch): a future caller that adds
+      # workflow_call support to kvcache-qualify.yml or any other forwarder
+      # must not be able to reach the lab job by accident. This step exists
+      # so that failure mode produces a clear message instead of relying
+      # solely on the job being silently skipped.
+      run: |
+        set -euo pipefail
+        if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+          echo "::error::pack '${{ inputs.pack }}' (lab) is workflow_dispatch-only and must never be reached via workflow_call." >&2
+          exit 1
+        fi
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
+    - name: Resolve product ref (mono_ref) to a commit sha
+      id: resolve_product
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        MONO_REF: ${{ inputs.mono_ref }}
+      run: |
+        set -euo pipefail
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        if printf '%s' "$MONO_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+          SHA="$MONO_REF"
+        else
+          SHA="$(git ls-remote "$REMOTE" "refs/tags/${MONO_REF}" "refs/heads/${MONO_REF}" | awk '{print $1}' | head -1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::mono_ref (product) '$MONO_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            exit 1
+          fi
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved product mono_ref '$MONO_REF' -> $SHA"
+
+    - name: Resolve harness ref (testops_ref) to a commit sha
+      id: resolve_harness
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        TESTOPS_REF: ${{ inputs.testops_ref || 'test/testops-phase1-upstream' }}
+      run: |
+        set -euo pipefail
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        if printf '%s' "$TESTOPS_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+          SHA="$TESTOPS_REF"
+        else
+          SHA="$(git ls-remote "$REMOTE" "refs/tags/${TESTOPS_REF}" "refs/heads/${TESTOPS_REF}" | awk '{print $1}' | head -1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::testops_ref (harness) '$TESTOPS_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            exit 1
+          fi
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved harness testops_ref '$TESTOPS_REF' -> $SHA"
+
+    # PROVISIONAL from here down: codex01's M02 submit client (a no-sudo
+    # 'ci' user whose authorized_keys `command=` pins it to `testops ci run`
+    # with the lab target only) is still being built as of 2026-09-09. The
+    # SSH invocation shape below -- arguments, stdout contract, exit-code
+    # meaning -- is this assembler's best-guess wiring against the ruling's
+    # description, not a confirmed protocol. Do not treat this job as
+    # validated until the proof dispatch (pack=rdma, T3 only) round-trips a
+    # real gate table; the first real run is the actual spec.
+    - name: Submit gate pack to the M02 lab worker over SSH
+      id: run_gates
+      continue-on-error: true
+      env:
+        LAB_HOST: ${{ secrets.LAB_HOST }}
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+        HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
+      run: |
+        set +e -uo pipefail
+        OUT_DIR="$RUNNER_TEMP/seaweed-qualification-lab"
+        mkdir -p "$OUT_DIR"
+        ssh -i /etc/github-runner/lab-link-ed25519 \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10 \
+            "ci@${LAB_HOST}" \
+            --pack "${{ inputs.pack }}" \
+            --mode "${{ inputs.mode || 'release-candidate' }}" \
+            --tooling-commit "$HARNESS_SHA" \
+            --commit "$PRODUCT_SHA" \
+            --timeout "${{ inputs.timeout_minutes || '45' }}m" \
+            > "$OUT_DIR/submit-response.json" 2> "$OUT_DIR/submit-stderr.log"
+        EXIT_CODE=$?
+        # The forced command on M02 is expected to hand back the same
+        # testops.ci.summary/v1 JSON dir shape the hosted/tp01 job unpacks
+        # below (or its own summary.json on stdout) -- if it comes back as
+        # something else, treat that as an integration bug to fix once the
+        # real protocol lands, surfaced here as INFRA_ERROR rather than
+        # silently reshaping unknown output into a fake gate table.
+        if [ -s "$OUT_DIR/submit-response.json" ] && jq -e . "$OUT_DIR/submit-response.json" >/dev/null 2>&1; then
+          cp "$OUT_DIR/submit-response.json" "$OUT_DIR/summary.json"
+        elif [ "$EXIT_CODE" -eq 0 ]; then
+          echo "::warning::submit client exited 0 but did not return parseable JSON -- treating as INFRA_ERROR" >&2
+          EXIT_CODE=2
+        fi
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "output_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+        exit "$EXIT_CODE"
+
+    - name: Upload gate JSON
+      if: always() && steps.run_gates.outputs.output_dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: qualify-${{ inputs.pack }}-${{ steps.resolve_product.outputs.sha }}-${{ steps.resolve_harness.outputs.sha }}
+        path: ${{ steps.run_gates.outputs.output_dir }}
+        retention-days: 30
+
+    - name: Render gate summary
+      if: always() && steps.run_gates.outputs.output_dir != ''
+      env:
+        OUT_DIR: ${{ steps.run_gates.outputs.output_dir }}
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+        HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
+        EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
+      run: |
+        set -uo pipefail
+        SUMMARY_JSON="$OUT_DIR/summary.json"
+        {
+          echo "## Qualification — pack \`${{ inputs.pack }}\` (lab), mode \`${{ inputs.mode || 'release-candidate' }}\`"
+          echo ""
+          echo "product (mono_ref) \`${{ inputs.mono_ref }}\` @ \`$PRODUCT_SHA\`"
+          echo ""
+          echo "harness (testops_ref) \`${{ inputs.testops_ref || 'test/testops-phase1-upstream' }}\` @ \`$HARNESS_SHA\`"
+          echo ""
+          echo "runner \`lab (tp01 -> M02)\`, testops exit \`$EXIT_CODE\`"
+          echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ ! -f "$SUMMARY_JSON" ]; then
+          echo "::warning::no summary.json in $OUT_DIR — gate table skipped, see uploaded artifact for raw output"
+          echo "**No summary.json produced (exit $EXIT_CODE); see the uploaded artifact.**" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        {
+          echo "comparison verdict: \`$(jq -r '.status' "$SUMMARY_JSON")\` (0 every gate matched its expected status, 1 a mismatch, 2 INFRA_ERROR), duration $(jq -r '.duration_s' "$SUMMARY_JSON")s"
+          echo ""
+          echo "| Gate | Expected | Actual | Match |"
+          echo "|---|---|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+        while IFS=$'\t' read -r name expected actual; do
+          if [ "$actual" = "INFRA_ERROR" ]; then
+            match="neutral"
+          elif [ "$actual" = "$expected" ]; then
+            match="success"
+          else
+            match="failure"
+          fi
+          echo "| $name | $expected | $actual | $match |" >> "$GITHUB_STEP_SUMMARY"
+        done < <(jq -r '.gates[] | [(.scenario // .gate_id), .expected, .actual] | @tsv' "$SUMMARY_JSON")
+
     - name: Enforce gate result
       if: always()
       env:
