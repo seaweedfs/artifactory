@@ -1,0 +1,388 @@
+name: "qualify (seaweed-mono)"
+# One-click gate qualification for seaweed-mono, generalised from
+# kvcache-qualify.yml (which now forwards here as a thin alias -- see that
+# file). A mono ref in, a gate table out, parameterised by `pack` instead of
+# a single hardcoded KVCache tier.
+#
+# Pack taxonomy (owner-ruled 2026-09-09, supersedes the earlier
+# 'general|async' split): host-agnostic packs runnable here --
+#   general   functional smoke + T4 + T7
+#   rotation  KV batch lifecycle: T5-safety/liveness, T6 multi-filer, lifecycle counters
+#   async     Epoch executor cores #530/#551/#552/#559/#528/#561, host-agnostic gates only
+#   lm-e2e    LMCache connector end-to-end (save/load/batch/exists/delete, hit-rate, no-heat rotation)
+#   all       every one of the four packs above
+# lab-only packs -- NOT runnable by this workflow, refused up front --
+#   rdma      T3 + #578-2 read path, DC/RC baselines (M01/M02 CX-5 link only)
+#   faults    role SIGKILL, disk-full, partition, 544b crash gates (root scope)
+# Pack definitions and scenario membership live in TestOps' own registry
+# (seaweed-mono, owned by codex01/codex02); this workflow only validates the
+# lab-only/host-agnostic split and passes `pack` straight through to testops.
+#
+# Two-ref design (ruled 2026-09-08, codex01's contract a) -- unchanged from
+# kvcache-qualify.yml: mono_ref is the PRODUCT sha under test (Go weed + Rust
+# volume); testops_ref is the HARNESS sha supplying testops + sw-test-runner +
+# scenarios/scripts/assertions. Two independent checkouts, because a
+# reference commit predating the harness does not carry it at all (see
+# kvcache-qualify.yml's history, run 34272566294). `mode` selects the
+# expected-outcome shape: release-candidate (all gates GREEN, some may be
+# accepted-open findings) vs reference-comparison (functional GREEN, contract
+# gates RED is expected, not a failure). testops itself computes the
+# comparison verdict: exit 0 every gate matched its expected status, 1 a
+# mismatch, 2 INFRA_ERROR.
+#
+# Invokable two ways: workflow_dispatch (a human or kvcache-qualify.yml's own
+# UI-equivalent) and workflow_call (kvcache-qualify.yml's forwarding call).
+# Both declare the same inputs so `${{ inputs.* }}` resolves identically
+# regardless of trigger; workflow_call inputs are typed string/boolean only
+# (GitHub does not support `choice` there), so pack validation happens in a
+# run step instead of relying on the dispatch UI's dropdown.
+run-name: ${{ github.workflow }} · pack:${{ inputs.pack || 'all' }} · mode:${{ inputs.mode || 'release-candidate' }} · product:${{ inputs.mono_ref }} · harness:${{ inputs.testops_ref }} · runner:${{ inputs.runner || 'hosted' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      pack:
+        description: 'Gate pack to run. all = every host-agnostic pack. rdma/faults are lab-only and refused by this workflow (tier 2).'
+        required: false
+        type: choice
+        default: all
+        options: [general, rotation, async, lm-e2e, all, rdma, faults]
+      mono_ref:
+        description: 'PRODUCT: seaweed-mono ref under test (Go weed + Rust volume) -- a tag, branch, or full 40-char commit sha'
+        required: true
+      testops_ref:
+        description: 'HARNESS: seaweed-mono ref supplying testops + sw-test-runner + scenarios/scripts/assertions -- a tag, branch, or full 40-char commit sha'
+        required: false
+        default: 'test/testops-phase1-upstream'
+      mode:
+        description: 'release-candidate expects all gates GREEN (accepted-open findings aside); reference-comparison expects functional GREEN and contract gates RED'
+        required: false
+        type: choice
+        default: release-candidate
+        options: [release-candidate, reference-comparison]
+      runner:
+        description: 'Where to run: hosted (parity proof, default) or tp01'
+        required: false
+        type: choice
+        default: hosted
+        options: [hosted, tp01]
+      timeout_minutes:
+        description: 'Wall-clock budget for the gate pack itself (not the job)'
+        required: false
+        default: '45'
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      pack:
+        description: 'Gate pack to run (see workflow_dispatch description)'
+        required: false
+        type: string
+        default: all
+      mono_ref:
+        description: 'PRODUCT: seaweed-mono ref under test'
+        required: true
+        type: string
+      testops_ref:
+        description: 'HARNESS: seaweed-mono ref supplying testops + sw-test-runner + scenarios/scripts/assertions'
+        required: false
+        type: string
+        default: 'test/testops-phase1-upstream'
+      mode:
+        description: 'release-candidate or reference-comparison'
+        required: false
+        type: string
+        default: release-candidate
+      runner:
+        description: 'hosted or tp01'
+        required: false
+        type: string
+        default: hosted
+      timeout_minutes:
+        description: 'Wall-clock budget for the gate pack itself'
+        required: false
+        type: string
+        default: '45'
+      measurement:
+        description: 'Isolate this run from production with a separate concurrency group'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  # One holder per (pack, runner, product ref, harness ref) -- adding pack to
+  # the old kvcache-qualify.yml key means a general-pack run and an
+  # async-pack run for the same refs no longer queue behind each other; they
+  # are different gate sets, not duplicates. Never auto-cancel a qualification
+  # that is running: a cancelled gate run is not the same as a passing or
+  # failing one.
+  group: qualify${{ inputs.measurement && '/measure' || '' }}/${{ inputs.pack || 'all' }}/${{ inputs.runner || 'hosted' }}/${{ inputs.mono_ref }}/${{ inputs.testops_ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Qualify (pack ${{ inputs.pack || 'all' }})
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    timeout-minutes: 90
+    steps:
+
+    - name: Validate pack selection
+      # rdma and faults are lab-only (tier 2): rdma needs the M01/M02 CX-5
+      # link, faults needs root scope. Neither is runnable on hosted or tp01
+      # by this workflow. Fail fast, before any checkout/build cost, with a
+      # message that points at where tier 2 actually lives rather than a
+      # bare non-zero exit.
+      run: |
+        set -euo pipefail
+        case "${{ inputs.pack || 'all' }}" in
+          rdma|faults)
+            echo "::error::pack '${{ inputs.pack }}' is lab-only (tier 2 -- needs M01/M02 RDMA lab access or root scope) and is not runnable by this host-agnostic workflow. Tier 2 is parked pending the owner's credential ruling; see the CI runbook." >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
+    - name: Resolve product ref (mono_ref) to a commit sha
+      id: resolve_product
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        MONO_REF: ${{ inputs.mono_ref }}
+      run: |
+        set -euo pipefail
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        # Accept a bare 40-char sha as-is; otherwise resolve a tag (or branch)
+        # via ls-remote so clone-mono-source, which only takes an exact sha,
+        # always gets one -- a tag on a private mirror does not fast-forward
+        # the way a branch ref does, so this must be a real resolve, not a guess.
+        if printf '%s' "$MONO_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+          SHA="$MONO_REF"
+        else
+          SHA="$(git ls-remote "$REMOTE" "refs/tags/${MONO_REF}" "refs/heads/${MONO_REF}" | awk '{print $1}' | head -1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::mono_ref (product) '$MONO_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            exit 1
+          fi
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved product mono_ref '$MONO_REF' -> $SHA"
+
+    - name: Resolve harness ref (testops_ref) to a commit sha
+      id: resolve_harness
+      env:
+        MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        TESTOPS_REF: ${{ inputs.testops_ref || 'test/testops-phase1-upstream' }}
+      run: |
+        set -euo pipefail
+        REMOTE="https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+        if printf '%s' "$TESTOPS_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+          SHA="$TESTOPS_REF"
+        else
+          SHA="$(git ls-remote "$REMOTE" "refs/tags/${TESTOPS_REF}" "refs/heads/${TESTOPS_REF}" | awk '{print $1}' | head -1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::testops_ref (harness) '$TESTOPS_REF' did not resolve to a tag or branch on seaweed-mono" >&2
+            exit 1
+          fi
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved harness testops_ref '$TESTOPS_REF' -> $SHA"
+
+    # PRODUCT checkout: Go weed + Rust volume under test. Path kept as
+    # `seaweedfs-source` (existing convention elsewhere in this repo).
+    - name: Clone seaweed-mono (product) source at the resolved product sha
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        sha: ${{ steps.resolve_product.outputs.sha }}
+        path: seaweedfs-source
+
+    # HARNESS checkout: testops + sw-test-runner + scenarios/scripts/
+    # assertions. Independent tree, independent sha -- this is the whole
+    # point of the two-ref design: a reference commit that predates the
+    # harness must still be qualifiable, by supplying the harness from a
+    # ref that has it.
+    - name: Clone seaweed-mono (harness) source at the resolved harness sha
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        sha: ${{ steps.resolve_harness.outputs.sha }}
+        path: seaweedfs-harness
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Install grpcurl
+      # Every other required host tool (bash, cargo, curl, docker, git, go,
+      # jq, sha256sum, ss) is already on both ubuntu-22.04 and tp01; grpcurl
+      # is the one gap. go install puts it on GOPATH/bin, already on PATH via
+      # actions/setup-go. Pinned, not @latest: a qualification workflow must
+      # build the same tool on every run, not whatever grpcurl shipped today.
+      run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
+
+    # Built from the HARNESS checkout, not the product one -- see
+    # kvcache-qualify.yml's history for why (run 34272566294,
+    # 34260061227). Built to $RUNNER_TEMP, not `enterprise/testops`, since
+    # that is ALSO the testops package's own source root.
+    - name: Build testops (from the harness checkout)
+      working-directory: seaweedfs-harness/enterprise
+      run: |
+        mkdir -p "$RUNNER_TEMP/bin"
+        go build -o "$RUNNER_TEMP/bin/testops" ./testops/cmd/testops
+        "$RUNNER_TEMP/bin/testops" version || "$RUNNER_TEMP/bin/testops" --version
+
+    - name: Run gate pack
+      id: run_gates
+      # Belt-and-braces on top of the in-script `set +e` capture below: if
+      # the shell itself dies (OOM, segfault, a signal) rather than testops
+      # returning a normal exit code, GITHUB_OUTPUT is never written at all,
+      # not even with `set +e`. continue-on-error here means that failure
+      # mode still reaches Upload/Render (both already `if: always()`) and
+      # the explicit Enforce step below, instead of the job just stopping
+      # silently at this step with no artifact and no explanation.
+      continue-on-error: true
+      working-directory: seaweedfs-harness/enterprise
+      env:
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+        HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
+        TOOLING_DIR: ${{ github.workspace }}/seaweedfs-harness
+        PRODUCT_DIR: ${{ github.workspace }}/seaweedfs-source
+      run: |
+        # GitHub invokes run: blocks as `bash -e {0}`; `set -uo pipefail`
+        # alone does NOT cancel that inherited -e. testops exiting 1 (RED) or
+        # 2 (INFRA_ERROR) is an expected, meaningful result here, not a
+        # script bug -- without `set +e` the shell aborts right at that exit
+        # and every line below (the exit-code capture, both outputs) never
+        # runs, silently skipping Upload/Render downstream (found live on
+        # 34261444330, kvcache-qualify.yml's history).
+        set +e -uo pipefail
+        OUT_DIR="$RUNNER_TEMP/seaweed-qualification"
+        mkdir -p "$OUT_DIR"
+        # Host-owned absolute paths per CI.md; RUNNER_TEMP is unique per job
+        # so two qualify runs (this concurrency group serializes same-pack
+        # ones anyway) never share a lock file or cargo target dir.
+        export TESTOPS_LOCK_FILE="$RUNNER_TEMP/testops-ci.lock"
+        export TESTOPS_CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-target"
+
+        # --source-dir / --tooling-commit supply sw-test-runner, scenarios,
+        # scripts and fixtures from the harness checkout; --product-dir /
+        # --commit supply Go weed + Rust weed-volume from the product
+        # checkout; --mode tells testops which per-gate outcome to expect
+        # and computes the comparison verdict itself (this workflow does
+        # not compute expected-vs-actual on its own). --pack is the only
+        # line that changed from kvcache-qualify.yml's hardcoded kv-tier1 --
+        # pack definitions and scenario membership are TestOps' own registry.
+        "$RUNNER_TEMP/bin/testops" ci run \
+          --pack "${{ inputs.pack || 'all' }}" \
+          --target local \
+          --mode "${{ inputs.mode || 'release-candidate' }}" \
+          --source-dir "$TOOLING_DIR" \
+          --tooling-commit "$HARNESS_SHA" \
+          --product-dir "$PRODUCT_DIR" \
+          --commit "$PRODUCT_SHA" \
+          --output-dir "$OUT_DIR" \
+          --timeout "${{ inputs.timeout_minutes || '45' }}m"
+        # 0 GREEN, 1 a real RED assertion, 2 INFRA_ERROR (preflight/build/
+        # timeout/evidence) -- capture rather than let set -e stop the job
+        # before the summary/upload steps below can run, then re-exit with it
+        # so this step's own conclusion (and the job's) still reflects testops'.
+        EXIT_CODE=$?
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "output_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+        exit "$EXIT_CODE"
+
+    - name: Upload gate JSON
+      if: always() && steps.run_gates.outputs.output_dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: qualify-${{ inputs.pack || 'all' }}-${{ steps.resolve_product.outputs.sha }}-${{ steps.resolve_harness.outputs.sha }}
+        path: ${{ steps.run_gates.outputs.output_dir }}
+        retention-days: 30
+
+    # Schema per enterprise/testops/packs/*/CI.md (testops.ci.summary/v1):
+    # top-level {schema,pack,target,commit,status,exit_code,started_at,
+    # finished_at,duration_s,gates:[{gate_id,scenario,status,run_id,
+    # duration_s,result_file}]}. testops' own exit code (0/1/2, captured by
+    # the previous step) already decides the job's pass/fail -- this step
+    # only renders the table for a human reader. Product SHA, harness SHA,
+    # pack and mode are always echoed regardless of whether a summary.json
+    # exists.
+    - name: Render gate summary
+      if: always() && steps.run_gates.outputs.output_dir != ''
+      env:
+        OUT_DIR: ${{ steps.run_gates.outputs.output_dir }}
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+        HARNESS_SHA: ${{ steps.resolve_harness.outputs.sha }}
+        EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
+      run: |
+        set -uo pipefail
+        SUMMARY_JSON="$OUT_DIR/summary.json"
+        {
+          echo "## Qualification — pack \`${{ inputs.pack || 'all' }}\`, mode \`${{ inputs.mode || 'release-candidate' }}\`"
+          echo ""
+          echo "product (mono_ref) \`${{ inputs.mono_ref }}\` @ \`$PRODUCT_SHA\`"
+          echo ""
+          echo "harness (testops_ref) \`${{ inputs.testops_ref || 'test/testops-phase1-upstream' }}\` @ \`$HARNESS_SHA\`"
+          echo ""
+          echo "runner \`${{ inputs.runner || 'hosted' }}\`, testops exit \`$EXIT_CODE\`"
+          echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
+        PROVENANCE_JSON="$OUT_DIR/build-provenance.json"
+        if [ -f "$PROVENANCE_JSON" ]; then
+          {
+            echo "binary digests (build-provenance.json):"
+            echo '```json'
+            cat "$PROVENANCE_JSON"
+            echo '```'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if [ ! -f "$SUMMARY_JSON" ]; then
+          echo "::warning::no summary.json in $OUT_DIR — gate table skipped, see uploaded artifact for raw output"
+          echo "**No summary.json produced (exit $EXIT_CODE); see the uploaded artifact.**" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        {
+          echo "comparison verdict: \`$(jq -r '.status' "$SUMMARY_JSON")\` (0 every gate matched its expected status, 1 a mismatch, 2 INFRA_ERROR), duration $(jq -r '.duration_s' "$SUMMARY_JSON")s"
+          echo ""
+          echo "| Gate | Expected | Actual | Match |"
+          echo "|---|---|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+        while IFS=$'\t' read -r name expected actual; do
+          if [ "$actual" = "INFRA_ERROR" ]; then
+            match="neutral"
+          elif [ "$actual" = "$expected" ]; then
+            match="success"
+          else
+            match="failure"
+          fi
+          echo "| $name | $expected | $actual | $match |" >> "$GITHUB_STEP_SUMMARY"
+        done < <(jq -r '.gates[] | [(.scenario // .gate_id), .expected, .actual] | @tsv' "$SUMMARY_JSON")
+
+    # continue-on-error on the gate-pack step means GitHub shows that step
+    # (and, without this, the job) as green no matter what testops returned.
+    # This is the step that actually decides the job's pass/fail: missing
+    # entirely (the shell died before writing any output) counts as a
+    # failure, same as a captured non-zero exit code.
+    - name: Enforce gate result
+      if: always()
+      env:
+        EXIT_CODE: ${{ steps.run_gates.outputs.exit_code }}
+      run: |
+        if [ -z "$EXIT_CODE" ]; then
+          echo "::error::run_gates produced no exit_code output -- the shell likely died before it could write one (OOM, signal, crash)"
+          exit 1
+        fi
+        exit "$EXIT_CODE"
