@@ -228,10 +228,14 @@ jobs:
       run: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
 
     - name: Install Python deps for the async pack
-      # The async pack's #561 process gate (packs/epoch/testdata/561/gate561.py)
-      # imports grpc, google.protobuf and boto3. Neither ubuntu-22.04 nor tp01
-      # ships them (run 34355466658: every #561 row INFRA_ERROR on
-      # "No module named 'grpc'"). Pinned for the same reason grpcurl is.
+      # The async pack's #561/#559 process gates (packs/epoch/testdata/561/
+      # gate561.py) import grpc, google.protobuf and boto3, and separately
+      # shell out to a bare `aws` binary. Neither ubuntu-22.04 nor tp01 ships
+      # any of them (run 34355466658: every #561 row INFRA_ERROR on
+      # "No module named 'grpc'"; run 34387940711, after the grpc/boto3/
+      # protobuf fix landed: every #561 row still INFRA_ERROR, now on
+      # "FileNotFoundError: ... 'aws'" -- the grpc-class fix did not cover
+      # the CLI gate561.py also needs). Pinned for the same reason grpcurl is.
       #
       # tp01 (Ubuntu 24.04, Python 3.12) enforces PEP 668 -- a bare `pip
       # install --user` there fails outright with
@@ -242,12 +246,19 @@ jobs:
       # it at all. Try without it first (works on ubuntu-22.04, and on any
       # tp01 pip old enough not to enforce PEP 668 either), fall back to
       # adding it only if the first attempt actually fails.
+      #
+      # `--user` installs the awscli console script under ~/.local/bin,
+      # which is not on PATH by default for either runner -- gate561.py
+      # calls plain `aws`, not a full path, so that directory has to be
+      # added to PATH for the rest of this job (GITHUB_PATH persists a PATH
+      # addition to every later step, not just this one).
       if: inputs.pack == 'async' || inputs.pack == 'all'
       run: |
         set -uo pipefail
-        PKGS="grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36"
+        PKGS="grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36 awscli==1.36.5"
         python3 -m pip install --user --quiet $PKGS \
           || python3 -m pip install --user --break-system-packages --quiet $PKGS
+        echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
 
     # Built from the HARNESS checkout, not the product one -- see
     # kvcache-qualify.yml's history for why (run 34272566294,
