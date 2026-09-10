@@ -1,0 +1,116 @@
+name: "Rust Volume Check (seaweed-mono)"
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }}
+
+# The fast gate the #599 incident was missing. seaweed-mono #599 copied the Go
+# volume_server.proto over the Rust copy, deleting the eleven Rust-only RPCs
+# (ten RDMA + VolumeEcShardsPromote); the Rust volume stopped compiling and the
+# PR still merged, because the existing Rust suites took hours to reach the PR
+# in the hosted queue. This workflow does two cheap things, in its own
+# concurrency group so it is never queued behind the sixteen suites:
+#
+#   1. proto parity — every rpc in enterprise/weed/pb/{volume_server,master}.proto
+#      must exist in the Rust copy, and the Rust-only marker block must still be
+#      there (it is what tells the next re-sync what to keep);
+#   2. cargo check with --features rdma (the RDMA code is feature-gated; the
+#      default build would not see a breakage inside rdma.rs).
+#
+# Hosted only: it is PR-triggered (mono-merge-request), and PR-triggered work
+# never runs on the self-hosted runner.
+on:
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to check'
+        required: false
+        default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to check; defaults to the head of the branch above'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/rust-volume-check
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  proto-parity:
+    name: Proto parity (Go ⊆ Rust)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+      - name: Link to seaweed-mono source
+        if: github.event_name == 'repository_dispatch'
+        uses: ./.github/actions/mono-source-link
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+      - name: Every Go rpc exists in the Rust proto copy; Rust-only block intact
+        run: |
+          set -uo pipefail
+          cd seaweedfs-source/enterprise
+          rc=0
+          for f in volume_server master; do
+            go_p="weed/pb/$f.proto"; rs_p="seaweed-volume/proto/$f.proto"
+            [ -f "$rs_p" ] || { echo "::error::$rs_p missing"; rc=1; continue; }
+            missing=$(comm -23 \
+              <(grep -oE '^\s*rpc\s+[A-Za-z0-9_]+' "$go_p" | awk '{print $2}' | sort -u) \
+              <(grep -oE '^\s*rpc\s+[A-Za-z0-9_]+' "$rs_p" | awk '{print $2}' | sort -u))
+            if [ -n "$missing" ]; then
+              echo "::error file=$rs_p::rpc(s) in $go_p missing from the Rust copy: $(echo $missing | tr '\n' ' ')"; rc=1
+            fi
+            echo "$f: Go $(grep -cE '^\s*rpc\s' "$go_p") rpcs, Rust $(grep -cE '^\s*rpc\s' "$rs_p") rpcs"
+          done
+          rs_v="seaweed-volume/proto/volume_server.proto"
+          if ! grep -q 'Rust volume only' "$rs_v"; then
+            echo "::error file=$rs_v::the 'Rust volume only' marker block is gone — the Rust-only RPCs were probably dropped by a re-sync (see seaweed-mono #599 / #621)"; rc=1
+          fi
+          for r in PrepareRdmaRead GetRdmaPushEndpoints PrepareRdmaWrite CommitRdmaWrite WriteNeedleFromRdma PrepareRdmaCopy VolumeEcShardsPromote; do
+            grep -qE "^\s*rpc\s+$r\b" "$rs_v" || { echo "::error file=$rs_v::Rust-only rpc $r missing"; rc=1; }
+          done
+          exit $rc
+
+  cargo-check-rdma:
+    name: cargo check --features rdma
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+      - name: Install rdma-core headers (sw-rdma links libibverbs/librdmacm)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libibverbs-dev librdmacm-dev protobuf-compiler
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-check-rdma-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-check-rdma-
+      - name: cargo check --features rdma (lib + bins + tests, no codegen)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo check --features rdma --bins --lib --tests
