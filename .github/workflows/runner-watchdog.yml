@@ -34,22 +34,12 @@ on:
   schedule:
     - cron: "*/10 * * * *"
 
-  # So also run after the workflows that can land on the self-hosted runner.
-  # This fires when there is real traffic - which is exactly when a stuck queue
-  # matters and when the schedule is least likely to have run recently. It adds
-  # nothing when the repository is quiet, which is when a delay costs least.
-  #
-  # workflow_run fires on completion, including a run that was itself cancelled
-  # or that never started jobs, so a batch-1 dispatch landing while tp01 is down
-  # still produces a rescue pass shortly afterwards.
-  workflow_run:
-    workflows:
-      - "go: build binary (seaweed-mono)"
-      - "Plugin Worker Tests (seaweed-mono)"
-      - "EC Repair Plugin Worker (seaweed-mono)"
-      - "FUSE Integration Tests (seaweed-mono)"
-      - "KVCache: Publish LMCache preview"
-    types: [completed]
+  # The workflow_run trigger that used to fire after every watched suite was
+  # removed on 2026-09-10: an external cron (cron-job.org) has dispatched this
+  # workflow every 10 minutes since 2026-09-09 (110 dispatches in one day), so
+  # the trigger only produced ~350 extra watchdog runs a day, most cancelled by
+  # the concurrency group, and those runs crowded the liveness probe's window
+  # (see the probe note below).
 
   workflow_dispatch:
     inputs:
@@ -112,8 +102,15 @@ jobs:
           # the prefix match covers additional instances (tp01-2, tp01-3, ...).
           since=$(date -u -d "-${PROBE_WINDOW_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ)
           newest=0
-          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=50" \
-                         --jq ".workflow_runs[] | select(.updated_at >= \"$since\") | .id"); do
+          # Scan runs that actually STARTED jobs (in_progress or completed), 200
+          # of them, and skip this watchdog's own runs and the status mirror.
+          # The old probe looked at the newest 50 runs of any state; on
+          # 2026-09-10 those were all watchdog/mirror/cancelled runs, so it saw
+          # "no job start in 120 min" while both tp01 workers were busy and
+          # evacuated four queued builds to hosted (run 34509663939).
+          probe_jq=".workflow_runs[] | select(.updated_at >= \"$since\") | select(.name | test(\"^(runner watchdog|Report status)\") | not) | .id"
+          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq "$probe_jq"; \
+                       gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=completed&per_page=100" --jq "$probe_jq"); do
             started=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
               --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | .started_at | fromdate] | max // 0')
             if [ "$started" -gt "$newest" ]; then newest=$started; fi
