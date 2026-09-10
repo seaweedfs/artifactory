@@ -267,12 +267,21 @@ jobs:
         # Prepending the user bin is safe on both runners: hosted has no user
         # awscli (its v2 stays first in practice), tp01 has no system aws.
         echo "$USER_BASE/bin" >> "$GITHUB_PATH"
-        if ! aws --version >/dev/null 2>&1; then
-          # tp01 has no aws CLI; ubuntu-22.04 ships v2, which must keep winning
-          PKGS="$PKGS awscli==1.36.5"
-        fi
         python3 -m pip install --user --quiet $PKGS \
           || python3 -m pip install --user --break-system-packages --quiet $PKGS
+        # The fixture speaks AWS CLI v2 (`--no-cli-pager`; run 34436542748 on
+        # tp01 with the pip awscli 1.x: "Unknown options: --no-cli-pager").
+        # ubuntu-22.04 ships v2; tp01 gets the official v2 installer into the
+        # user base, no sudo. Overwrites any pip-installed v1 `aws` stub.
+        if ! aws --version 2>/dev/null | grep -q '^aws-cli/2'; then
+          tmp="$(mktemp -d)"
+          curl -sSf "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmp/awscliv2.zip"
+          (cd "$tmp" && unzip -q awscliv2.zip)
+          rm -f "$USER_BASE/bin/aws" "$USER_BASE/bin/aws_completer"   # pip v1 stubs, if any
+          "$tmp/aws/install" --install-dir "$USER_BASE/aws-cli" --bin-dir "$USER_BASE/bin" --update
+          rm -rf "$tmp"
+        fi
+        aws --version
 
     # Built from the HARNESS checkout, not the product one -- see
     # kvcache-qualify.yml's history for why (run 34272566294,
