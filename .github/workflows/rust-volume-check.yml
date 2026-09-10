@@ -34,7 +34,10 @@ on:
 
 concurrency:
   group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/rust-volume-check
-  cancel-in-progress: true
+  # PR pushes supersede each other; a push to main is a record and must not be
+  # cancelled by the next push (run 34436369055 for 757017f2 was, and main
+  # was broken at that sha -- the red never appeared).
+  cancel-in-progress: ${{ github.event.action == 'mono-merge-request' }}
 
 permissions:
   contents: read
