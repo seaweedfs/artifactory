@@ -256,7 +256,9 @@ jobs:
       run: |
         set -uo pipefail
         PKGS="grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36"
-        if ! command -v aws >/dev/null 2>&1; then
+        # A working `aws`, not merely a file named aws: run 34418568305 found a
+        # stale ~/.local/bin/aws stub on tp01 whose awscli package was gone.
+        if ! aws --version >/dev/null 2>&1; then
           # tp01 has no aws CLI; ubuntu-22.04 ships v2 on PATH, which must keep winning
           PKGS="$PKGS awscli==1.36.5"
           echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
