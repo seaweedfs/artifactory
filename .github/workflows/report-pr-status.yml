@@ -69,7 +69,14 @@ jobs:
           fi
           case "$WF_CONCLUSION" in
             success)            STATE=success; DESC="passed";;
-            cancelled|skipped)  STATE=error;   DESC="$WF_CONCLUSION";;
+            cancelled|skipped)
+              # A cancelled run was superseded by a newer push (cancel-in-progress)
+              # or never started; it says nothing about the code. Reporting it as
+              # "error" painted ~1,200 red X on seaweed-mono commits in one day
+              # (2026-09-09/10) and buried the few dozen real failures. The
+              # superseding run reports its own state under the same context.
+              echo "Run for '$WF_NAME' on $SHA was $WF_CONCLUSION — not a verdict, not reported"
+              exit 0;;
             *)                  STATE=failure; DESC="${WF_CONCLUSION:-failed}";;
           esac
           echo "Reporting $STATE for '$WF_NAME' on seaweed-mono $SHA"
