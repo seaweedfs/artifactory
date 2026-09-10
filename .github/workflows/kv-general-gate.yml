@@ -1,0 +1,99 @@
+name: "KV General Gate (seaweed-mono)"
+run-name: ${{ github.workflow }} · mono:${{ github.event.client_payload.sha || inputs.mono_sha }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · ${{ github.event.action || 'manual' }}
+
+# Layer-1 / layer-2 wrapper around qualify.yml for the KV `general` pack
+# (kv-functional-control, T4 deleted-needle observation, T7 assign isolation):
+#
+#   mono-merge-request  -> hosted runner, PR head sha as the product. PR-triggered
+#                          work never runs on the self-hosted runner. Superseded
+#                          pushes to the same PR branch are cancelled: the
+#                          qualification of record is the merge commit, not
+#                          every intermediate push.
+#   mono-push           -> tp01 (no queue), main head as the product, never
+#                          cancelled: this is the post-merge record.
+#
+# Rotation, async and lm-e2e stay out of this gate on purpose: they take
+# 10-25 minutes, need containers or torch, and carry accepted-open REDs.
+# They run post-merge and nightly through qualify.yml directly.
+#
+# The harness is pinned until enterprise/testops lands on seaweed-mono main
+# (#598); then TESTOPS_REF becomes the product sha itself.
+on:
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to gate'
+        required: false
+        default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to gate (full sha); defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'hosted or tp01'
+        required: false
+        type: choice
+        default: hosted
+        options: [hosted, tp01]
+
+concurrency:
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/kv-general-gate
+  cancel-in-progress: ${{ github.event.action == 'mono-merge-request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve product ref
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    outputs:
+      mono_ref: ${{ steps.pick.outputs.mono_ref }}
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+      - name: Link to seaweed-mono source
+        if: github.event_name == 'repository_dispatch'
+        uses: ./.github/actions/mono-source-link
+      - name: Pick product sha and runner
+        id: pick
+        env:
+          EVENT: ${{ github.event.action }}
+          SHA: ${{ github.event.client_payload.sha }}
+          REF: ${{ github.event.client_payload.ref }}
+          IN_SHA: ${{ inputs.mono_sha }}
+          IN_BRANCH: ${{ inputs.gitlab_branch }}
+          IN_RUNNER: ${{ inputs.runner }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            mono-merge-request) ref="$SHA"; runner=hosted ;;
+            mono-push)          ref="$SHA"; runner=tp01 ;;
+            *)                  ref="${IN_SHA:-${IN_BRANCH:-main}}"; runner="${IN_RUNNER:-hosted}" ;;
+          esac
+          [ -n "$ref" ] && [ "$ref" != "null" ] || { echo "::error::no product ref in the dispatch payload"; exit 1; }
+          echo "mono_ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "product=$ref runner=$runner event=${EVENT:-manual} branch=${REF:-$IN_BRANCH}"
+
+  general:
+    name: general pack
+    needs: resolve
+    uses: ./.github/workflows/qualify.yml
+    secrets: inherit
+    with:
+      pack: general
+      mono_ref: ${{ needs.resolve.outputs.mono_ref }}
+      # HARNESS pin: test/testops-phase1-upstream @ H (async recut bindings,
+      # skip-controls, filer-group control, T3 fixtures). Bump deliberately;
+      # a moving harness makes gate results incomparable across PRs.
+      testops_ref: 50f00d93fcbd3d07b84f238488ac4d851165f664
+      mode: release-candidate
+      runner: ${{ needs.resolve.outputs.runner }}
+      timeout_minutes: '20'

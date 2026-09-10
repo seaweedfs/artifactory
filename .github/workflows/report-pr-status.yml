@@ -16,6 +16,8 @@ on:
     workflows:
       - "go: build binary (seaweed-mono)"
       - "RDMA software (siw) Tests (seaweed-mono)"
+      - "Rust Volume Check (seaweed-mono)"
+      - "KV General Gate (seaweed-mono)"
       - "End to End (seaweed-mono)"
       - "EC Integration Tests (seaweed-mono)"
       - "EC Repair Plugin Worker (seaweed-mono)"
