@@ -42,7 +42,14 @@ permissions:
 
 jobs:
   report:
-    runs-on: ubuntu-latest
+    # tp01, not hosted: this job is a 5-second curl that runs only artifactory's
+    # own checked-in code (no PR code), so the "PR-triggered never on
+    # self-hosted" rule does not apply, and on hosted it was the single largest
+    # occupant of the org queue (51 of 81 queued runs on 2026-09-10 05:50Z),
+    # delaying every status it exists to deliver. runner-watchdog rescues it to
+    # hosted if tp01 is down.
+    runs-on: [self-hosted, tp01]
+    timeout-minutes: 5
     # Only mirror runs that came from seaweed-mono (push/PR dispatch), not manual ones.
     if: github.event.workflow_run.event == 'repository_dispatch'
     steps:
