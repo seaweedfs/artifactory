@@ -60,17 +60,21 @@ runs:
           exit 1
         fi
         SHA=""
-        # A manual run may name the commit explicitly (the watchdog does, when
-        # it re-dispatches a rescued repository_dispatch run on hosted). Same
-        # validation, same branch fallback as the dispatched path.
-        if [ "$EVENT_NAME" != "repository_dispatch" ] && [ -n "${INPUT_SHA:-}" ] && [ "$INPUT_SHA" != "null" ]; then
+        # An explicit sha input always wins, whatever the event: a manual run may
+        # name the commit (the watchdog does when it re-dispatches a rescued run),
+        # and qualify.yml clones a HARNESS tree at its own sha inside a
+        # repository_dispatch run. Before 2026-09-10 the dispatched payload sha
+        # overrode the input, so the harness checkout silently became the
+        # product tree (no enterprise/testops) and every PR-triggered KV General
+        # Gate failed on "cmd/testops: directory not found" (run 34434669219).
+        if [ -n "${INPUT_SHA:-}" ] && [ "$INPUT_SHA" != "null" ]; then
           if ! printf '%s' "$INPUT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "Refusing invalid requested sha: $INPUT_SHA" >&2
             exit 1
           fi
           SHA="$INPUT_SHA"
         fi
-        if [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "${PAYLOAD_SHA:-}" ] && [ "$PAYLOAD_SHA" != "null" ]; then
+        if [ -z "$SHA" ] && [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "${PAYLOAD_SHA:-}" ] && [ "$PAYLOAD_SHA" != "null" ]; then
           if ! printf '%s' "$PAYLOAD_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "Refusing invalid dispatched sha: $PAYLOAD_SHA" >&2
             exit 1
