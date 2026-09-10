@@ -256,12 +256,20 @@ jobs:
       run: |
         set -uo pipefail
         PKGS="grpcio==1.66.2 protobuf==5.28.3 boto3==1.35.36"
-        # A working `aws`, not merely a file named aws: run 34418568305 found a
-        # stale ~/.local/bin/aws stub on tp01 whose awscli package was gone.
+        # The user-site awscli must stay importable when a fixture runs `aws`
+        # with HOME pointed at its own scratch dir (gate561.py does: HOME=root
+        # isolates ~/.aws). Python resolves the user site from HOME, so pin it
+        # explicitly; runs 34418568305 / 34433730160 died on "No module named
+        # 'awscli'" while the package was present under /home/ghrunner/.local.
+        USER_BASE="$(python3 -m site --user-base)"
+        echo "PYTHONUSERBASE=$USER_BASE" >> "$GITHUB_ENV"
+        export PYTHONUSERBASE="$USER_BASE"
+        # Prepending the user bin is safe on both runners: hosted has no user
+        # awscli (its v2 stays first in practice), tp01 has no system aws.
+        echo "$USER_BASE/bin" >> "$GITHUB_PATH"
         if ! aws --version >/dev/null 2>&1; then
-          # tp01 has no aws CLI; ubuntu-22.04 ships v2 on PATH, which must keep winning
+          # tp01 has no aws CLI; ubuntu-22.04 ships v2, which must keep winning
           PKGS="$PKGS awscli==1.36.5"
-          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
         fi
         python3 -m pip install --user --quiet $PKGS \
           || python3 -m pip install --user --break-system-packages --quiet $PKGS
