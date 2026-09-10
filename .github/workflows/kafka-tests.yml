@@ -436,6 +436,9 @@ jobs:
         export WEED_DATA_DIR=/tmp/seaweedfs-mq-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
+        CI_MASTER_GRPC_PORT=$(( ${CI_MASTER_PORT:-9333} + 10000 ))
+        CI_METRICS_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 50))}"
+        CI_METRICS_PORT="${CI_METRICS_PORT:-9325}"
         nohup weed -v 1 server \
           -ip="127.0.0.1" \
           -ip.bind="0.0.0.0" \
@@ -588,6 +591,9 @@ jobs:
         export WEED_DATA_DIR=/tmp/seaweedfs-client-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
+        CI_MASTER_GRPC_PORT=$(( ${CI_MASTER_PORT:-9333} + 10000 ))
+        CI_METRICS_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 50))}"
+        CI_METRICS_PORT="${CI_METRICS_PORT:-9325}"
         nohup weed -v 1 server \
           -ip="127.0.0.1" \
           -ip.bind="0.0.0.0" \
@@ -726,6 +732,9 @@ jobs:
         export WEED_DATA_DIR=/tmp/seaweedfs-smq-$RANDOM
         mkdir -p "$WEED_DATA_DIR"
 
+        CI_MASTER_GRPC_PORT=$(( ${CI_MASTER_PORT:-9333} + 10000 ))
+        CI_METRICS_PORT="${CI_PORT_BASE:+$((CI_PORT_BASE + 50))}"
+        CI_METRICS_PORT="${CI_METRICS_PORT:-9325}"
         nohup weed -v 1 server \
           -ip="127.0.0.1" \
           -ip.bind="0.0.0.0" \
