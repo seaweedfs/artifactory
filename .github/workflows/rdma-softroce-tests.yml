@@ -214,7 +214,7 @@ jobs:
           if [ ! -d sw-rdma-core ]; then echo "pre-modularisation tree — guard skipped"; exit 0; fi
           rc=0
           check() { # $1 = regex, $2 = allowed-path regex, $3 = label
-            hits=$(grep -rnE --include='*.rs' "$1" . | grep -v '/vendor/' | grep -vE ':[0-9]+:\s*//' | grep -vE "$2" || true)
+            hits=$(grep -rnE --include='*.rs' "$1" . | grep -vE '/(vendor|target)/' | grep -vE ':[0-9]+:\s*//' | grep -vE "$2" || true)
             if [ -n "$hits" ]; then echo "::error::$3 outside its provider:"; echo "$hits" | head -20; rc=1; fi
           }
           check '\b(ibv_|rdma_cm_|rdma_create_id)' '^\./(sw-rdma-provider-verbs|sw-rdma-provider-mlx5|sw-rdma-provider-efa)/|/tests/boundary\.rs' 'generic verbs/rdma_cm symbol'
