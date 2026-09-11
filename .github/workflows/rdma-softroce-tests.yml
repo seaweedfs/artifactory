@@ -192,6 +192,36 @@ jobs:
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo test --features rdma --lib
 
+      # RDMA modularisation crates (rdma/dev, milestone 2 onwards): the portable
+      # core (mock provider, boundary) and the verbs provider's loopback over the
+      # siw device set up above. Skipped, not failed, on a tree that predates them.
+      - name: sw-rdma-core + provider-verbs (soft-RDMA loopback)
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          if [ -d sw-rdma-core ] && [ -d sw-rdma-provider-verbs ]; then
+            cargo test -p sw-rdma-core
+            cargo test -p sw-rdma-provider-verbs --features real-rdma
+          else
+            echo "sw-rdma-core / sw-rdma-provider-verbs not in this tree — skipped"
+          fi
+
+      # Boundary guard for the provider abstraction: generic verbs / rdma_cm and
+      # vendor (mlx5dv, libfabric) symbols may only appear inside provider crates
+      # and the EFA C shim. Strict once the core crate exists in the tree.
+      - name: Rust RDMA boundary guard
+        run: |
+          cd seaweedfs-source/enterprise/rust
+          if [ ! -d sw-rdma-core ]; then echo "pre-modularisation tree — guard skipped"; exit 0; fi
+          rc=0
+          check() { # $1 = regex, $2 = allowed-path regex, $3 = label
+            hits=$(grep -rnE --include='*.rs' "$1" . | grep -v '/vendor/' | grep -vE ':[0-9]+:\s*//' | grep -vE "$2" || true)
+            if [ -n "$hits" ]; then echo "::error::$3 outside its provider:"; echo "$hits" | head -20; rc=1; fi
+          }
+          check '\b(ibv_|rdma_cm_|rdma_create_id)' '^\./(sw-rdma-provider-verbs|sw-rdma-provider-mlx5|sw-rdma-provider-efa)/|/tests/boundary\.rs' 'generic verbs/rdma_cm symbol'
+          check '\b(mlx5dv_|wr_set_dc_addr)' '^\./sw-rdma-provider-mlx5/|/tests/boundary\.rs' 'mlx5 symbol'
+          check '\bfi_[a-z_]+\(' '^\./(sw-rdma-provider-efa|sw-rdma/src/efa)|/efa_shim|/tests/boundary\.rs' 'libfabric symbol'
+          exit $rc
+
       # sw-rdma-vfs lib unit tests (e.g. parse_fid length bounds). cargo test pulls
       # rdma-sys via dev-deps, so these run on this job (libibverbs installed),
       # reusing the real-rdma build from the e2e step above.
