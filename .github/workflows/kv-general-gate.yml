@@ -90,10 +90,11 @@ jobs:
     with:
       pack: general
       mono_ref: ${{ needs.resolve.outputs.mono_ref }}
-      # HARNESS pin: test/testops-phase1-upstream @ H (async recut bindings,
-      # skip-controls, filer-group control, T3 fixtures). Bump deliberately;
-      # a moving harness makes gate results incomparable across PRs.
-      testops_ref: 50f00d93fcbd3d07b84f238488ac4d851165f664
+      # HARNESS pin: seaweed-mono main @ the #626 merge (enterprise/testops =
+      # H + test-only race fixes + T3 start barrier). Bump deliberately; a
+      # moving harness makes gate results incomparable across PRs. Becomes the
+      # product sha once every gated ref carries enterprise/testops.
+      testops_ref: 589f26e09319750e6c9c1772bd06c7cc6ed14dbd
       mode: release-candidate
       runner: ${{ needs.resolve.outputs.runner }}
       timeout_minutes: '20'
