@@ -1,0 +1,65 @@
+# RDMA unified lab gate.
+#
+# Runs the M01/M02 mono RDMA gate through sw-test-runner so the result lands in
+# the normal TestOps bundle/dashboard. The lab runner owns product bring-up and
+# teardown; this scenario owns orchestration, metadata, and perf floors.
+
+name: rdma-unified-lab-gate
+timeout: 45m
+
+metadata:
+  product: seaweed-mono-rdma
+  suite: rdma
+  test_id: rdma-unified-lab-gate
+  covers: object-rc-push,object-rc-pull,object-dc-push,vfs-rdma-readwrite
+
+env:
+  ssh_key: "C:\\work\\dev_server\\testdev_key"
+  mono_repo: "git@github.com:seaweedfs/seaweed-mono.git"
+  mono_ref: "main"
+  m01_workdir: "/opt/rdma-lab-ci/work"
+  m02_workdir: "/opt/rdma-lab-ci/work"
+  artifact_dir: "/opt/rdma-lab-ci/artifacts"
+  lab_runner: "/opt/rdma-lab-ci/artifactory/rdma-lab-ci/run-mono-rdma-lab.sh"
+  rc_push_floor_mib_s: "5120"
+  dc_push_floor_mib_s: "5120"
+  loader_rows_min: "8"
+
+topology:
+  nodes:
+    m01:
+      host: 192.168.1.181
+      user: testdev
+      key: "{{ ssh_key }}"
+
+phases:
+  - name: rdma_unified_gate
+    actions:
+      - action: rdma_run_mono_gate
+        node: m01
+        timeout: 40m
+        ref: "{{ mono_ref }}"
+        mono_repo: "{{ mono_repo }}"
+        m01_workdir: "{{ m01_workdir }}"
+        m02_workdir: "{{ m02_workdir }}"
+        artifact_dir: "{{ artifact_dir }}"
+        runner: "{{ lab_runner }}"
+        profile: unified
+        enable_dc: "true"
+
+  - name: perf_floors
+    actions:
+      - action: assert_greater
+        actual: "{{ __rdma_perf_rc_push_mib_s }}"
+        threshold: "{{ rc_push_floor_mib_s }}"
+      - action: assert_greater
+        actual: "{{ __rdma_perf_dc_push_mib_s }}"
+        threshold: "{{ dc_push_floor_mib_s }}"
+      - action: assert_greater
+        actual: "{{ __rdma_loader_rows }}"
+        threshold: "{{ loader_rows_min }}"
+
+  - name: summary
+    actions:
+      - action: print
+        msg: "RDMA gate {{ __rdma_run_id }} sha={{ __rdma_mono_sha }} rc_push={{ __rdma_perf_rc_push_mib_s }} rc_pull={{ __rdma_perf_rc_pull_mib_s }} dc_push={{ __rdma_perf_dc_push_mib_s }}"

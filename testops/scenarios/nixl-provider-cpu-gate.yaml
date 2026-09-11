@@ -1,0 +1,50 @@
+# NIXL provider CPU gate.
+#
+# This wraps the mono-side PowerShell gate so its result lands in a TestOps
+# bundle. It is intended for the local Windows/WSL lab runner first; the product
+# logic remains in seaweed-mono.
+
+name: nixl-provider-cpu-gate
+timeout: 75m
+
+metadata:
+  product: seaweed-mono-rdma
+  suite: rdma
+  test_id: nixl-provider-cpu-gate
+  covers: nixl-provider-cpu-get,nixl-provider-cpu-put,nixl-provider-read-bench
+
+env:
+  mono_ref: "rdma/nixl-object-type-seaweed"
+  mono_source_root: "C:\\work\\rdma\\seaweed-mono-canonical-write"
+  nixl_source_root: "C:\\work\\rdma\\research\\nixl"
+  nixl_runner: "C:\\work\\rdma\\seaweed-mono-canonical-write\\enterprise\\rust\\sw-rdma-nixl\\tests\\lab\\nixl-provider-gate\\run.ps1"
+  nixl_read_floor_mib_s: "5120"
+  skip_mono_build: "false"
+  skip_nixl_build: "true"
+  keep_running: "false"
+
+topology:
+  nodes:
+    local:
+      host: 127.0.0.1
+      is_local: true
+
+phases:
+  - name: nixl_provider_gate
+    actions:
+      - action: rdma_run_nixl_provider_gate
+        node: local
+        timeout: 70m
+        ref: "{{ mono_ref }}"
+        runner: "{{ nixl_runner }}"
+        mono_source_root: "{{ mono_source_root }}"
+        nixl_source_root: "{{ nixl_source_root }}"
+        nixl_read_floor_mib_s: "{{ nixl_read_floor_mib_s }}"
+        skip_mono_build: "{{ skip_mono_build }}"
+        skip_nixl_build: "{{ skip_nixl_build }}"
+        keep_running: "{{ keep_running }}"
+
+  - name: summary
+    actions:
+      - action: print
+        msg: "NIXL provider gate read={{ __rdma_nixl_provider_read_mib_s }} MiB/s put_bytes={{ __rdma_nixl_provider_put_bytes }}"

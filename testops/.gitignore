@@ -1,0 +1,34 @@
+# build artifacts (anchored to repo root so they don't match cmd/<name>/ dirs)
+/bin/
+*.exe
+/sw-test-runner
+/swblock
+/weedblock
+/weedv1
+/sweeds3
+/testops-dashboard
+*.test
+*.test.exe
+*.out
+
+# wiki static site (mkdocs build)
+/site/
+
+# run output
+results/
+results-demo/
+artifacts/
+*.log
+
+# editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# experimental backup files left during extraction
+*.orig

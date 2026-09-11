@@ -1,0 +1,21 @@
+[
+  {
+    "HostNQN":"nqn.2014-08.org.nvmexpress:uuid:bb862a0a-025b-948b-55dd-cc7dcdbda5ed",
+    "HostID":"9917759f-2788-4a42-9789-5ba8d06cbc0f",
+    "Subsystems":[
+      {
+        "Name":"nvme-subsys1",
+        "NQN":"nqn.2026-05.io.seaweedfs:single-v1",
+        "IOPolicy":"numa",
+        "Paths":[
+          {
+            "Name":"nvme1",
+            "Transport":"tcp",
+            "Address":"traddr=127.0.0.1,trsvcid=4421,src_addr=127.0.0.1",
+            "State":"live"
+          }
+        ]
+      }
+    ]
+  }
+]
