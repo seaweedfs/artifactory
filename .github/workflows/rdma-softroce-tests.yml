@@ -199,8 +199,8 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/rust
           if [ -d sw-rdma-core ] && [ -d sw-rdma-provider-verbs ]; then
-            cargo test -p sw-rdma-core
-            cargo test -p sw-rdma-provider-verbs --features real-rdma
+            cargo test -p seaweedfs-sw-rdma-core
+            cargo test -p seaweedfs-sw-rdma-provider-verbs --features real-rdma
           else
             echo "sw-rdma-core / sw-rdma-provider-verbs not in this tree — skipped"
           fi
