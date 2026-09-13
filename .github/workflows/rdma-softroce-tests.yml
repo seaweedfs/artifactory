@@ -191,6 +191,7 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo test --features rdma --lib
+          cargo test --features rdma,test-support --lib
 
       # RDMA modularisation crates (rdma/dev, milestone 2 onwards): the portable
       # core (mock provider, boundary) and the verbs provider's loopback over the
