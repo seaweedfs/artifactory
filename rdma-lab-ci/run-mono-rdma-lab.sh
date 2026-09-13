@@ -193,6 +193,10 @@ run_unified_gate() {
   ssh "$M02_HOST" "bash '$m02_src/$gate/teardown.sh' m02"
   set -e
 
+  CLEANUP_M01_SCRIPT="$m01_src/$gate/teardown.sh"
+  CLEANUP_M02_SCRIPT="$m02_src/$gate/teardown.sh"
+  trap cleanup_lab EXIT
+
   local dc_env=""
   if [ "$ENABLE_DC" = "1" ]; then
     dc_env="ENABLE_DC=1 SWFS_RDMA_DC_INITIATORS=$DC_INITIATORS"
@@ -200,10 +204,6 @@ run_unified_gate() {
 
   test -n "$GO_WEED_BIN" || { echo "GO_WEED_BIN missing; build_unified_gate must run before startup" >&2; exit 1; }
   ssh "$M02_HOST" "$dc_env MONO='$m02_src' WEED='$GO_WEED_BIN' bash '$m02_src/$gate/m02-up.sh'"
-
-  CLEANUP_M01_SCRIPT="$m01_src/$gate/teardown.sh"
-  CLEANUP_M02_SCRIPT="$m02_src/$gate/teardown.sh"
-  trap cleanup_lab EXIT
 
   local dc_m01=""
   if [ "$ENABLE_DC" = "1" ]; then
