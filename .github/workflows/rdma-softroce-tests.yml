@@ -233,6 +233,11 @@ jobs:
           cargo test --features rdma --lib
           cargo test --features rdma,test-support --lib
 
+      - name: Build step07 registration driver example (RDMA test support)
+        run: |
+          test -f seaweedfs-source/enterprise/seaweed-volume/Cargo.toml
+          cargo build --manifest-path seaweedfs-source/enterprise/seaweed-volume/Cargo.toml --features rdma-dc,test-support --example step07_registration_driver
+
       # RDMA modularisation crates (rdma/dev, milestone 2 onwards): the portable
       # core (mock provider, boundary) and the verbs provider's loopback over the
       # siw device set up above. Skipped, not failed, on a tree that predates them.
