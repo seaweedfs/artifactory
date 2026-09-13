@@ -14,6 +14,8 @@ ENABLE_DC="${ENABLE_DC:-0}"
 DC_INITIATORS="${DC_INITIATORS:-4}"
 CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
+GO_WEED_BIN=""
+GO_WEED_SHA256=""
 
 usage() {
   cat <<'USAGE'
@@ -136,7 +138,12 @@ build_unified_gate() {
 
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
-  ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
+  ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise\" && go build -o weed-rdma ./weed && cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
+  GO_WEED_BIN="$m02_src/enterprise/weed-rdma"
+  GO_WEED_SHA256="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/weed-rdma'" | awk '{print $1}')"
+  test -n "$GO_WEED_SHA256" || { echo "missing Go weed hash" >&2; exit 1; }
+  echo "GO_WEED_BIN=$GO_WEED_BIN"
+  echo "GO_WEED_SHA256=$GO_WEED_SHA256"
 }
 
 run_unified_gate() {
@@ -161,7 +168,8 @@ run_unified_gate() {
     dc_env="ENABLE_DC=1 SWFS_RDMA_DC_INITIATORS=$DC_INITIATORS"
   fi
 
-  ssh "$M02_HOST" "$dc_env MONO='$m02_src' bash '$m02_src/$gate/m02-up.sh'"
+  test -n "$GO_WEED_BIN" || { echo "GO_WEED_BIN missing; build_unified_gate must run before startup" >&2; exit 1; }
+  ssh "$M02_HOST" "$dc_env MONO='$m02_src' WEED='$GO_WEED_BIN' bash '$m02_src/$gate/m02-up.sh'"
 
   CLEANUP_M01_SCRIPT="$m01_src/$gate/teardown.sh"
   CLEANUP_M02_SCRIPT="$m02_src/$gate/teardown.sh"
@@ -187,6 +195,8 @@ write_provenance() {
     echo "m02=$M02_HOST"
     echo "rdma_pipes=$RDMA_PIPES"
     echo "enable_dc=$ENABLE_DC"
+    echo "go_weed_bin=$GO_WEED_BIN"
+    echo "go_weed_sha256=$GO_WEED_SHA256"
   } | tee "$run_dir/provenance.txt"
 }
 
@@ -204,6 +214,7 @@ write_summary() {
     echo "RDMA_CI_MONO_SHA=$(cat "$run_dir/mono.sha")"
     echo "RDMA_CI_PASS=$pass"
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
+    echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
   } | tee "$run_dir/summary.env"
   {
     echo "<!doctype html><meta charset=\"utf-8\"><title>RDMA lab $run_id</title>"
