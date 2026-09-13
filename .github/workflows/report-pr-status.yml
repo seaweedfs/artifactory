@@ -42,13 +42,18 @@ permissions:
 
 jobs:
   report:
-    # tp01, not hosted: this job is a 5-second curl that runs only artifactory's
-    # own checked-in code (no PR code), so the "PR-triggered never on
-    # self-hosted" rule does not apply, and on hosted it was the single largest
-    # occupant of the org queue (51 of 81 queued runs on 2026-09-10 05:50Z),
-    # delaying every status it exists to deliver. runner-watchdog rescues it to
-    # hosted if tp01 is down.
-    runs-on: [self-hosted, tp01]
+    # tp01-light, not the two heavy tp01/tp01-2 instances: this job is a
+    # 5-second curl that runs only artifactory's own checked-in code (no PR
+    # code), so the "PR-triggered never on self-hosted" rule does not apply.
+    # It moved off hosted in #118 (it was the single largest occupant of the
+    # org queue, 51 of 81 queued runs on 2026-09-10 05:50Z, delaying every
+    # status it exists to deliver), but landing it on tp01/tp01-2 just moved
+    # the starvation: it now queues behind "go: build binary" and "Plugin
+    # Worker Tests" on the same two heavy instances. tp01-light is the
+    # dynamic, ephemeral pool built for exactly this (see
+    # runbooks/tp01-runner-runbook.md, "tp01-light: a dynamic, ephemeral
+    # pool") -- ruled 2026-09-11 as this label's first real consumer.
+    runs-on: [self-hosted, tp01-light]
     timeout-minutes: 5
     # Only mirror runs that came from seaweed-mono (push/PR dispatch), not manual ones.
     if: github.event.workflow_run.event == 'repository_dispatch'
