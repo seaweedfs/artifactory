@@ -16,6 +16,12 @@ CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
 GO_WEED_BIN=""
 GO_WEED_SHA256=""
+KMOD_BIN=""
+KMOD_SHA256=""
+KMOD_UNAME_R=""
+KMOD_VERMAGIC=""
+VFS_KERNEL_EXCLUDED="0"
+VFS_KERNEL_EXCLUSION_REASON=""
 GO_VERSION=""
 GO_MOD_SHA256_BEFORE=""
 GO_MOD_SHA256_AFTER=""
@@ -152,8 +158,18 @@ build_unified_gate() {
   GO_MOD_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.mod'" | awk '{print $1}')"
   GO_SUM_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.sum'" | awk '{print $1}')"
 
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
+  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
+  KMOD_UNAME_R="$(uname -r)"
+  if bash -lc "cd '$m01_src/seaweed-vfs/kernel' && make"; then
+    KMOD_BIN="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
+    test -f "$KMOD_BIN" || { echo "kernel module build did not produce $KMOD_BIN" >&2; exit 1; }
+    KMOD_SHA256="$(sha256sum "$KMOD_BIN" | awk '{print $1}')"
+    KMOD_VERMAGIC="$(modinfo -F vermagic "$KMOD_BIN")"
+  else
+    VFS_KERNEL_EXCLUDED="1"
+    VFS_KERNEL_EXCLUSION_REASON="seaweedvfs.ko_build_failed_for_${KMOD_UNAME_R}"
+  fi
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise\" && go build -o weed-rdma ./weed && cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
   GO_WEED_BIN="$m02_src/enterprise/weed-rdma"
   GO_WEED_SHA256="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/weed-rdma'" | awk '{print $1}')"
@@ -164,8 +180,17 @@ build_unified_gate() {
   git -C "$m01_src" diff -- enterprise/rust/Cargo.lock > "$run_dir/enterprise-rust-Cargo.lock.diff" || true
   RUST_CARGO_LOCK_DIFF_SHA256="$(sha256sum "$run_dir/enterprise-rust-Cargo.lock.diff" | awk '{print $1}')"
   test -n "$GO_WEED_SHA256" || { echo "missing Go weed hash" >&2; exit 1; }
+  if [ "$VFS_KERNEL_EXCLUDED" != "1" ]; then
+    test -n "$KMOD_SHA256" || { echo "missing kernel module hash" >&2; exit 1; }
+  fi
   echo "GO_WEED_BIN=$GO_WEED_BIN"
   echo "GO_WEED_SHA256=$GO_WEED_SHA256"
+  echo "KMOD_BIN=$KMOD_BIN"
+  echo "KMOD_SHA256=$KMOD_SHA256"
+  echo "KMOD_UNAME_R=$KMOD_UNAME_R"
+  echo "KMOD_VERMAGIC=$KMOD_VERMAGIC"
+  echo "VFS_KERNEL_EXCLUDED=$VFS_KERNEL_EXCLUDED"
+  echo "VFS_KERNEL_EXCLUSION_REASON=$VFS_KERNEL_EXCLUSION_REASON"
   echo "GO_VERSION=$GO_VERSION"
   echo "GO_MOD_SHA256_BEFORE=$GO_MOD_SHA256_BEFORE"
   echo "GO_MOD_SHA256_AFTER=$GO_MOD_SHA256_AFTER"
@@ -209,8 +234,15 @@ run_unified_gate() {
   if [ "$ENABLE_DC" = "1" ]; then
     dc_m01="ENABLE_DC=1"
   fi
+  local vfs_m01=""
+  if [ "$VFS_KERNEL_EXCLUDED" = "1" ]; then
+    vfs_m01="SKIP_VFS=1 KMOD=$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
+  else
+    test -f "$KMOD_BIN" || { echo "UNIFIED_NO_SAME_SOURCE_KMOD $KMOD_BIN" >&2; exit 1; }
+    vfs_m01="KMOD=$KMOD_BIN"
+  fi
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 bash '$m01_src/$gate/m01-unified.sh'"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 $vfs_m01 bash '$m01_src/$gate/m01-unified.sh'"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
@@ -228,6 +260,12 @@ write_provenance() {
     echo "go_weed_bin=$GO_WEED_BIN"
     echo "go_weed_sha256=$GO_WEED_SHA256"
     echo "go_version=$GO_VERSION"
+    echo "kmod_bin=$KMOD_BIN"
+    echo "kmod_sha256=$KMOD_SHA256"
+    echo "kmod_uname_r=$KMOD_UNAME_R"
+    echo "kmod_vermagic=$KMOD_VERMAGIC"
+    echo "vfs_kernel_excluded=$VFS_KERNEL_EXCLUDED"
+    echo "vfs_kernel_exclusion_reason=$VFS_KERNEL_EXCLUSION_REASON"
     echo "go_mod_sha256_before=$GO_MOD_SHA256_BEFORE"
     echo "go_mod_sha256_after=$GO_MOD_SHA256_AFTER"
     echo "go_sum_sha256_before=$GO_SUM_SHA256_BEFORE"
@@ -257,6 +295,11 @@ write_summary() {
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
     echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
     echo "RDMA_CI_GO_VERSION=$GO_VERSION"
+    echo "RDMA_CI_KMOD_SHA256=$KMOD_SHA256"
+    echo "RDMA_CI_KMOD_UNAME_R=$KMOD_UNAME_R"
+    echo "RDMA_CI_KMOD_VERMAGIC=$KMOD_VERMAGIC"
+    echo "RDMA_CI_VFS_KERNEL_EXCLUDED=$VFS_KERNEL_EXCLUDED"
+    echo "RDMA_CI_VFS_KERNEL_EXCLUSION_REASON=$VFS_KERNEL_EXCLUSION_REASON"
     echo "RDMA_CI_GO_MOD_SHA256_BEFORE=$GO_MOD_SHA256_BEFORE"
     echo "RDMA_CI_GO_MOD_SHA256_AFTER=$GO_MOD_SHA256_AFTER"
     echo "RDMA_CI_GO_SUM_SHA256_BEFORE=$GO_SUM_SHA256_BEFORE"
