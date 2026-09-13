@@ -15,6 +15,10 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit SHA to test (optional)'
+        required: false
+        default: ''
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -46,6 +50,24 @@ jobs:
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ github.event.inputs.mono_sha }}
+
+      - name: Verify seaweed-mono clone SHA
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mono_sha != '' }}
+        env:
+          MONO_SHA: ${{ github.event.inputs.mono_sha }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$MONO_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Invalid mono_sha: $MONO_SHA"
+            exit 1
+          fi
+          actual=$(git -C seaweedfs-source rev-parse HEAD)
+          if [ "$actual" != "$MONO_SHA" ]; then
+            echo "::error::seaweed-mono clone mismatch: expected $MONO_SHA got $actual"
+            exit 1
+          fi
+          echo "seaweed-mono clone verified: $actual"
 
       - name: Install protobuf compiler
         run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler
@@ -115,6 +137,24 @@ jobs:
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ github.event.inputs.mono_sha }}
+
+      - name: Verify seaweed-mono clone SHA
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mono_sha != '' }}
+        env:
+          MONO_SHA: ${{ github.event.inputs.mono_sha }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$MONO_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Invalid mono_sha: $MONO_SHA"
+            exit 1
+          fi
+          actual=$(git -C seaweedfs-source rev-parse HEAD)
+          if [ "$actual" != "$MONO_SHA" ]; then
+            echo "::error::seaweed-mono clone mismatch: expected $MONO_SHA got $actual"
+            exit 1
+          fi
+          echo "seaweed-mono clone verified: $actual"
 
       # Build deps: protoc (tonic-build), clang/libclang (rdma-sys bindgen),
       # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`), ibverbs-utils
