@@ -16,6 +16,16 @@ CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
 GO_WEED_BIN=""
 GO_WEED_SHA256=""
+GO_VERSION=""
+GO_MOD_SHA256_BEFORE=""
+GO_MOD_SHA256_AFTER=""
+GO_SUM_SHA256_BEFORE=""
+GO_SUM_SHA256_AFTER=""
+RUST_CARGO_LOCK_SHA256_BEFORE=""
+RUST_CARGO_LOCK_SHA256_AFTER=""
+RUST_CARGO_LOCK_STATUS_BEFORE=""
+RUST_CARGO_LOCK_STATUS_AFTER=""
+RUST_CARGO_LOCK_DIFF_SHA256=""
 
 usage() {
   cat <<'USAGE'
@@ -136,14 +146,34 @@ build_unified_gate() {
     volume_features="rdma,rdma-dc"
   fi
 
+  RUST_CARGO_LOCK_SHA256_BEFORE="$(sha256sum "$m01_src/enterprise/rust/Cargo.lock" | awk '{print $1}')"
+  RUST_CARGO_LOCK_STATUS_BEFORE="$(git -C "$m01_src" status --short -- enterprise/rust/Cargo.lock | paste -sd ';' -)"
+  GO_VERSION="$(ssh "$M02_HOST" "go version")"
+  GO_MOD_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.mod'" | awk '{print $1}')"
+  GO_SUM_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.sum'" | awk '{print $1}')"
+
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise\" && go build -o weed-rdma ./weed && cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
   GO_WEED_BIN="$m02_src/enterprise/weed-rdma"
   GO_WEED_SHA256="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/weed-rdma'" | awk '{print $1}')"
+  GO_MOD_SHA256_AFTER="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.mod'" | awk '{print $1}')"
+  GO_SUM_SHA256_AFTER="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.sum'" | awk '{print $1}')"
+  RUST_CARGO_LOCK_SHA256_AFTER="$(sha256sum "$m01_src/enterprise/rust/Cargo.lock" | awk '{print $1}')"
+  RUST_CARGO_LOCK_STATUS_AFTER="$(git -C "$m01_src" status --short -- enterprise/rust/Cargo.lock | paste -sd ';' -)"
+  git -C "$m01_src" diff -- enterprise/rust/Cargo.lock > "$run_dir/enterprise-rust-Cargo.lock.diff" || true
+  RUST_CARGO_LOCK_DIFF_SHA256="$(sha256sum "$run_dir/enterprise-rust-Cargo.lock.diff" | awk '{print $1}')"
   test -n "$GO_WEED_SHA256" || { echo "missing Go weed hash" >&2; exit 1; }
   echo "GO_WEED_BIN=$GO_WEED_BIN"
   echo "GO_WEED_SHA256=$GO_WEED_SHA256"
+  echo "GO_VERSION=$GO_VERSION"
+  echo "GO_MOD_SHA256_BEFORE=$GO_MOD_SHA256_BEFORE"
+  echo "GO_MOD_SHA256_AFTER=$GO_MOD_SHA256_AFTER"
+  echo "GO_SUM_SHA256_BEFORE=$GO_SUM_SHA256_BEFORE"
+  echo "GO_SUM_SHA256_AFTER=$GO_SUM_SHA256_AFTER"
+  echo "RUST_CARGO_LOCK_SHA256_BEFORE=$RUST_CARGO_LOCK_SHA256_BEFORE"
+  echo "RUST_CARGO_LOCK_SHA256_AFTER=$RUST_CARGO_LOCK_SHA256_AFTER"
+  echo "RUST_CARGO_LOCK_DIFF_SHA256=$RUST_CARGO_LOCK_DIFF_SHA256"
 }
 
 run_unified_gate() {
@@ -197,6 +227,17 @@ write_provenance() {
     echo "enable_dc=$ENABLE_DC"
     echo "go_weed_bin=$GO_WEED_BIN"
     echo "go_weed_sha256=$GO_WEED_SHA256"
+    echo "go_version=$GO_VERSION"
+    echo "go_mod_sha256_before=$GO_MOD_SHA256_BEFORE"
+    echo "go_mod_sha256_after=$GO_MOD_SHA256_AFTER"
+    echo "go_sum_sha256_before=$GO_SUM_SHA256_BEFORE"
+    echo "go_sum_sha256_after=$GO_SUM_SHA256_AFTER"
+    echo "rust_cargo_lock_sha256_before=$RUST_CARGO_LOCK_SHA256_BEFORE"
+    echo "rust_cargo_lock_sha256_after=$RUST_CARGO_LOCK_SHA256_AFTER"
+    echo "rust_cargo_lock_status_before=$RUST_CARGO_LOCK_STATUS_BEFORE"
+    echo "rust_cargo_lock_status_after=$RUST_CARGO_LOCK_STATUS_AFTER"
+    echo "rust_cargo_lock_diff=enterprise-rust-Cargo.lock.diff"
+    echo "rust_cargo_lock_diff_sha256=$RUST_CARGO_LOCK_DIFF_SHA256"
   } | tee "$run_dir/provenance.txt"
 }
 
@@ -215,6 +256,14 @@ write_summary() {
     echo "RDMA_CI_PASS=$pass"
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
     echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
+    echo "RDMA_CI_GO_VERSION=$GO_VERSION"
+    echo "RDMA_CI_GO_MOD_SHA256_BEFORE=$GO_MOD_SHA256_BEFORE"
+    echo "RDMA_CI_GO_MOD_SHA256_AFTER=$GO_MOD_SHA256_AFTER"
+    echo "RDMA_CI_GO_SUM_SHA256_BEFORE=$GO_SUM_SHA256_BEFORE"
+    echo "RDMA_CI_GO_SUM_SHA256_AFTER=$GO_SUM_SHA256_AFTER"
+    echo "RDMA_CI_RUST_CARGO_LOCK_SHA256_BEFORE=$RUST_CARGO_LOCK_SHA256_BEFORE"
+    echo "RDMA_CI_RUST_CARGO_LOCK_SHA256_AFTER=$RUST_CARGO_LOCK_SHA256_AFTER"
+    echo "RDMA_CI_RUST_CARGO_LOCK_DIFF_SHA256=$RUST_CARGO_LOCK_DIFF_SHA256"
   } | tee "$run_dir/summary.env"
   {
     echo "<!doctype html><meta charset=\"utf-8\"><title>RDMA lab $run_id</title>"
