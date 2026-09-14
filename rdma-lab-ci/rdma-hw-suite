@@ -89,6 +89,14 @@ def capture(host, cmd, path, timeout=30):
     return hashlib.sha256(out.encode()).hexdigest()
 
 
+def stable_resource_text(name, text):
+    if name == "rdma-qp.txt":
+        # The kernel GSI QP's sq-psn advances during normal traffic and is not a
+        # leaked user resource. Keep the raw file, but compare a stable digest.
+        return re.sub(r"(type GSI state RTS sq-psn )\d+", r"\1<ignored>", text)
+    return text
+
+
 def resource_snapshot(host, outdir, m02):
     outdir.mkdir(parents=True, exist_ok=True)
     cmds = {
@@ -101,9 +109,13 @@ def resource_snapshot(host, outdir, m02):
     hashes = {}
     for name, cmd in cmds.items():
         path = outdir / name
-        digest = capture("m01" if host == "m01" else m02, cmd, path)
+        capture("m01" if host == "m01" else m02, cmd, path)
         text = path.read_text(errors="replace")
-        hashes[name] = {"sha256": digest, "ok": "COMMAND_EXIT=" not in text and "COMMAND_TIMEOUT=" not in text}
+        digest = hashlib.sha256(stable_resource_text(name, text).encode()).hexdigest()
+        hashes[name] = {
+            "sha256": digest,
+            "ok": "COMMAND_EXIT=" not in text and "COMMAND_TIMEOUT=" not in text,
+        }
     return hashes
 
 
@@ -170,6 +182,7 @@ def run_case(case, args, ctx, result_dir):
     else:
         env = lab_env()
         if cid == "t3.stale_key":
+            pathlib.Path(args.t3_result_parent).mkdir(parents=True, exist_ok=True)
             env.update(ctx["t3_env"])
         rc, elapsed = shell(cmd, log, timeout, env=env)
     after = snapshot_hosts(cid, host, cdir, args, "after")
@@ -233,6 +246,7 @@ def main():
     ap.add_argument("--t3-gid-index", default=os.environ.get("RDMA_HW_SUITE_T3_GID_INDEX"))
     ap.add_argument("--t3-server-ip", default=os.environ.get("RDMA_HW_SUITE_T3_SERVER_IP"))
     ap.add_argument("--t3-server-ssh", default=os.environ.get("RDMA_HW_SUITE_T3_SERVER_SSH"))
+    ap.add_argument("--t3-result-parent", default=os.environ.get("RDMA_HW_SUITE_T3_RESULT_PARENT"))
     ap.add_argument("--workdir", default="/opt/rdma-lab-ci/work")
     ap.add_argument("--m02-workdir", default="/opt/rdma-lab-ci/work")
     ap.add_argument("--results", default="/mnt/smb/work/share/testops/results/rdma-hw-suite")
@@ -249,6 +263,7 @@ def main():
     args.t3_client_key = required("RDMA_HW_SUITE_T3_CLIENT_KEY/--t3-client-key", args.t3_client_key)
     args.t3_rdma_device = required("RDMA_HW_SUITE_T3_RDMA_DEVICE/--t3-rdma-device", args.t3_rdma_device)
     args.t3_gid_index = required("RDMA_HW_SUITE_T3_GID_INDEX/--t3-gid-index", args.t3_gid_index)
+    args.t3_result_parent = required("RDMA_HW_SUITE_T3_RESULT_PARENT/--t3-result-parent", args.t3_result_parent)
     args.t3_server_ip = args.t3_server_ip or args.rdma_ip
     args.t3_server_ssh = args.t3_server_ssh or args.m02
     suite_dir = pathlib.Path(__file__).resolve().parent
