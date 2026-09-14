@@ -252,9 +252,14 @@ def main():
 
     provenance = json.loads((result_dir / "build-provenance.json").read_text())
     provenance["product_sha"] = args.mono
+    t3_volume_path = pathlib.Path("/opt/work/bin") / f"weed-volume-{args.mono}-rdma"
+    t3_volume_path.parent.mkdir(parents=True, exist_ok=True)
+    volume_bytes = (bindir / "weed-volume").read_bytes()
+    t3_volume_path.write_bytes(volume_bytes)
+    t3_volume_path.chmod(0o755)
+    provenance["t3_volume_path"] = str(t3_volume_path)
+    provenance["t3_volume_sha256"] = hashlib.sha256(volume_bytes).hexdigest()
     (result_dir / "build-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    t3_result_root = result_dir / "t3-local"
-    t3_result_root.mkdir(parents=True, exist_ok=True)
     t3_env = {
         "SWEEP_PRODUCT": args.mono,
         "SWEEP_HARNESS": args.mono,
@@ -262,15 +267,6 @@ def main():
         "SWEEP_HARNESS_TREE": mono_src,
         "SWEEP_ROOT": str(result_dir),
         "SWEEP_STEP05_ROOT": args.t3_step05_root,
-        "SWEEP_VOLUME_BIN": str(bindir / "weed-volume"),
-        "T3_CLIENT_HOST": args.t3_client_host,
-        "T3_CLIENT_USER": args.t3_client_user,
-        "T3_CLIENT_KEY": args.t3_client_key,
-        "T3_SERVER_IP": args.t3_server_ip,
-        "T3_SERVER_SSH": args.t3_server_ssh,
-        "T3_RDMA_DEVICE": args.t3_rdma_device,
-        "T3_GID_INDEX": args.t3_gid_index,
-        "T3_RESULT_ROOT": str(t3_result_root),
         "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
     }
     ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
