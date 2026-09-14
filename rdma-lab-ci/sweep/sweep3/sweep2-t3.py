@@ -8,11 +8,11 @@ tag=os.environ.get('T3_RESULT_TAG','codex02-sweep3-t3-'+os.environ['T3_TAG'])
 results=Path('/data/nvme/testdev')/tag
 share=Path('/mnt/smb/work/share/testops/results')/tag
 source=Path('/opt/work/codex-step07a-mr/enterprise')
-if HARNESS != BASE: source=Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))/'enterprise'
+if HARNESS != BASE: source=Path(os.environ['SWEEP_HARNESS_TREE'])/'enterprise'
 scripts=source/'testops/packs/kv/scripts'
 client='testdev@192.168.1.181'
 client_root='/opt/work/'+tag
-cache=Path('/opt/work/codex-step05/tcp-client')
+cache=Path(os.environ['SWEEP_STEP05_ROOT'])/'tcp-client'
 if HARNESS != BASE: cache=Path(os.environ['SWEEP_ROOT'])/'t3-client'
 if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-t3');raise SystemExit
 def call(args,**kwargs):return subprocess.run(args,check=True,**kwargs)

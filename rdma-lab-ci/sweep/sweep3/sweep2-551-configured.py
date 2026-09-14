@@ -23,11 +23,11 @@ with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  assert runner.is_file()
  OUT.mkdir();(OUT/'rules-before.txt').write_text(before_rules)
  (OUT/'binary-hashes.json').write_text(json.dumps({str(p):sha(p) for p in (weed,runner)},indent=2))
- source=subprocess.check_output(['git','-C',os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'),'show',HARNESS+':enterprise/testops/scenarios/gate-551-delete-bucket-name-reuse.yaml'])
+ source=subprocess.check_output(['git','-C',os.environ['SWEEP_HARNESS_TREE'],'show',HARNESS+':enterprise/testops/scenarios/gate-551-delete-bucket-name-reuse.yaml'])
  scenario=OUT/'scenario.yaml';scenario.write_bytes(source)
- env={'ssh_key':str(key),'weed_bin':str(weed),'run':str(CASE),'ip':'10.0.0.3','proto_dir':os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')+'/enterprise/weed/pb',
+ env={'ssh_key':str(key),'weed_bin':str(weed),'run':str(CASE),'ip':'10.0.0.3','proto_dir':os.environ['SWEEP_PRODUCT_TREE']+'/enterprise/weed/pb',
  '__testops_executor_host':'192.168.1.184','__testops_executor_user':'testdev','__testops_ssh_key':str(key),
- '__testops_binary':str(weed),'__testops_run_dir':str(CASE),'__testops_proto_dir':os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')+'/enterprise/weed/pb',
+ '__testops_binary':str(weed),'__testops_run_dir':str(CASE),'__testops_proto_dir':os.environ['SWEEP_PRODUCT_TREE']+'/enterprise/weed/pb',
  '__testops_activity_log':os.environ['TESTOPS_ACTIVITY_LOG']}
  args=[str(runner),'run','-allow-mutating','-results-dir',str(OUT/'results'),'-output',str(OUT/'result.json')]
  for k,v in env.items():args.extend(['-env',k+'='+v])

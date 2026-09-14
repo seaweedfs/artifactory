@@ -1,7 +1,7 @@
 import fcntl, hashlib, json, math, os, random, resource, signal, statistics, subprocess, time, urllib.request
 from pathlib import Path
 
-ROOT = Path(os.environ.get('SWEEP_STEP05_ROOT','/opt/work/codex-step05'))
+ROOT = Path(os.environ['SWEEP_STEP05_ROOT'])
 OUT = Path(os.environ.get('SWEEP_PAIRED_ROOT', str(Path(os.environ['SWEEP_ROOT'])/'paired')))
 CLIENT = 'testdev@192.168.1.181'
 REMOTE = os.environ.get('SWEEP_PAIRED_REMOTE', '/opt/work/codex02-sweep3-paired-'+os.environ['SWEEP_PRODUCT'][:8])

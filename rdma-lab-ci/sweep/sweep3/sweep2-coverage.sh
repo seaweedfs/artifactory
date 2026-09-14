@@ -3,19 +3,20 @@ set -u
 export PATH=/opt/work/codex02-coverage-tools/bin:/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/opt/work/codex02-coverage-target
 root="${SWEEP_ROOT:?}/coverage-retained"
+product_tree=${SWEEP_PRODUCT_TREE:?}
 [ "${SWEEP_DRY_RUN:-0}" = 1 ] && { echo DRY sweep2-coverage; exit 0; }
 mkdir -p "$root"
 exec 9>/mnt/smb/work/share/testops/locks/rdma-lab.lock
 flock -n 9 || { echo LAB_LOCK_BUSY; exit 3; }
 printf 'START codex02 integration coverage %s %s\n' "${SWEEP_PRODUCT:?}" "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING
 trap 'printf "END codex02 integration coverage %s %s\n" "${SWEEP_PRODUCT:?}" "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING' EXIT
-cp /opt/work/codex02-sweep2-product/enterprise/rust/Cargo.lock "$root/workspace.lock.before"
-cp /opt/work/codex02-sweep2-product/enterprise/seaweed-volume/Cargo.lock "$root/volume.lock.before"
+cp "$product_tree"/enterprise/rust/Cargo.lock "$root/workspace.lock.before"
+cp "$product_tree"/enterprise/seaweed-volume/Cargo.lock "$root/volume.lock.before"
 finish_coverage() {
- cp /opt/work/codex02-sweep2-product/enterprise/rust/Cargo.lock "$root/workspace.lock.resolved"
- cp /opt/work/codex02-sweep2-product/enterprise/seaweed-volume/Cargo.lock "$root/volume.lock.resolved"
- cp "$root/workspace.lock.before" /opt/work/codex02-sweep2-product/enterprise/rust/Cargo.lock
- cp "$root/volume.lock.before" /opt/work/codex02-sweep2-product/enterprise/seaweed-volume/Cargo.lock
+ cp "$product_tree"/enterprise/rust/Cargo.lock "$root/workspace.lock.resolved"
+ cp "$product_tree"/enterprise/seaweed-volume/Cargo.lock "$root/volume.lock.resolved"
+ cp "$root/workspace.lock.before" "$product_tree"/enterprise/rust/Cargo.lock
+ cp "$root/volume.lock.before" "$product_tree"/enterprise/seaweed-volume/Cargo.lock
  printf 'END codex02 integration coverage %s\n' "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING
 }
 trap finish_coverage EXIT
@@ -29,7 +30,7 @@ archive_profile() {
  cargo tree -e features "${extra[@]}" >"$root/$profile_name-resolved-tree.txt" 2>&1
 }
 { rustc -Vv; cargo -V; cargo llvm-cov --version; date -u +%FT%TZ; uname -a; } > "$root/toolchain.txt"
-cd /opt/work/codex02-sweep2-product/enterprise/rust
+cd "$product_tree"/enterprise/rust
 for profile in default rdma; do
  extra=()
  if [ "$profile" = rdma ]; then extra=(--features seaweedfs-sw-rdma/mlx5-dc); fi
@@ -37,7 +38,7 @@ for profile in default rdma; do
  printf 'workspace-%s exit=%s\n' "$profile" "$?" | tee -a "$root/exits.txt"
  archive_profile "workspace-$profile"
 done
-cd /opt/work/codex02-sweep2-product/enterprise/seaweed-volume
+cd "$product_tree"/enterprise/seaweed-volume
 for profile in default rdma rdma-dc,kvcache; do
  extra=()
  if [ "$profile" != default ]; then extra=(--features "$profile"); fi

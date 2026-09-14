@@ -37,7 +37,7 @@ rules=subprocess.check_output(['sudo','-n','iptables-save'],text=True)
 owned_rules=[x for x in rules.splitlines() if any(runid in x for runid in runids)]
 clean={}
 for repo in ['product','harness']:
- path=os.environ.get('SWEEP_'+repo.upper().replace('-','_')+'_TREE','/opt/work/codex02-sweep2-'+repo)
+ path=os.environ['SWEEP_'+repo.upper().replace('-','_')+'_TREE']
  clean[repo]=subprocess.check_output(['git','-C',path,'status','--porcelain'],text=True)
 lock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a')
 try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);free=True;fcntl.flock(lock,fcntl.LOCK_UN)

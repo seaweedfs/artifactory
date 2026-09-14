@@ -6,6 +6,6 @@ with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
  out=R/'t1-exact-command-diagnostic.log';assert not out.exists()
  args=['go','test','-count=1','-v','./weed/shell','-run','^TestCacheVolumeLifecycleProcesses$']
- with out.open('w') as f:r=subprocess.run(args,cwd=os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')+'/enterprise',env=env,stdout=f,stderr=subprocess.STDOUT,timeout=1200)
+ with out.open('w') as f:r=subprocess.run(args,cwd=os.environ['SWEEP_PRODUCT_TREE']+'/enterprise',env=env,stdout=f,stderr=subprocess.STDOUT,timeout=1200)
  (R/'t1-diagnostic.json').write_text(json.dumps({'command':args,'exit':r.returncode,'reason':'one exact-command diagnostic to capture stdout omitted by failed exec action; original gate preserved','finished_at':datetime.datetime.now(datetime.timezone.utc).isoformat()},indent=2))
  print('T1 diagnostic exit='+str(r.returncode),flush=True)

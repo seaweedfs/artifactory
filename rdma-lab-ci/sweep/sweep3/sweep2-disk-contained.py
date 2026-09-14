@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import os, pathlib, subprocess, json, datetime, fcntl, yaml
-P=pathlib.Path(os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')); H=pathlib.Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))
+P=pathlib.Path(os.environ['SWEEP_PRODUCT_TREE']); H=pathlib.Path(os.environ['SWEEP_HARNESS_TREE'])
 R=pathlib.Path(os.environ['SWEEP_ROOT']); B=R/'bin'
 if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-disk-contained');raise SystemExit
 os.environ['PATH']='/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
