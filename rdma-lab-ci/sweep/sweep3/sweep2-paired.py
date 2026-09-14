@@ -55,14 +55,11 @@ def main():
         payload.write_bytes(b'Z' * (256*1024))
         print('memlock limits: '+str(resource.getrlimit(resource.RLIMIT_MEMLOCK)),flush=True)
         binary_hash={role:sha(path) for role,path in VOLUMES.items()}
-        expected_a=os.environ.get('SWEEP_REFERENCE_VOLUME_SHA256')
-        if expected_a: assert binary_hash['A']==expected_a, 'retained reference differs'
+        expected_a=os.environ.get('SWEEP_REFERENCE_VOLUME_SHA256'); assert not expected_a or binary_hash['A']==expected_a, 'retained reference differs'
         build=json.loads((Path(os.environ['SWEEP_ROOT'])/'baseline-build/complete.json').read_text())[0]
         assert build['sha']==PRODUCT_SHA and build['sha256']==binary_hash['B'], 'candidate build provenance mismatch'
-        expected_client=os.environ.get('SWEEP_CLIENT_SHA256')
-        if expected_client: assert remote_sha == expected_client, 'retained client differs'
-        expected_weed=os.environ.get('SWEEP_WEED_SHA256')
-        if expected_weed: assert sha(WEED) == expected_weed, 'retained master differs'
+        expected_client=os.environ.get('SWEEP_CLIENT_SHA256'); assert not expected_client or remote_sha == expected_client, 'retained client differs'
+        expected_weed=os.environ.get('SWEEP_WEED_SHA256'); assert not expected_weed or sha(WEED) == expected_weed, 'retained master differs'
         schedule=[]; rng=random.Random(SEED)
         for mode in ('rc','dc'):
             orders=['ABBA']*15+['BAAB']*15; rng.shuffle(orders)

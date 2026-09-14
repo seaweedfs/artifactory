@@ -42,7 +42,6 @@ lock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a')
 try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);free=True;fcntl.flock(lock,fcntl.LOCK_UN)
 except BlockingIOError:free=False
 remote_processes=subprocess.check_output(['ssh','-o','BatchMode=yes','testdev@192.168.1.181','ps -eo pid=,comm=,args='],text=True)
-paired_remote=os.environ.get('SWEEP_PAIRED_REMOTE','/opt/work/codex02-sweep3-paired-'+os.environ['SWEEP_PRODUCT'][:8])+'/'
-client_alive=[line for line in remote_processes.splitlines() if len(line.split(None,2))==3 and line.split(None,2)[1].startswith('step05-read-ben') and paired_remote in line]
+client_alive=[line for line in remote_processes.splitlines() if len(line.split(None,2))==3 and line.split(None,2)[1].startswith('step05-read-ben') and os.environ.get('SWEEP_PAIRED_REMOTE','/opt/work/codex02-sweep3-paired-'+os.environ['SWEEP_PRODUCT'][:8])+'/' in line]
 result={'generated_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'owned_processes_alive':alive,'M01_owned_clients_alive':client_alive,'recorded_ports_checked':sorted(portset),'recorded_ports_busy':busy,'owned_mounts':owned_mounts,'owned_loops':owned_loops,'owned_iptables_rules':owned_rules,'source_status':clean,'lab_flock_reacquired':free,'scope':'read-only audit of this sweep; no arbitrary cleanup','reservation':'physical cleanup audit; queue handoff is stated separately in the RESULT'}
 (R/'cleanup-check.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))
