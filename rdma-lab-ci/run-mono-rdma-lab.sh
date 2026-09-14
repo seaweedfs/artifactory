@@ -275,83 +275,63 @@ checkout_source() {
 }
 
 apply_rc_not_found_diagnostics() {
-  local src="$M01_WORKDIR/seaweed-mono"
-  echo "== apply RC NOT_FOUND diagnostic overlay =="
-  python3 - "$src" <<'PY'
-from pathlib import Path
-import sys
-root=Path(sys.argv[1])
-handlers=root/'enterprise/seaweed-volume/src/rdma/handlers.rs'
-gate=root/'enterprise/rust/sw-rdma-loader/tests/lab/unified-rdma-gate/m01-unified.sh'
-s=handlers.read_text()
-s=s.replace('''warn!(
-                "RDMA push-read volume not mounted request_id={request_id} fid={fid} volume_id={}",
-                file_id.volume_id.0
-            );''','''warn!(
-                "RDMA RC diagnostic NOT_FOUND branch=find_volume_miss request_id={request_id} fid={fid} volume_id={} key={} cookie={}",
-                file_id.volume_id.0,
-                file_id.key.0,
-                file_id.cookie.0
-            );''')
-s=s.replace('''warn!("RDMA push-read needle not found request_id={request_id} fid={fid}");''','''warn!(
-                    "RDMA RC diagnostic NOT_FOUND branch=needle_lookup_not_found request_id={request_id} fid={fid} volume_id={} key={} cookie={}",
-                    file_id.volume_id.0,
-                    file_id.key.0,
-                    file_id.cookie.0
-                );''')
-handlers.write_text(s)
-g=gate.read_text()
-g=g.replace('  echo "UNIFIED_OBJECT_PUT_OK path=$path input=$input"', '  echo "UNIFIED_OBJECT_PUT_OK path=$path input=$input ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"')
-old='''object_bench() {
-  local path=$1
-  local object_mib=$2
-  local requests=$3
-  timeout 240 "$BENCHBIN" \\
-    --rdma-addr "$RDMA" \\
-    --control-addr "$CTRL" \\
-    --filer "$FILER" \\
-    --path "$path" \\
-    --object-mib "$object_mib" \\
-    --chunk-mib 4 \\
-    --requests "$requests" \\
-    --concurrency 32 \\
-    --pipes "$RDMA_PIPES" \\
-    --verify-pattern || { echo "UNIFIED_OBJECT_BENCH_TIMEOUT path=$path"; exit 1; }
-}
-'''
-new='''object_bench() {
-  local path=$1 object_mib=$2 requests=$3 out rc diag_out diag_rc
-  out="$WORK/object-bench-first.log"
-  echo "UNIFIED_OBJECT_BENCH_ATTEMPT_START path=$path ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
-  set +e
-  timeout 240 "$BENCHBIN" --rdma-addr "$RDMA" --control-addr "$CTRL" --filer "$FILER" --path "$path" --object-mib "$object_mib" --chunk-mib 4 --requests "$requests" --concurrency 32 --pipes "$RDMA_PIPES" --verify-pattern 2>&1 | tee "$out"
-  rc=${PIPESTATUS[0]}
-  set -e
-  [ "$rc" = "0" ] && return 0
-  if grep -q 'push-read response status 1' "$out"; then
-    echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) log=$out"
-    sleep 2
-    diag_out="$WORK/object-bench-diagnostic-reread.log"
-    echo "UNIFIED_OBJECT_BENCH_DIAGNOSTIC_REREAD_START path=$path ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+  echo "== prepare RC NOT_FOUND runner-only diagnostic =="
+  cat > "$run_dir/object-bench-diagnostic-wrapper.sh" <<'DIAG'
+#!/bin/bash
+set -euo pipefail
+out="${WORK:?}/object-bench-first.log"
+args=("$@")
+path=""; object_mib=""; chunk_mib="4"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --path) path=$2; shift 2 ;;
+    --object-mib) object_mib=$2; shift 2 ;;
+    --chunk-mib) chunk_mib=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+set +e
+"$REAL_BENCHBIN" "${args[@]}" 2>&1 \
+  | awk '{ cmd="date +%s%3N"; cmd|getline ms; close(cmd); cmd="date -u +%Y-%m-%dT%H:%M:%S.%NZ"; cmd|getline ts; close(cmd); print "diag_epoch_ms=" ms " diag_ts=" ts " " $0; fflush(); }' \
+  | tee "$out"
+rc=${PIPESTATUS[0]}
+set -e
+[ "$rc" = "0" ] && exit 0
+first_line=$(grep -m1 'push-read response status 1' "$out" || true)
+if [ -n "$first_line" ]; then
+  fail_ms=$(printf '%s\n' "$first_line" | sed -n 's/^diag_epoch_ms=\([0-9]*\).*/\1/p')
+  fid=$(printf '%s\n' "$first_line" | sed -n 's/.* fid=\([^ ]*\) .*/\1/p')
+  vid=${fid%%,*}
+  echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path fid=$fid line=$first_line"
+  if [ -n "$fid" ] && [ -n "$vid" ] && [ "$vid" != "$fid" ]; then
+    http_out="$WORK/object-bench-diagnostic-http-body.bin"
+    seed_file="$WORK/object-${object_mib}m.bin"
+    seed_sha=$(test -f "$seed_file" && sha256sum "$seed_file" | awk '{print $1}' || echo missing)
+    : > "$http_out"
+    http_code=$(curl -sS -o "$http_out" -w '%{http_code}' "http://$MASTER_IP:${VOL_HTTP:-8105}/$fid" || true)
+    http_len=$(wc -c < "$http_out" | tr -d ' ')
+    http_sha=$(sha256sum "$http_out" | awk '{print $1}')
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_HTTP fid=$fid status=$http_code bytes=$http_len sha256=$http_sha seed_sha256=$seed_sha elapsed_ms=$elapsed_ms"
+    lookup_out="$WORK/object-bench-diagnostic-volume-lookup.json"
+    curl -sS "http://$MASTER_IP:9755/dir/lookup?volumeId=$vid" -o "$lookup_out" || true
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_LOOKUP fid=$fid volume_id=$vid elapsed_ms=$elapsed_ms log=$lookup_out sha256=$(sha256sum "$lookup_out" | awk '{print $1}')"
+    reread_out="$WORK/object-bench-diagnostic-rdma-reread.log"
     set +e
-    timeout 240 "$BENCHBIN" --rdma-addr "$RDMA" --control-addr "$CTRL" --filer "$FILER" --path "$path" --object-mib "$object_mib" --chunk-mib 4 --requests 1 --concurrency 1 --pipes "$RDMA_PIPES" --verify-pattern 2>&1 | tee "$diag_out"
-    diag_rc=${PIPESTATUS[0]}
+    timeout 240 "$PUSHBENCH" "$RDMA" "$CTRL" "$fid" "$object_mib" "$chunk_mib" 1 1 "$RDMA_PIPES" 1 2>&1 | tee "$reread_out"
+    reread_rc=${PIPESTATUS[0]}
     set -e
-    echo "UNIFIED_OBJECT_BENCH_DIAGNOSTIC_REREAD_EXIT path=$path exit=$diag_rc ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) log=$diag_out"
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_RDMA_REREAD fid=$fid exit=$reread_rc elapsed_ms=$elapsed_ms log=$reread_out"
+  else
+    echo "UNIFIED_OBJECT_BENCH_DIAGNOSTIC_NO_FID line=$first_line"
   fi
-  echo "UNIFIED_OBJECT_BENCH_TIMEOUT path=$path exit=$rc"
-  exit 1
-}
-'''
-if old not in g:
-    raise SystemExit('object_bench hunk not found')
-gate.write_text(g.replace(old,new))
-PY
-  {
-    git -C "$src" diff -- enterprise/seaweed-volume/src/rdma/handlers.rs enterprise/rust/sw-rdma-loader/tests/lab/unified-rdma-gate/m01-unified.sh
-    sha256sum "$src/enterprise/seaweed-volume/src/rdma/handlers.rs" "$src/enterprise/rust/sw-rdma-loader/tests/lab/unified-rdma-gate/m01-unified.sh"
-  } > "$run_dir/rc-not-found-diagnostic-overlay.txt"
-  sha256sum "$run_dir/rc-not-found-diagnostic-overlay.txt"
+fi
+exit "$rc"
+DIAG
+  chmod +x "$run_dir/object-bench-diagnostic-wrapper.sh"
+  sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh"
 }
 
 sync_source_to_m02() {
@@ -382,7 +362,7 @@ build_unified_gate() {
   GO_MOD_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.mod'" | awk '{print $1}')"
   GO_SUM_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.sum'" | awk '{print $1}')"
 
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
+  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin sw-rdma-push-client-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
   KMOD_UNAME_R="$(uname -r)"
   if bash -lc "cd '$m01_src/seaweed-vfs/kernel' && make"; then
@@ -463,7 +443,7 @@ run_unified_gate() {
   local vfs_m01="SKIP_VFS=1 KMOD=$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
   echo "UNIFIED_RC_DIAGNOSTIC_SKIP_VFS=1"
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 $vfs_m01 bash '$m01_src/$gate/m01-unified.sh'"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" bash "$m01_src/$gate/m01-unified.sh"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
@@ -479,8 +459,8 @@ write_provenance() {
     echo "rdma_pipes=$RDMA_PIPES"
     echo "enable_dc=$ENABLE_DC"
     echo "rc_not_found_diagnostic=1"
-    echo "rc_not_found_diagnostic_overlay=rc-not-found-diagnostic-overlay.txt"
-    echo "rc_not_found_diagnostic_overlay_sha256=$(sha256sum "$run_dir/rc-not-found-diagnostic-overlay.txt" | awk '{print $1}')"
+    echo "rc_not_found_diagnostic_wrapper=object-bench-diagnostic-wrapper.sh"
+    echo "rc_not_found_diagnostic_wrapper_sha256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
     echo "go_weed_bin=$GO_WEED_BIN"
     echo "go_weed_sha256=$GO_WEED_SHA256"
     echo "go_version=$GO_VERSION"
@@ -518,7 +498,7 @@ write_summary() {
     echo "RDMA_CI_PASS=$pass"
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
     echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC=1"
-    echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC_OVERLAY_SHA256=$(sha256sum "$run_dir/rc-not-found-diagnostic-overlay.txt" | awk '{print $1}')"
+    echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC_WRAPPER_SHA256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
     echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
     echo "RDMA_CI_GO_VERSION=$GO_VERSION"
     echo "RDMA_CI_KMOD_SHA256=$KMOD_SHA256"
@@ -556,7 +536,6 @@ write_summary() {
 preflight
 checkout_source
 apply_rc_not_found_diagnostics
-git -C "$M01_WORKDIR/seaweed-mono" status --short > "$run_dir/mono.status"
 sync_source_to_m02
 if [ "$SKIP_BUILD" = "1" ]; then
   echo "== skip build =="
