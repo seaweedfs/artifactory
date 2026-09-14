@@ -279,7 +279,8 @@ apply_rc_not_found_diagnostics() {
   cat > "$run_dir/object-bench-diagnostic-wrapper.sh" <<'DIAG'
 #!/bin/bash
 set -euo pipefail
-out="${WORK:?}/object-bench-first.log"
+out="${DIAG_DIR:?}/object-bench-first.log"
+status_file="${DIAG_DIR:?}/object-bench-status"
 args=("$@")
 path=""; object_mib=""; chunk_mib="4"
 while [ "$#" -gt 0 ]; do
@@ -290,44 +291,71 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-set +e
-"$REAL_BENCHBIN" "${args[@]}" 2>&1 \
-  | awk '{ cmd="date +%s%3N"; cmd|getline ms; close(cmd); cmd="date -u +%Y-%m-%dT%H:%M:%S.%NZ"; cmd|getline ts; close(cmd); print "diag_epoch_ms=" ms " diag_ts=" ts " " $0; fflush(); }' \
-  | tee "$out"
-rc=${PIPESTATUS[0]}
-set -e
-[ "$rc" = "0" ] && exit 0
-first_line=$(grep -m1 'push-read response status 1' "$out" || true)
-if [ -n "$first_line" ]; then
+mkdir -p "$DIAG_DIR"
+rm -f "$out" "$status_file"
+run_diagnostics() {
+  set +e
+  local first_line="$1" fail_ms fid vid fail_off fail_len read_mib now_ms elapsed_ms
   fail_ms=$(printf '%s\n' "$first_line" | sed -n 's/^diag_epoch_ms=\([0-9]*\).*/\1/p')
   fid=$(printf '%s\n' "$first_line" | sed -n 's/.* fid=\([^ ]*\) .*/\1/p')
+  fail_off=$(printf '%s\n' "$first_line" | sed -n 's/.* offset=\([0-9]*\) .*/\1/p')
+  fail_len=$(printf '%s\n' "$first_line" | sed -n 's/.* length=\([0-9]*\) .*/\1/p')
   vid=${fid%%,*}
-  echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path fid=$fid line=$first_line"
-  if [ -n "$fid" ] && [ -n "$vid" ] && [ "$vid" != "$fid" ]; then
-    http_out="$WORK/object-bench-diagnostic-http-body.bin"
-    : > "$http_out"
-    http_code=$(curl -sS -o "$http_out" -w '%{http_code}' "http://$MASTER_IP:${VOL_HTTP:-8105}/$fid" || true)
-    http_len=$(wc -c < "$http_out" | tr -d ' ')
-    http_sha=$(sha256sum "$http_out" | awk '{print $1}')
-    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
-    echo "UNIFIED_OBJECT_BENCH_DIAG_HTTP fid=$fid status=$http_code bytes=$http_len sha256=$http_sha seed_compare=UNBOUND:no_proven_seed_chunk_range elapsed_ms=$elapsed_ms"
-    lookup_out="$WORK/object-bench-diagnostic-volume-lookup.json"
-    curl -sS "http://$MASTER_IP:9755/dir/lookup?volumeId=$vid" -o "$lookup_out" || true
-    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
-    echo "UNIFIED_OBJECT_BENCH_DIAG_LOOKUP fid=$fid volume_id=$vid elapsed_ms=$elapsed_ms log=$lookup_out sha256=$(sha256sum "$lookup_out" | awk '{print $1}')"
-    reread_out="$WORK/object-bench-diagnostic-rdma-reread.log"
-    set +e
-    timeout 240 "$PUSHBENCH" "$RDMA" "$CTRL" "$fid" "$object_mib" "$chunk_mib" 1 1 "$RDMA_PIPES" 1 2>&1 | tee "$reread_out"
-    reread_rc=${PIPESTATUS[0]}
-    set -e
-    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
-    echo "UNIFIED_OBJECT_BENCH_DIAG_RDMA_REREAD fid=$fid exit=$reread_rc elapsed_ms=$elapsed_ms log=$reread_out"
-  else
+  echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path fid=$fid offset=${fail_off:-unknown} length=${fail_len:-unknown} line=$first_line"
+  if [ -z "$fid" ] || [ -z "$vid" ] || [ "$vid" = "$fid" ]; then
     echo "UNIFIED_OBJECT_BENCH_DIAGNOSTIC_NO_FID line=$first_line"
+    return 0
   fi
-fi
+  local http_out="$DIAG_DIR/object-bench-diagnostic-http-body.bin" http_err="$DIAG_DIR/object-bench-diagnostic-http.err"
+  : > "$http_out"
+  local http_code
+  http_code=$(timeout 10 curl -sS -o "$http_out" -w '%{http_code}' "http://$MASTER_IP:${VOL_HTTP:-8105}/$fid" 2>"$http_err")
+  local http_rc=$? http_len http_sha
+  http_len=$(wc -c < "$http_out" 2>/dev/null | tr -d ' '); http_len=${http_len:-0}
+  http_sha=$(sha256sum "$http_out" 2>/dev/null | awk '{print $1}'); http_sha=${http_sha:-missing}
+  now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+  echo "UNIFIED_OBJECT_BENCH_DIAG_HTTP fid=$fid status=${http_code:-NA} curl_exit=$http_rc bytes=$http_len sha256=$http_sha seed_compare=UNBOUND:no_proven_seed_chunk_range elapsed_ms=$elapsed_ms"
+  local lookup_out="$DIAG_DIR/object-bench-diagnostic-volume-lookup.json" lookup_err="$DIAG_DIR/object-bench-diagnostic-volume-lookup.err"
+  : > "$lookup_out"
+  timeout 10 curl -sS "http://$MASTER_IP:9755/dir/lookup?volumeId=$vid" -o "$lookup_out" 2>"$lookup_err"
+  local lookup_rc=$? lookup_sha
+  lookup_sha=$(sha256sum "$lookup_out" 2>/dev/null | awk '{print $1}'); lookup_sha=${lookup_sha:-missing}
+  now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+  echo "UNIFIED_OBJECT_BENCH_DIAG_LOOKUP fid=$fid volume_id=$vid curl_exit=$lookup_rc elapsed_ms=$elapsed_ms log=$lookup_out sha256=$lookup_sha"
+  local reread_out="$DIAG_DIR/object-bench-diagnostic-rdma-reread.log"
+  if [ "${fail_off:-}" = "0" ] && [ -n "${fail_len:-}" ] && [ $((fail_len % 1048576)) -eq 0 ]; then
+    read_mib=$((fail_len / 1048576))
+    timeout 30 "$PUSHBENCH" "$RDMA" "$CTRL" "$fid" "$read_mib" "$read_mib" 1 1 "$RDMA_PIPES" 1 2>&1 | tee "$reread_out"
+    local reread_rc=${PIPESTATUS[0]}
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_RDMA_REREAD fid=$fid bytes=$fail_len exit=$reread_rc elapsed_ms=$elapsed_ms log=$reread_out"
+  else
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_RDMA_REREAD_SKIPPED fid=$fid offset=${fail_off:-unknown} length=${fail_len:-unknown} reason=unsupported_failed_range elapsed_ms=$elapsed_ms"
+  fi
+  return 0
+}
+diag_pid=""
+{
+  set +e
+  "$REAL_BENCHBIN" "${args[@]}"
+  echo "$?" > "$status_file"
+} 2>&1 | {
+  while IFS= read -r line; do
+    ms=$(date +%s%3N); ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+    tagged="diag_epoch_ms=$ms diag_ts=$ts $line"
+    printf '%s\n' "$tagged" | tee -a "$out"
+    if [ -z "$diag_pid" ] && printf '%s\n' "$line" | grep -q 'push-read response status 1'; then
+      run_diagnostics "$tagged" & diag_pid=$!
+    fi
+  done
+  [ -n "$diag_pid" ] && wait "$diag_pid" || true
+}
+rc=$(cat "$status_file" 2>/dev/null || echo 1)
 exit "$rc"
+
 DIAG
+  mkdir -p "$run_dir/object-bench-diagnostics"
   chmod +x "$run_dir/object-bench-diagnostic-wrapper.sh"
   sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh"
 }
@@ -441,7 +469,7 @@ run_unified_gate() {
   local vfs_m01="SKIP_VFS=1 KMOD=$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
   echo "UNIFIED_RC_DIAGNOSTIC_SKIP_VFS=1"
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" bash "$m01_src/$gate/m01-unified.sh"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" WORK="/tmp/unified-rdma-gate-m01-run" MASTER_IP="192.168.1.184" RDMA="10.0.0.3:7534" CTRL="10.0.0.3:7535" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" DIAG_DIR="$run_dir/object-bench-diagnostics" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" bash "$m01_src/$gate/m01-unified.sh"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
