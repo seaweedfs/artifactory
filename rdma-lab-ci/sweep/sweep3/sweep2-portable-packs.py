@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import datetime,fcntl,hashlib,json,os,pathlib,subprocess,yaml
 if os.environ.get('SWEEP_DRY_RUN')=='1': print('DRY sweep2-portable-packs'); raise SystemExit
+if os.environ.get('SWEEP_LOCK_CHECK')=='1':
+ lock=open(os.environ['TESTOPS_LOCK_FILE'],'w'); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB); print('LOCK_CHECK_FIRST_GATE pack=general'); raise SystemExit
 R=pathlib.Path(os.environ['SWEEP_ROOT']);P=pathlib.Path(os.environ['SWEEP_PRODUCT_TREE']);H=pathlib.Path(os.environ['SWEEP_HARNESS_TREE'])
 SHA=os.environ['SWEEP_PRODUCT'];HSHA=os.environ['SWEEP_HARNESS'];B=R/'bin'
 os.environ['PATH']='/opt/work/gate561-venv/bin:/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
-os.environ['TESTOPS_CARGO_TARGET_DIR']='/opt/work/cargo-target-volume';os.environ['TESTOPS_LMCACHE_PYTHON']='/opt/work/codex-lm-cpu-runtime/bin/python';os.environ['CI_PORT_BASE']='22000'
+os.environ['TESTOPS_CARGO_TARGET_DIR']=str(R/'cargo-target-volume');os.environ['TESTOPS_LMCACHE_PYTHON']=os.environ['SWEEP_LMCACHE_PYTHON'];os.environ['CI_PORT_BASE']='22000'
 def sha(path): return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 def run(cmd,log,cwd=None,timeout=2700):
  with (R/log).open('w') as out:
@@ -13,14 +15,13 @@ def run(cmd,log,cwd=None,timeout=2700):
  print(json.dumps({'command':cmd,'exit':code,'log':str(R/log)}),flush=True);return code
 def status(name,code):
  with (R/'portable-exits.txt').open('a') as f: f.write(f'{name} {code}\n')
-lock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','w');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
 activity=open('/mnt/smb/work/share/testops/WHO-IS-RUNNING','a',buffering=1)
 activity.write('START codex02 sweep3 portable packs '+SHA+' '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n')
 saved=[(P/'enterprise/rust/Cargo.lock',R/'workspace.lock.before'),(P/'enterprise/seaweed-volume/Cargo.lock',R/'volume.lock.before')]
 try:
  for src,dst in saved: dst.write_bytes(src.read_bytes())
  code=run(['go','build','-o',str(R/'testops'),'./testops/cmd/testops'],'portable-runner-build.log',H/'enterprise',600)
- if code!=0: status('runner-build',code); raise SystemExit(0)
+ if code!=0: status('runner-build',code); raise SystemExit(code)
  for pack in ['general','rotation','async','lm-e2e']:
   print('BEGIN '+pack+' '+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
   cmd=[str(R/'testops'),'ci','run','--pack',pack,'--target','local','--mode','release-candidate','--source-dir',str(H),'--tooling-commit',HSHA,'--product-dir',str(P),'--commit',SHA,'--output-dir',str(R/pack),'--timeout','45m']
@@ -29,6 +30,7 @@ try:
  volume=os.environ.get('SWEEP_VOLUME_BIN','/opt/work/bin/weed-volume-'+SHA+'-rdma')
  provenance={'product':SHA,'harness':HSHA,'binary_sha256':{str(p):sha(p) for p in [B/'weed',B/'sw-test-runner',volume]}}
  (R/'ts-repaired-provenance.json').write_text(json.dumps(provenance,indent=2))
+ tlock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','w'); fcntl.flock(tlock,fcntl.LOCK_EX|fcntl.LOCK_NB)
  for name in ['kv-T1-process-lifecycle','kv-T2-lifecycle-rotation','kv-T8-crash-recovery']:
   spec_path=H/'enterprise/testops/scenarios'/(name+'.yaml')
   spec=yaml.safe_load(spec_path.read_text()); spec['topology']={'nodes':{'executor':{'is_local':True}}}
@@ -47,4 +49,4 @@ finally:
  for src,dst in saved:
   if dst.exists(): src.write_bytes(dst.read_bytes())
  activity.write('END codex02 sweep3 portable packs '+SHA+' '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n')
- fcntl.flock(lock,fcntl.LOCK_UN)
+ if 'tlock' in locals(): fcntl.flock(tlock,fcntl.LOCK_UN)
