@@ -34,6 +34,9 @@ RUST_CARGO_LOCK_STATUS_AFTER=""
 RUST_CARGO_LOCK_DIFF_SHA256=""
 M02_RUN_DIR="/tmp/unified-rdma-gate-m02-run"
 M02_EVIDENCE_COLLECTED="0"
+M02_VOLBIN=""
+M02_SSH_TIMEOUT_SECS="${M02_SSH_TIMEOUT_SECS:-30}"
+M02_GDB_TIMEOUT_SECS="${M02_GDB_TIMEOUT_SECS:-20}"
 
 usage() {
   cat <<'USAGE'
@@ -95,41 +98,119 @@ dc_ack_timeout_seen() {
   grep -q "rdma tcp read dc registration ack failed" "$log" 2>/dev/null
 }
 
+m02_ssh() {
+  timeout "${M02_SSH_TIMEOUT_SECS}s" ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=2 \
+    "$M02_HOST" "$@"
+}
+
+record_m02_volume_identity() {
+  [ -n "$M02_VOLBIN" ] || return 0
+  if ! m02_ssh "RUN='$M02_RUN_DIR' VOLBIN='$M02_VOLBIN' bash -s" <<'REMOTE'
+set +e
+pid=$(cat "$RUN/volume.pid" 2>/dev/null) || exit 0
+case "$pid" in ''|*[!0-9]*) exit 0 ;; esac
+actual_exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+expected_exe=$(readlink -f "$VOLBIN" 2>/dev/null)
+uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+stat=$(cat "/proc/$pid/stat" 2>/dev/null)
+rest=${stat#*) }
+set -- $rest
+starttime=${20:-}
+{
+  echo "pid=$pid"
+  echo "exe=$actual_exe"
+  echo "expected_exe=$expected_exe"
+  echo "uid=$uid"
+  echo "starttime=$starttime"
+  date -u '+recorded_at=%Y-%m-%dT%H:%M:%SZ'
+} > "$RUN/volume.identity"
+REMOTE
+  then
+    echo "M02 volume identity capture failed"
+    return 0
+  fi
+}
+
 collect_m02_evidence() {
   [ "$M02_EVIDENCE_COLLECTED" = "0" ] || return 0
   M02_EVIDENCE_COLLECTED=1
   local out="$run_dir/m02-evidence"
   mkdir -p "$out"
   echo "== collect M02 evidence =="
-  if ssh "$M02_HOST" "test -d '$M02_RUN_DIR/logs'"; then
+  if m02_ssh "test -d '$M02_RUN_DIR/logs'"; then
     mkdir -p "$out/run"
-    ssh "$M02_HOST" "tar -C '$M02_RUN_DIR' -cf - logs" | tar -C "$out/run" -xf -
-    find "$out/run/logs" -type f -maxdepth 1 -print0 | xargs -0r sha256sum > "$out/run-logs.sha256"
+    if m02_ssh "tar -C '$M02_RUN_DIR' -cf - logs" > "$out/run-logs.tar"; then
+      tar -C "$out/run" -xf "$out/run-logs.tar" 2>/dev/null || true
+      find "$out/run/logs" -type f -maxdepth 1 -print0 | xargs -0r sha256sum > "$out/run-logs.sha256"
+    else
+      echo "failed to capture $M02_RUN_DIR/logs" > "$out/run-logs.capture_failed"
+    fi
   else
     echo "missing $M02_RUN_DIR/logs" > "$out/run-logs.missing"
   fi
   if dc_ack_timeout_seen; then
-    ssh "$M02_HOST" "RUN='$M02_RUN_DIR' bash -s" > "$out/weed-volume-thread-state.tar" <<'REMOTE'
+    if ! m02_ssh "RUN='$M02_RUN_DIR' VOLBIN='$M02_VOLBIN' GDB_TIMEOUT='$M02_GDB_TIMEOUT_SECS' bash -s" > "$out/weed-volume-thread-state.tar" <<'REMOTE'
 set +e
 out=$(mktemp -d /tmp/rdma-dc-thread-state.XXXXXX) || exit 0
 pidfile="$RUN/volume.pid"
 echo "run=$RUN" > "$out/meta.txt"
+echo "volbin=$VOLBIN" >> "$out/meta.txt"
+ref="$RUN/volume.identity"
+ref_starttime=$(awk -F= '$1=="starttime"{print $2}' "$ref" 2>/dev/null)
+ref_uid=$(awk -F= '$1=="uid"{print $2}' "$ref" 2>/dev/null)
+ref_exe=$(awk -F= '$1=="exe"{print $2}' "$ref" 2>/dev/null)
+expected_exe=$(readlink -f "$VOLBIN" 2>>"$out/identity.err")
+current_uid=$(id -u)
+refuse() {
+  echo "$1" > "$out/capture_refused"
+  tar -C "$out" -cf - .
+  rm -rf "$out"
+  exit 0
+}
 if [ -f "$pidfile" ]; then
   pid=$(cat "$pidfile")
   echo "pid=$pid" >> "$out/meta.txt"
+  case "$pid" in ''|*[!0-9]*) refuse "invalid pidfile pid=$pid" ;; esac
   ps -o pid=,ppid=,user=,lstart=,args= -p "$pid" > "$out/ps.txt" 2>&1
   if kill -0 "$pid" 2>/dev/null; then
+    actual_exe=$(readlink -f "/proc/$pid/exe" 2>>"$out/identity.err")
+    uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>>"$out/identity.err")
+    stat=$(cat "/proc/$pid/stat" 2>>"$out/identity.err")
+    rest=${stat#*) }
+    set -- $rest
+    starttime=${20:-}
+    {
+      echo "expected_exe=$expected_exe"
+      echo "actual_exe=$actual_exe"
+      echo "uid=$uid"
+      echo "current_uid=$current_uid"
+      echo "starttime=$starttime"
+      echo "ref_exe=$ref_exe"
+      echo "ref_uid=$ref_uid"
+      echo "ref_starttime=$ref_starttime"
+    } > "$out/identity.txt"
+    [ -n "$expected_exe" ] && [ "$actual_exe" = "$expected_exe" ] || refuse "executable mismatch"
+    [ -n "$ref_exe" ] && [ "$actual_exe" = "$ref_exe" ] || refuse "recorded executable mismatch"
+    [ -n "$uid" ] && [ "$uid" = "$current_uid" ] || refuse "uid mismatch"
+    [ -n "$ref_uid" ] && [ "$uid" = "$ref_uid" ] || refuse "recorded uid mismatch"
+    [ -n "$ref_starttime" ] && [ "$starttime" = "$ref_starttime" ] || refuse "starttime mismatch"
     mkdir -p "$out/tasks"
     for task in /proc/$pid/task/*; do
       tid=${task##*/}
       mkdir -p "$out/tasks/$tid"
       for f in comm wchan stat; do cat "$task/$f" > "$out/tasks/$tid/$f" 2>&1; done
     done
-    if command -v gdb >/dev/null 2>&1; then
-      gdb -batch -p "$pid" -ex "thread apply all bt" > "$out/gdb-thread-bt.txt" 2>&1
+    if command -v gdb >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+      timeout "${GDB_TIMEOUT:-20}s" gdb -batch -p "$pid" -ex "thread apply all bt" > "$out/gdb-thread-bt.txt" 2>&1
       echo $? > "$out/gdb.exit"
-    else
+    elif ! command -v gdb >/dev/null 2>&1; then
       echo gdb_not_found > "$out/gdb.unavailable"
+    else
+      echo timeout_not_found > "$out/gdb.unavailable"
     fi
   else
     echo volume_pid_not_running > "$out/not-running.txt"
@@ -140,6 +221,9 @@ fi
 tar -C "$out" -cf - .
 rm -rf "$out"
 REMOTE
+    then
+      echo "thread-state capture ssh timeout/failure" > "$out/weed-volume-thread-state.capture_failed"
+    fi
     mkdir -p "$out/weed-volume-thread-state"
     tar -C "$out/weed-volume-thread-state" -xf "$out/weed-volume-thread-state.tar" 2>/dev/null || true
     find "$out/weed-volume-thread-state" -type f -print0 | xargs -0r sha256sum > "$out/weed-volume-thread-state.sha256"
@@ -288,7 +372,9 @@ run_unified_gate() {
   fi
 
   test -n "$GO_WEED_BIN" || { echo "GO_WEED_BIN missing; build_unified_gate must run before startup" >&2; exit 1; }
-  ssh "$M02_HOST" "$dc_env RUN='$M02_RUN_DIR' MONO='$m02_src' WEED='$GO_WEED_BIN' bash '$m02_src/$gate/m02-up.sh'"
+  M02_VOLBIN="$m02_src/enterprise/seaweed-volume/target/release/weed-volume"
+  ssh "$M02_HOST" "$dc_env RUN='$M02_RUN_DIR' MONO='$m02_src' WEED='$GO_WEED_BIN' VOLBIN='$M02_VOLBIN' bash '$m02_src/$gate/m02-up.sh'"
+  record_m02_volume_identity
 
   local dc_m01=""
   if [ "$ENABLE_DC" = "1" ]; then
