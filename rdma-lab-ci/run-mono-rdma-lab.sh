@@ -299,7 +299,7 @@ run_diagnostics() {
   fail_ms=$(printf '%s\n' "$first_line" | sed -n 's/^diag_epoch_ms=\([0-9]*\).*/\1/p')
   fid=$(printf '%s\n' "$first_line" | sed -n 's/.* fid=\([^ ]*\) .*/\1/p')
   fail_off=$(printf '%s\n' "$first_line" | sed -n 's/.* offset=\([0-9]*\) .*/\1/p')
-  fail_len=$(printf '%s\n' "$first_line" | sed -n 's/.* length=\([0-9]*\) .*/\1/p')
+  fail_len=$(printf '%s\n' "$first_line" | sed -n 's/.* length=\([0-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p')
   vid=${fid%%,*}
   echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path fid=$fid offset=${fail_off:-unknown} length=${fail_len:-unknown} line=$first_line"
   if [ -z "$fid" ] || [ -z "$vid" ] || [ "$vid" = "$fid" ]; then
