@@ -65,8 +65,13 @@ def lab_env():
     return env
 
 
+def remote_env_cmd(cmd):
+    prefix = os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX", "/home/testdev/.cargo/bin:/snap/bin:/usr/local/go/bin")
+    return f"export PATH={shlex.quote(prefix)}:$PATH; {cmd}"
+
+
 def ssh(host, cmd, log, timeout=None):
-    return run(["ssh", "-o", "BatchMode=yes", host, cmd], log, timeout)
+    return run(["ssh", "-o", "BatchMode=yes", host, remote_env_cmd(cmd)], log, timeout)
 
 
 def capture(host, cmd, path, timeout=30):
@@ -169,7 +174,12 @@ def run_case(case, args, ctx, result_dir):
         rc, elapsed = shell(cmd, log, timeout, env=env)
     after = snapshot_hosts(cid, host, cdir, args, "after")
     baseline_returned = before == after and snapshots_ok(before) and snapshots_ok(after)
-    verdict = "pass" if rc == 0 else "fail"
+    if rc in (126, 127):
+        verdict = "infra"
+        stop_reason = f"command bootstrap failed rc={rc}"
+    else:
+        verdict = "pass" if rc == 0 else "fail"
+        stop_reason = None
     row = {
         "case_id": cid,
         "verdict": verdict,
@@ -185,6 +195,8 @@ def run_case(case, args, ctx, result_dir):
         "resources_after": after,
         "command": cmd,
     }
+    if stop_reason:
+        row["infra_error"] = stop_reason
     (cdir / "verdict.json").write_text(json.dumps(row, indent=2) + "\n")
     return row
 
@@ -267,17 +279,21 @@ def main():
         "SWEEP_HARNESS_TREE": mono_src,
         "SWEEP_ROOT": str(result_dir),
         "SWEEP_STEP05_ROOT": args.t3_step05_root,
+        "T3_TAG": f"rdma-hw-suite-{run_id}-t3",
         "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
     }
     ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
     rows = []
     for case in CASES:
         if case[0] in SELF_LOCKING_CASES:
-            rows.append(run_case(case, args, ctx, result_dir))
+            row = run_case(case, args, ctx, result_dir)
         else:
             with lab_lock(args):
-                rows.append(run_case(case, args, ctx, result_dir))
-    status = "pass" if all(r["verdict"] == "pass" for r in rows) else "fail"
+                row = run_case(case, args, ctx, result_dir)
+        rows.append(row)
+        if row["verdict"] == "infra":
+            break
+    status = "infra" if any(r["verdict"] == "infra" for r in rows) else ("pass" if all(r["verdict"] == "pass" for r in rows) else "fail")
     summary = {"run_id": run_id, "tier": args.tier, "status": status, "product_sha": args.mono, "runner_sha": args.runner_sha, "case_count": len(rows), "cases": rows}
     (result_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     with lab_lock(args):
