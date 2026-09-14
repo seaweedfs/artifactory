@@ -17,6 +17,7 @@ phase() {
 phase t1-diagnostic /usr/bin/python3 "$script_dir"/sweep2-t1-diagnostic.py
 phase disk-contained /usr/bin/python3 "$script_dir"/sweep2-disk-contained.py
 phase privileged551-configured /usr/bin/python3 "$script_dir"/sweep2-551-configured.py
+phase portable /usr/bin/python3 "$script_dir"/sweep2-portable-packs.py
 phase coverage bash "$script_dir"/sweep2-coverage.sh
 phase paired /usr/bin/python3 "$script_dir"/sweep2-paired.py
 printf 'SWEEP_EXECUTIONS_FINISHED %s\n' "$(date -u +%FT%TZ)"
