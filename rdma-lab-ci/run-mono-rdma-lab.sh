@@ -305,14 +305,12 @@ if [ -n "$first_line" ]; then
   echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path fid=$fid line=$first_line"
   if [ -n "$fid" ] && [ -n "$vid" ] && [ "$vid" != "$fid" ]; then
     http_out="$WORK/object-bench-diagnostic-http-body.bin"
-    seed_file="$WORK/object-${object_mib}m.bin"
-    seed_sha=$(test -f "$seed_file" && sha256sum "$seed_file" | awk '{print $1}' || echo missing)
     : > "$http_out"
     http_code=$(curl -sS -o "$http_out" -w '%{http_code}' "http://$MASTER_IP:${VOL_HTTP:-8105}/$fid" || true)
     http_len=$(wc -c < "$http_out" | tr -d ' ')
     http_sha=$(sha256sum "$http_out" | awk '{print $1}')
     now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
-    echo "UNIFIED_OBJECT_BENCH_DIAG_HTTP fid=$fid status=$http_code bytes=$http_len sha256=$http_sha seed_sha256=$seed_sha elapsed_ms=$elapsed_ms"
+    echo "UNIFIED_OBJECT_BENCH_DIAG_HTTP fid=$fid status=$http_code bytes=$http_len sha256=$http_sha seed_compare=UNBOUND:no_proven_seed_chunk_range elapsed_ms=$elapsed_ms"
     lookup_out="$WORK/object-bench-diagnostic-volume-lookup.json"
     curl -sS "http://$MASTER_IP:9755/dir/lookup?volumeId=$vid" -o "$lookup_out" || true
     now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
