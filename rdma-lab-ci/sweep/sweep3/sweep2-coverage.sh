@@ -2,7 +2,7 @@
 set -u
 export PATH=/opt/work/codex02-coverage-tools/bin:/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/opt/work/codex02-coverage-target
-root=/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913/coverage-retained
+root="${SWEEP_ROOT:?}/coverage-retained"
 mkdir -p "$root"
 exec 9>/mnt/smb/work/share/testops/locks/rdma-lab.lock
 flock -n 9 || { echo LAB_LOCK_BUSY; exit 3; }

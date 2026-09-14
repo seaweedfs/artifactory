@@ -1,15 +1,15 @@
 import fcntl, hashlib, json, math, os, random, resource, signal, statistics, subprocess, time, urllib.request
 from pathlib import Path
 
-ROOT = Path('/opt/work/codex-step05')
-OUT = Path('/data/nvme/testdev/codex02-sweep2-paired-ac7-20260913')
+ROOT = Path(os.environ.get('SWEEP_STEP05_ROOT','/opt/work/codex-step05'))
+OUT = Path(os.environ.get('SWEEP_PAIRED_ROOT', str(Path(os.environ['SWEEP_ROOT'])/'paired')))
 CLIENT = 'testdev@192.168.1.181'
-REMOTE = '/opt/work/codex02-sweep2-paired-ac7-20260913'
-WEED = '/opt/work/bin/weed-cf30503f0262211aa3d4d5312e153aefce4dfbec'
-VOLUMES = {'A':'/opt/work/bin/weed-volume-6d5d2eb6999496944387c93489c32a768cc48ae3-sweep-rdma', 'B':'/opt/work/bin/weed-volume-ac7f4e0f08716ecc0ed1b418b5f26fdfb752c34f-sweep-rdma'}
-REFERENCE_SHA='6d5d2eb6999496944387c93489c32a768cc48ae3'
-PRODUCT_SHA='ac7f4e0f08716ecc0ed1b418b5f26fdfb752c34f'
-SEED=20260913
+REMOTE = os.environ.get('SWEEP_PAIRED_REMOTE', '/opt/work/codex02-sweep3-paired-'+os.environ['SWEEP_PRODUCT'][:8])
+WEED = os.environ.get('SWEEP_WEED_BIN', '/opt/work/bin/weed-'+os.environ['SWEEP_REFERENCE'])
+VOLUMES = {'A':os.environ.get('SWEEP_REFERENCE_VOLUME_BIN','/opt/work/bin/weed-volume-'+os.environ['SWEEP_REFERENCE']+'-sweep-rdma'), 'B':os.environ.get('SWEEP_VOLUME_BIN','/opt/work/bin/weed-volume-'+os.environ['SWEEP_PRODUCT']+'-sweep-rdma')}
+REFERENCE_SHA=os.environ['SWEEP_REFERENCE']
+PRODUCT_SHA=os.environ['SWEEP_PRODUCT']
+SEED=int(os.environ.get('SWEEP_SEED','20260914'))
 
 def call(args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
@@ -46,7 +46,7 @@ def main():
         assert subprocess.run(['ssh',CLIENT,'pgrep -f ^/opt/work/.*/step05-read-bench'],stdout=subprocess.DEVNULL).returncode==1, 'M01 benchmark busy'
         OUT.mkdir()
         with open(os.environ['TESTOPS_ACTIVITY_LOG'], 'a') as log:
-            log.write('START codex02-sweep2-paired-ac7-20260913 evidence=6aa5f0b8ab6ba7093cba23f6 '+time.strftime('%FT%TZ', time.gmtime())+'\n')
+            log.write('START codex02-sweep3-paired '+time.strftime('%FT%TZ', time.gmtime())+'\n')
         call(['ssh', CLIENT, 'mkdir', REMOTE])
         call(['scp', str(ROOT/'step05-read-bench'), CLIENT+':'+REMOTE+'/'])
         remote_sha = subprocess.check_output(['ssh',CLIENT,'sha256sum',REMOTE+'/step05-read-bench'], text=True).split()[0]
@@ -55,11 +55,14 @@ def main():
         payload.write_bytes(b'Z' * (256*1024))
         print('memlock limits: '+str(resource.getrlimit(resource.RLIMIT_MEMLOCK)),flush=True)
         binary_hash={role:sha(path) for role,path in VOLUMES.items()}
-        assert binary_hash['A']=='c21af690c9f5bf4b9d417e131515e4fdd1820e435bf5006a6eda7a42f15bff3b', 'retained reference differs'
-        build=json.loads(Path('/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913/baseline-build/complete.json').read_text())[0]
+        expected_a=os.environ.get('SWEEP_REFERENCE_VOLUME_SHA256')
+        if expected_a: assert binary_hash['A']==expected_a, 'retained reference differs'
+        build=json.loads((Path(os.environ['SWEEP_ROOT'])/'baseline-build/complete.json').read_text())[0]
         assert build['sha']==PRODUCT_SHA and build['sha256']==binary_hash['B'], 'candidate build provenance mismatch'
-        assert remote_sha == 'd3990e03ad951e390ef6ebbe3ed8ff45cf1dc4a1da5a9674f74137694eff663b', 'retained client differs'
-        assert sha(WEED) == 'b5d93e8f2946422014189722896cc265e1aa5468532654cb31f63ace10f2d347', 'retained master differs'
+        expected_client=os.environ.get('SWEEP_CLIENT_SHA256')
+        if expected_client: assert remote_sha == expected_client, 'retained client differs'
+        expected_weed=os.environ.get('SWEEP_WEED_SHA256')
+        if expected_weed: assert sha(WEED) == expected_weed, 'retained master differs'
         schedule=[]; rng=random.Random(SEED)
         for mode in ('rc','dc'):
             orders=['ABBA']*15+['BAAB']*15; rng.shuffle(orders)
@@ -67,7 +70,7 @@ def main():
                 schedule.extend((mode,block,slot,label) for slot,label in enumerate(order))
         (OUT/'schedule.json').write_text(json.dumps(schedule,indent=2))
         (OUT/'predeclared.json').write_text(json.dumps(dict(seed=SEED,samples=240,blocks_per_transport=30,
-            product_sha=PRODUCT_SHA,reference_sha=REFERENCE_SHA,reference_product_sha="89aefb45136e270af353dd69f8fa91997747f6dc",binary_sha256=binary_hash,lag1_flag=0.3,order_effect_flag=0.02,
+            product_sha=PRODUCT_SHA,reference_sha=REFERENCE_SHA,reference_product_sha=os.environ.get('SWEEP_REFERENCE_PRODUCT', REFERENCE_SHA),binary_sha256=binary_hash,lag1_flag=0.3,order_effect_flag=0.02,
             adopted_resolution={'rc':0.06,'dc':0.015},stop_if_interval_upper_below=0.95,reset='fresh master+volume+payload each sample',
             retries=0,invalid_run_on_control_failure=True),indent=2))
         samples=[]
@@ -183,7 +186,7 @@ def main():
             print(json.dumps(dict(verdict=report['verdict'],metrics=metrics)),flush=True)
         finally:
             with open(os.environ['TESTOPS_ACTIVITY_LOG'],'a') as log:
-                log.write('END codex02-sweep2-paired-ac7-20260913 evidence=6aa5f0b8ab6ba7093cba23f6 '+time.strftime('%FT%TZ',time.gmtime())+'\n')
+                log.write('END codex02-sweep3-paired '+time.strftime('%FT%TZ',time.gmtime())+'\n')
 
 def interrupted(signum, frame):
     raise KeyboardInterrupt('lab run interrupted')

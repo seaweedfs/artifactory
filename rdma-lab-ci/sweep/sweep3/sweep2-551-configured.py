@@ -1,9 +1,9 @@
 import datetime,fcntl,hashlib,json,os,pathlib,re,shutil,signal,subprocess,time
-R=pathlib.Path('/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913')
+R=pathlib.Path(os.environ['SWEEP_ROOT'])
 OUT=R/'privileged-551-configured';CASE=OUT/'data'
-PRODUCT='ac7f4e0f08716ecc0ed1b418b5f26fdfb752c34f'
-HARNESS='42dd1bb40de5ee8affebf799cbf86da64f54e2f5'
-W='6aa5f0b8ab6ba7093cba23f6'
+PRODUCT=os.environ['SWEEP_PRODUCT']
+HARNESS=os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5')
+W=os.environ.get('SWEEP_WIKI','sweep3-unpublished')
 ports={19865,29865,19711,29711,19712,29712,19888,29888,19933,19934}
 def sha(p):return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 def command(args,**kw):return subprocess.run(args,check=True,**kw)
@@ -22,11 +22,11 @@ with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  assert runner.is_file()
  OUT.mkdir();(OUT/'rules-before.txt').write_text(before_rules)
  (OUT/'binary-hashes.json').write_text(json.dumps({str(p):sha(p) for p in (weed,runner)},indent=2))
- source=subprocess.check_output(['git','-C','/opt/work/codex02-sweep2-harness','show',HARNESS+':enterprise/testops/scenarios/gate-551-delete-bucket-name-reuse.yaml'])
+ source=subprocess.check_output(['git','-C',os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'),'show',HARNESS+':enterprise/testops/scenarios/gate-551-delete-bucket-name-reuse.yaml'])
  scenario=OUT/'scenario.yaml';scenario.write_bytes(source)
- env={'ssh_key':str(key),'weed_bin':str(weed),'run':str(CASE),'ip':'10.0.0.3','proto_dir':'/opt/work/codex02-sweep2-product/enterprise/weed/pb',
+ env={'ssh_key':str(key),'weed_bin':str(weed),'run':str(CASE),'ip':'10.0.0.3','proto_dir':os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')+'/enterprise/weed/pb',
  '__testops_executor_host':'192.168.1.184','__testops_executor_user':'testdev','__testops_ssh_key':str(key),
- '__testops_binary':str(weed),'__testops_run_dir':str(CASE),'__testops_proto_dir':'/opt/work/codex02-sweep2-product/enterprise/weed/pb',
+ '__testops_binary':str(weed),'__testops_run_dir':str(CASE),'__testops_proto_dir':os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')+'/enterprise/weed/pb',
  '__testops_activity_log':os.environ['TESTOPS_ACTIVITY_LOG']}
  args=[str(runner),'run','-allow-mutating','-results-dir',str(OUT/'results'),'-output',str(OUT/'result.json')]
  for k,v in env.items():args.extend(['-env',k+'='+v])

@@ -1,5 +1,5 @@
 import pathlib,hashlib,json
-r=pathlib.Path('/data/nvme/testdev/codex02-integration-368fe309e-20260912')
+r=pathlib.Path(os.environ['SWEEP_ROOT'])
 a=r.parent/'codex02-integration-368fe309e-20260912-evidence.tgz';d=pathlib.Path('/mnt/smb/work/share/testops/results')/a.name
 assert a.is_file() and d.is_file()
 def sha(p):

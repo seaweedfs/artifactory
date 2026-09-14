@@ -1,10 +1,10 @@
 """Publish separately attributable schema-1 rows after review of the sweep index."""
 import datetime, hashlib, json, os, pathlib, re, shlex, subprocess, sys
-R=pathlib.Path('/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913')
-B=pathlib.Path('/data/nvme/testdev/codex02-sweep2-paired-ac7-20260913')
-P='ac7f4e0f08716ecc0ed1b418b5f26fdfb752c34f'
-H='42dd1bb40de5ee8affebf799cbf86da64f54e2f5'
-W='6aa5f0b8ab6ba7093cba23f6'
+R=pathlib.Path(os.environ['SWEEP_ROOT'])
+B=pathlib.Path(os.environ.get('SWEEP_PAIRED_ROOT', str(R/'paired')))
+P=os.environ['SWEEP_PRODUCT']
+H=os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5')
+W=os.environ.get('SWEEP_WIKI','sweep3-unpublished')
 OUT=R/'lab-status';OUT.mkdir(exist_ok=True)
 now=datetime.datetime.now(datetime.timezone.utc).isoformat()
 index=json.loads((R/'sweep2-index.json').read_text())
@@ -29,7 +29,7 @@ for mode,m in audit['metrics'].items():
     actual='green' if classification=='NO_EVIDENCE_WITHIN_NOISE_BAND' else 'red' if classification=='STOP_REGRESSION_BELOW_MINUS_5' else 'error'
     rows.append({'id':'paired-'+mode,'expected':'green','actual':actual,'run':'paired-ac7-20260913-'+mode,
         'duration':0,'source':str(B/'independent-audit.json'),
-        'detail':f"{classification}; delta={m['delta_pct']:.6f}%; conditional95%={m['conditional_95pct_interval_pct']}; order={m['order_delta_pct']}; lag1={m['lag1']:.6f}; reference 89aefb451 (parent built from 6d5d2eb69, product diff 0). 'error' represents unresolved measurement, never a product RED. No historical exception inherited."})
+        'detail':f"{classification}; delta={m['delta_pct']:.6f}%; conditional95%={m['conditional_95pct_interval_pct']}; order={m['order_delta_pct']}; lag1={m['lag1']:.6f}; reference {os.environ.get('SWEEP_REFERENCE_PRODUCT', os.environ.get('SWEEP_REFERENCE','unknown'))}. 'error' represents unresolved measurement, never a product RED. No historical exception inherited."})
 for item in index['out_of_scope']:
     rows.append({'id':item['gate_id'],'expected':'green','actual':'skipped','run':'not-run','duration':0,
         'source':'owner ruling #665','detail':item['reason']})

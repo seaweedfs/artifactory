@@ -1,6 +1,6 @@
 import os,pathlib,json,subprocess,re,fcntl,datetime
-R=pathlib.Path('/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913');T=pathlib.Path('/data/nvme/testdev/codex02-sweep2-t3-ac7-20260913')
-B=pathlib.Path('/data/nvme/testdev/codex02-sweep2-paired-ac7-20260913')
+R=pathlib.Path(os.environ['SWEEP_ROOT']);T=pathlib.Path(os.environ.get('SWEEP_T3_ROOT', str(R/'t3')))
+B=pathlib.Path(os.environ.get('SWEEP_PAIRED_ROOT', str(R/'paired')))
 markers=[str(R),str(T),str(B)]
 alive=[]
 for p in pathlib.Path('/proc').iterdir():
@@ -36,12 +36,13 @@ rules=subprocess.check_output(['sudo','-n','iptables-save'],text=True)
 owned_rules=[x for x in rules.splitlines() if any(runid in x for runid in runids)]
 clean={}
 for repo in ['product','harness']:
- path='/opt/work/codex02-sweep2-'+repo
+ path=os.environ.get('SWEEP_'+repo.upper().replace('-','_')+'_TREE','/opt/work/codex02-sweep2-'+repo)
  clean[repo]=subprocess.check_output(['git','-C',path,'status','--porcelain'],text=True)
 lock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a')
 try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);free=True;fcntl.flock(lock,fcntl.LOCK_UN)
 except BlockingIOError:free=False
 remote_processes=subprocess.check_output(['ssh','-o','BatchMode=yes','testdev@192.168.1.181','ps -eo pid=,comm=,args='],text=True)
-client_alive=[line for line in remote_processes.splitlines() if len(line.split(None,2))==3 and line.split(None,2)[1].startswith('step05-read-ben') and '/opt/work/codex02-sweep2-paired-ac7-20260913/' in line]
+paired_remote=os.environ.get('SWEEP_PAIRED_REMOTE','/opt/work/codex02-sweep3-paired-'+os.environ['SWEEP_PRODUCT'][:8])+'/'
+client_alive=[line for line in remote_processes.splitlines() if len(line.split(None,2))==3 and line.split(None,2)[1].startswith('step05-read-ben') and paired_remote in line]
 result={'generated_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'owned_processes_alive':alive,'M01_owned_clients_alive':client_alive,'recorded_ports_checked':sorted(portset),'recorded_ports_busy':busy,'owned_mounts':owned_mounts,'owned_loops':owned_loops,'owned_iptables_rules':owned_rules,'source_status':clean,'lab_flock_reacquired':free,'scope':'read-only audit of this sweep; no arbitrary cleanup','reservation':'physical cleanup audit; queue handoff is stated separately in the RESULT'}
 (R/'cleanup-check.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

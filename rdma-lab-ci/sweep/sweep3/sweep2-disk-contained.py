@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, pathlib, subprocess, json, datetime, fcntl, yaml
-P=pathlib.Path('/opt/work/codex02-sweep2-product'); H=pathlib.Path('/opt/work/codex02-sweep2-harness')
-R=pathlib.Path('/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913'); B=R/'bin'
+P=pathlib.Path(os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')); H=pathlib.Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))
+R=pathlib.Path(os.environ['SWEEP_ROOT']); B=R/'bin'
 os.environ['PATH']='/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 lock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','w');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
 a=open('/mnt/smb/work/share/testops/WHO-IS-RUNNING','a',buffering=1);a.write('START codex02 integration faults '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n')
@@ -22,7 +22,7 @@ try:
   os.environ['TESTOPS_RESOURCE_JOURNAL']=str(folder/'resource-journal.jsonl')
   with (folder/'console.log').open('w') as out:
    p=subprocess.run([str(B/'sw-test-runner'),'run','-results-dir',str(folder/'bundles'),'-tiers','core,devops,chaos','-allow-mutating',str(file)],cwd=H,stdout=out,stderr=subprocess.STDOUT,timeout=300)
-  (folder/'execution.json').write_text(json.dumps({'exit':p.returncode,'product':'ac7f4e0f08716ecc0ed1b418b5f26fdfb752c34f','harness':'42dd1bb40de5ee8affebf799cbf86da64f54e2f5','scope':'product replication' if 'partition' in name else 'synthetic testops mechanism control'}))
+  (folder/'execution.json').write_text(json.dumps({'exit':p.returncode,'product':os.environ['SWEEP_PRODUCT'],'harness':os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5'),'scope':'product replication' if 'partition' in name else 'synthetic testops mechanism control'}))
   print(name+' exit='+str(p.returncode),flush=True)
 finally:
  a.write('END codex02 integration faults '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n');fcntl.flock(lock,fcntl.LOCK_UN)

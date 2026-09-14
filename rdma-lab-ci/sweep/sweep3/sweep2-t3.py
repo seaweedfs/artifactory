@@ -4,16 +4,16 @@ from pathlib import Path
 BASE='cf30503f0262211aa3d4d5312e153aefce4dfbec'
 PIN=os.environ.get('T3_PRODUCT',BASE)
 HARNESS=os.environ.get('T3_HARNESS',BASE)
-tag='codex02-sweep2-t3-'+os.environ['T3_TAG']
+tag=os.environ.get('T3_RESULT_TAG','codex02-sweep3-t3-'+os.environ['T3_TAG'])
 results=Path('/data/nvme/testdev')/tag
 share=Path('/mnt/smb/work/share/testops/results')/tag
 source=Path('/opt/work/codex-step07a-mr/enterprise')
-if HARNESS != BASE: source=Path('/opt/work/codex02-sweep2-harness/enterprise')
+if HARNESS != BASE: source=Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))/'enterprise'
 scripts=source/'testops/packs/kv/scripts'
 client='testdev@192.168.1.181'
 client_root='/opt/work/'+tag
 cache=Path('/opt/work/codex-step05/tcp-client')
-if HARNESS != BASE: cache=Path('/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913/t3-client')
+if HARNESS != BASE: cache=Path(os.environ['SWEEP_ROOT'])/'t3-client'
 def call(args,**kwargs):return subprocess.run(args,check=True,**kwargs)
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 results.mkdir();share.mkdir()
@@ -40,8 +40,8 @@ assert subprocess.check_output(['ssh',client,'sha256sum '+client_root+'/t3-wire-
 cpu={}
 for host in ('192.168.1.184','192.168.1.181'):
     cpu[host]=subprocess.check_output(['ssh','testdev@'+host,'cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/intel_pstate/no_turbo'],text=True).splitlines()
-runner='/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913/bin/sw-test-runner'
-weed='/data/nvme/testdev/codex02-integration-ac7f4e0f0-20260913/bin/weed'
+runner=str(Path(os.environ['SWEEP_ROOT'])/'bin/sw-test-runner')
+weed=str(Path(os.environ['SWEEP_ROOT'])/'bin/weed')
 volume='/opt/work/bin/weed-volume-'+PIN+'-rdma'
 scenario=dict(name='rdma-integration-t3',timeout='8m',topology=dict(nodes=dict(server=dict(is_local=True),
     client=dict(host='192.168.1.181',user='testdev',key='/home/testdev/.ssh/id_ed25519'))),
