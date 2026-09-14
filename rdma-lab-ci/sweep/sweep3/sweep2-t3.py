@@ -7,7 +7,7 @@ HARNESS=os.environ.get('T3_HARNESS',BASE)
 tag=os.environ.get('T3_RESULT_TAG','codex02-sweep3-t3-'+os.environ['T3_TAG'])
 results=Path('/data/nvme/testdev')/tag
 share=Path('/mnt/smb/work/share/testops/results')/tag
-source=Path('/opt/work/codex-step07a-mr/enterprise')
+source=Path(os.environ['SWEEP_PRODUCT_TREE'])/'enterprise'
 if HARNESS != BASE: source=Path(os.environ['SWEEP_HARNESS_TREE'])/'enterprise'
 scripts=source/'testops/packs/kv/scripts'
 client='testdev@192.168.1.181'

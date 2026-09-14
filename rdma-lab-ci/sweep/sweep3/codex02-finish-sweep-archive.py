@@ -1,6 +1,8 @@
-import pathlib,hashlib,json
-r=pathlib.Path(__import__('os').environ['SWEEP_ROOT'])
-a=pathlib.Path(__import__('os').environ.get('SWEEP_ARCHIVE',str(r.parent/(r.name+'-evidence.tgz'))));d=pathlib.Path(__import__('os').environ.get('SWEEP_SHARE_RESULTS','/mnt/smb/work/share/testops/results'))/a.name
+import pathlib,hashlib,json,os
+if os.environ.get('SWEEP_DRY_RUN') == '1':
+ print('DRY codex02-finish-sweep-archive'); raise SystemExit
+r=pathlib.Path(os.environ['SWEEP_ROOT'])
+a=pathlib.Path(os.environ.get('SWEEP_ARCHIVE',str(r.parent/(r.name+'-evidence.tgz'))));d=pathlib.Path(os.environ.get('SWEEP_SHARE_RESULTS','/mnt/smb/work/share/testops/results'))/a.name
 assert a.is_file() and d.is_file()
 def sha(p):
  h=hashlib.sha256()
