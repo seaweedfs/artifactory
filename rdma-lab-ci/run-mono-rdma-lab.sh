@@ -296,7 +296,7 @@ export_share_bundle() {
       return 0
       ;;
   esac
-  if rsync -rt --inplace --omit-dir-times --no-perms --no-owner --no-group --exclude "$RDMA_CI_SHARE_RUN_DIR_NAME" "$run_dir/" "$dest/" >>"$run_dir/share-bundle-export.log" 2>>"$run_dir/share-bundle-export.err"; then
+  if rsync -r --inplace --no-times --omit-dir-times --no-perms --no-owner --no-group --exclude "$RDMA_CI_SHARE_RUN_DIR_NAME" "$run_dir/" "$dest/" >>"$run_dir/share-bundle-export.log" 2>>"$run_dir/share-bundle-export.err"; then
     {
       echo "RDMA_CI_SHARE_BUNDLE_EXPORT_OK dest=$dest"
       date -u '+exported_at=%Y-%m-%dT%H:%M:%SZ'
