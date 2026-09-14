@@ -19,7 +19,7 @@ with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  cache=R/'t3-client';cache.mkdir()
  prior=pathlib.Path(os.environ['SWEEP_T3_CLIENT_SOURCE'])
  shutil.copyfile(prior/'t3-wire-client',cache/'t3-wire-client');(cache/'t3-wire-client').chmod(0o755)
- oldfixture=pathlib.Path('/opt/work/codex02-integration-harness/enterprise/testops/packs/kv/testdata/cache_observation_wire_gate.rs')
+ oldfixture=H/'enterprise/testops/packs/kv/testdata/cache_observation_wire_gate.rs'
  fixture=H/'enterprise/testops/packs/kv/testdata/cache_observation_wire_gate.rs'
  assert fixture.read_bytes()==oldfixture.read_bytes(),'T3 fixture changed; rebuild needed'
  (R/'lab-build-provenance.json').write_text(json.dumps({'product':SHA,'harness':HSHA,'binary_sha256':{str(p):sha(p) for p in [B/'weed',B/'sw-test-runner',dest,cache/'t3-wire-client']},'t3_client':'retained verified fixture-identical binary; no rebuild claim'},indent=2))

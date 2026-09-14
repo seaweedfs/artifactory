@@ -4,6 +4,7 @@ export PATH=/opt/work/codex02-coverage-tools/bin:/home/testdev/.cargo/bin:/usr/l
 export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/opt/work/codex02-coverage-target
 root="${SWEEP_ROOT:?}/coverage-retained"
 product_tree=${SWEEP_PRODUCT_TREE:?}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 [ "${SWEEP_DRY_RUN:-0}" = 1 ] && { echo DRY sweep2-coverage; exit 0; }
 mkdir -p "$root"
 exec 9>/mnt/smb/work/share/testops/locks/rdma-lab.lock
@@ -25,7 +26,7 @@ archive_profile() {
  artifact="$root/$profile_name-artifacts"
  mkdir -p "$artifact"
  find "$CARGO_TARGET_DIR" -type f \( -name '*.profraw' -o -name '*.profdata' \) -exec cp --parents '{}' "$artifact" \;
- python3 /opt/work/codex02-retain-coverage-profile.py "$root" "$profile_name" || exit 2
+ python3 "$script_dir/codex02-retain-coverage-profile.py" "$root" "$profile_name" || exit 2
  find "$artifact" -type f -exec sha256sum '{}' \; > "$root/$profile_name-artifacts.sha256"
  cargo tree -e features "${extra[@]}" >"$root/$profile_name-resolved-tree.txt" 2>&1
 }
