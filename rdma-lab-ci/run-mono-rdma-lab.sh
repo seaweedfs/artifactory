@@ -37,6 +37,9 @@ M02_EVIDENCE_COLLECTED="0"
 M02_VOLBIN=""
 M02_SSH_TIMEOUT_SECS="${M02_SSH_TIMEOUT_SECS:-30}"
 M02_GDB_TIMEOUT_SECS="${M02_GDB_TIMEOUT_SECS:-20}"
+RDMA_CI_SHARE_BUNDLE_DIR="${RDMA_CI_SHARE_BUNDLE_DIR:-${TESTOPS_RESULT_DIR:-${RESULTS_DIR:-}}}"
+RDMA_CI_SHARE_RUN_DIR_NAME="${RDMA_CI_SHARE_RUN_DIR_NAME:-rdma-lab-run-dir}"
+RDMA_CI_SHARE_BUNDLE_EXPORTED="0"
 
 usage() {
   cat <<'USAGE'
@@ -275,9 +278,40 @@ REMOTE
   fi
 }
 
+export_share_bundle() {
+  [ "$RDMA_CI_SHARE_BUNDLE_EXPORTED" = "0" ] || return 0
+  RDMA_CI_SHARE_BUNDLE_EXPORTED=1
+  if [ -z "$RDMA_CI_SHARE_BUNDLE_DIR" ]; then
+    echo "RDMA_CI_SHARE_BUNDLE_EXPORT_SKIPPED reason=no_destination" > "$run_dir/share-bundle-export.skipped"
+    return 0
+  fi
+  local dest="$RDMA_CI_SHARE_BUNDLE_DIR/$RDMA_CI_SHARE_RUN_DIR_NAME"
+  mkdir -p "$dest" 2>"$run_dir/share-bundle-export.err" || {
+    echo "RDMA_CI_SHARE_BUNDLE_EXPORT_FAIL mkdir dest=$dest" > "$run_dir/share-bundle-export.failed"
+    return 0
+  }
+  case "$(readlink -f "$dest" 2>/dev/null)" in
+    "$(readlink -f "$run_dir" 2>/dev/null)"|"$(readlink -f "$run_dir" 2>/dev/null)"/*)
+      echo "RDMA_CI_SHARE_BUNDLE_EXPORT_SKIPPED reason=destination_inside_run_dir dest=$dest" > "$run_dir/share-bundle-export.skipped"
+      return 0
+      ;;
+  esac
+  if rsync -a --exclude "$RDMA_CI_SHARE_RUN_DIR_NAME" "$run_dir/" "$dest/" >>"$run_dir/share-bundle-export.log" 2>>"$run_dir/share-bundle-export.err"; then
+    {
+      echo "RDMA_CI_SHARE_BUNDLE_EXPORT_OK dest=$dest"
+      date -u '+exported_at=%Y-%m-%dT%H:%M:%SZ'
+      find "$dest" -type f -print0 | xargs -0r sha256sum
+    } > "$run_dir/share-bundle-export.sha256"
+    cp "$run_dir/share-bundle-export.sha256" "$dest/share-bundle-export.sha256" 2>/dev/null || true
+  else
+    echo "RDMA_CI_SHARE_BUNDLE_EXPORT_FAIL dest=$dest" > "$run_dir/share-bundle-export.failed"
+  fi
+}
+
 cleanup_lab() {
   set +e
   collect_m02_evidence
+  export_share_bundle
   if [ -n "$CLEANUP_M01_SCRIPT" ] && [ -f "$CLEANUP_M01_SCRIPT" ]; then
     bash "$CLEANUP_M01_SCRIPT" m01
   fi
@@ -575,6 +609,8 @@ write_provenance() {
     echo "dc_push_capture_wrapper=s3-loader-capture-wrapper.sh"
     echo "dc_push_capture_wrapper_sha256=$(sha256sum "$run_dir/s3-loader-capture-wrapper.sh" | awk '{print $1}')"
     echo "dc_push_capture_dir=dc-push-capture"
+    echo "share_bundle_dir=$RDMA_CI_SHARE_BUNDLE_DIR"
+    echo "share_bundle_run_dir_name=$RDMA_CI_SHARE_RUN_DIR_NAME"
     echo "go_weed_bin=$GO_WEED_BIN"
     echo "go_weed_sha256=$GO_WEED_SHA256"
     echo "go_version=$GO_VERSION"
@@ -615,6 +651,8 @@ write_summary() {
     echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC_WRAPPER_SHA256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
     echo "RDMA_CI_DC_PUSH_CAPTURE_WRAPPER_SHA256=$(sha256sum "$run_dir/s3-loader-capture-wrapper.sh" | awk '{print $1}')"
     echo "RDMA_CI_DC_PUSH_CAPTURE_DIR=dc-push-capture"
+    echo "RDMA_CI_SHARE_BUNDLE_DIR=$RDMA_CI_SHARE_BUNDLE_DIR"
+    echo "RDMA_CI_SHARE_RUN_DIR_NAME=$RDMA_CI_SHARE_RUN_DIR_NAME"
     echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
     echo "RDMA_CI_GO_VERSION=$GO_VERSION"
     echo "RDMA_CI_KMOD_SHA256=$KMOD_SHA256"
