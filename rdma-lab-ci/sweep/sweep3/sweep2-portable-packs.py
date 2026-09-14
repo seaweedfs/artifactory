@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import datetime,fcntl,hashlib,json,os,pathlib,subprocess,yaml
 if os.environ.get('SWEEP_DRY_RUN')=='1': print('DRY sweep2-portable-packs'); raise SystemExit
-if os.environ.get('SWEEP_LOCK_CHECK')=='1':
- lock=open(os.environ['TESTOPS_LOCK_FILE'],'w'); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB); print('LOCK_CHECK_FIRST_GATE pack=general'); raise SystemExit
 R=pathlib.Path(os.environ['SWEEP_ROOT']);P=pathlib.Path(os.environ['SWEEP_PRODUCT_TREE']);H=pathlib.Path(os.environ['SWEEP_HARNESS_TREE'])
 SHA=os.environ['SWEEP_PRODUCT'];HSHA=os.environ['SWEEP_HARNESS'];B=R/'bin'
 os.environ['PATH']='/opt/work/gate561-venv/bin:/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
@@ -15,6 +13,13 @@ def run(cmd,log,cwd=None,timeout=2700):
  print(json.dumps({'command':cmd,'exit':code,'log':str(R/log)}),flush=True);return code
 def status(name,code):
  with (R/'portable-exits.txt').open('a') as f: f.write(f'{name} {code}\n')
+def infra_summary(pack):
+ summary=R/pack/'summary.json'
+ if not summary.exists(): return None
+ data=json.loads(summary.read_text())
+ if data.get('status')=='INFRA_ERROR': return data
+ if any(g.get('status')=='INFRA_ERROR' for g in data.get('gates',[])): return data
+ return None
 activity=open('/mnt/smb/work/share/testops/WHO-IS-RUNNING','a',buffering=1)
 activity.write('START codex02 sweep3 portable packs '+SHA+' '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n')
 saved=[(P/'enterprise/rust/Cargo.lock',R/'workspace.lock.before'),(P/'enterprise/seaweed-volume/Cargo.lock',R/'volume.lock.before')]
@@ -25,7 +30,11 @@ try:
  for pack in ['general','rotation','async','lm-e2e']:
   print('BEGIN '+pack+' '+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
   cmd=[str(R/'testops'),'ci','run','--pack',pack,'--target','local','--mode','release-candidate','--source-dir',str(H),'--tooling-commit',HSHA,'--product-dir',str(P),'--commit',SHA,'--output-dir',str(R/pack),'--timeout','45m']
-  status(pack,run(cmd,pack+'-console.log',None,3000))
+  code=run(cmd,pack+'-console.log',None,3000)
+  status(pack,code)
+  if infra_summary(pack) is not None:
+   print('PORTABLE_PACK_INFRA_SUMMARY '+pack,flush=True)
+   raise SystemExit(2)
   print('END '+pack+' '+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
  volume=os.environ.get('SWEEP_VOLUME_BIN','/opt/work/bin/weed-volume-'+SHA+'-rdma')
  provenance={'product':SHA,'harness':HSHA,'binary_sha256':{str(p):sha(p) for p in [B/'weed',B/'sw-test-runner',volume]}}
