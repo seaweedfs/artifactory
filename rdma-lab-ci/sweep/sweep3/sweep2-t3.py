@@ -1,7 +1,7 @@
 import hashlib, json, os, subprocess
 from pathlib import Path
 
-BASE='cf30503f0262211aa3d4d5312e153aefce4dfbec'
+BASE=os.environ.get('T3_BASE',os.environ['SWEEP_PRODUCT'])
 PIN=os.environ.get('T3_PRODUCT',BASE)
 HARNESS=os.environ.get('T3_HARNESS',BASE)
 tag=os.environ.get('T3_RESULT_TAG','codex02-sweep3-t3-'+os.environ['T3_TAG'])
@@ -20,7 +20,7 @@ results.mkdir();share.mkdir()
 if HARNESS == BASE:
     provenance=json.loads((cache/'provenance.json').read_text())
 else:
-    provenance=dict(harness_sha=HARNESS,dependency_sha='4c896d6c48628df35d1b4b0e18980b9c2d17cd74',
+    provenance=dict(harness_sha=HARNESS,dependency_sha=os.environ.get('T3_DEPENDENCY_SHA',''),
         fixture_sha256=sha(source/'testops/packs/kv/testdata/cache_observation_wire_gate.rs'),
         binary_sha256=sha(cache/'t3-wire-client'))
     (cache/'provenance.json').write_text(json.dumps(provenance,indent=2))

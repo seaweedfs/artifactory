@@ -1,7 +1,7 @@
 import datetime,fcntl,hashlib,json,os,pathlib,shutil,subprocess
 R=pathlib.Path(os.environ['SWEEP_ROOT']);B=R/'bin'
 P=pathlib.Path(os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product'));H=pathlib.Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))
-SHA=os.environ['SWEEP_PRODUCT'];HSHA=os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5')
+SHA=os.environ['SWEEP_PRODUCT'];HSHA=os.environ['SWEEP_HARNESS']
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -16,7 +16,7 @@ with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  dest=pathlib.Path('/opt/work/bin/weed-volume-'+SHA+'-rdma')
  assert not dest.exists();shutil.copyfile(source,dest);dest.chmod(0o755);assert sha(source)==sha(dest)
  cache=R/'t3-client';cache.mkdir()
- prior=pathlib.Path(os.environ.get('SWEEP_T3_CLIENT_SOURCE','/data/nvme/testdev/codex02-integration-368fe309e-20260912/t3-client'))
+ prior=pathlib.Path(os.environ['SWEEP_T3_CLIENT_SOURCE'])
  shutil.copyfile(prior/'t3-wire-client',cache/'t3-wire-client');(cache/'t3-wire-client').chmod(0o755)
  oldfixture=pathlib.Path('/opt/work/codex02-integration-harness/enterprise/testops/packs/kv/testdata/cache_observation_wire_gate.rs')
  fixture=H/'enterprise/testops/packs/kv/testdata/cache_observation_wire_gate.rs'

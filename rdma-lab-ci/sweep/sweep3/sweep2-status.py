@@ -3,7 +3,7 @@ import datetime, hashlib, json, os, pathlib, re, shlex, subprocess, sys
 R=pathlib.Path(os.environ['SWEEP_ROOT'])
 B=pathlib.Path(os.environ.get('SWEEP_PAIRED_ROOT', str(R/'paired')))
 P=os.environ['SWEEP_PRODUCT']
-H=os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5')
+H=os.environ['SWEEP_HARNESS']
 W=os.environ.get('SWEEP_WIKI','sweep3-unpublished')
 OUT=R/'lab-status';OUT.mkdir(exist_ok=True)
 now=datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -27,7 +27,7 @@ audit=json.loads((B/'independent-audit.json').read_text())
 for mode,m in audit['metrics'].items():
     classification=m['classification']
     actual='green' if classification=='NO_EVIDENCE_WITHIN_NOISE_BAND' else 'red' if classification=='STOP_REGRESSION_BELOW_MINUS_5' else 'error'
-    rows.append({'id':'paired-'+mode,'expected':'green','actual':actual,'run':'paired-ac7-20260913-'+mode,
+    rows.append({'id':'paired-'+mode,'expected':'green','actual':actual,'run':'paired-'+P[:8]+'-'+mode,
         'duration':0,'source':str(B/'independent-audit.json'),
         'detail':f"{classification}; delta={m['delta_pct']:.6f}%; conditional95%={m['conditional_95pct_interval_pct']}; order={m['order_delta_pct']}; lag1={m['lag1']:.6f}; reference {os.environ.get('SWEEP_REFERENCE_PRODUCT', os.environ.get('SWEEP_REFERENCE','unknown'))}. 'error' represents unresolved measurement, never a product RED. No historical exception inherited."})
 for item in index['out_of_scope']:

@@ -22,7 +22,7 @@ try:
   os.environ['TESTOPS_RESOURCE_JOURNAL']=str(folder/'resource-journal.jsonl')
   with (folder/'console.log').open('w') as out:
    p=subprocess.run([str(B/'sw-test-runner'),'run','-results-dir',str(folder/'bundles'),'-tiers','core,devops,chaos','-allow-mutating',str(file)],cwd=H,stdout=out,stderr=subprocess.STDOUT,timeout=300)
-  (folder/'execution.json').write_text(json.dumps({'exit':p.returncode,'product':os.environ['SWEEP_PRODUCT'],'harness':os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5'),'scope':'product replication' if 'partition' in name else 'synthetic testops mechanism control'}))
+  (folder/'execution.json').write_text(json.dumps({'exit':p.returncode,'product':os.environ['SWEEP_PRODUCT'],'harness':os.environ['SWEEP_HARNESS'],'scope':'product replication' if 'partition' in name else 'synthetic testops mechanism control'}))
   print(name+' exit='+str(p.returncode),flush=True)
 finally:
  a.write('END codex02 integration faults '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n');fcntl.flock(lock,fcntl.LOCK_UN)

@@ -2,7 +2,7 @@ import datetime,fcntl,hashlib,json,os,pathlib,re,shutil,signal,subprocess,time
 R=pathlib.Path(os.environ['SWEEP_ROOT'])
 OUT=R/'privileged-551-configured';CASE=OUT/'data'
 PRODUCT=os.environ['SWEEP_PRODUCT']
-HARNESS=os.environ.get('SWEEP_HARNESS','42dd1bb40de5ee8affebf799cbf86da64f54e2f5')
+HARNESS=os.environ['SWEEP_HARNESS']
 W=os.environ.get('SWEEP_WIKI','sweep3-unpublished')
 ports={19865,29865,19711,29711,19712,29712,19888,29888,19933,19934}
 def sha(p):return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
