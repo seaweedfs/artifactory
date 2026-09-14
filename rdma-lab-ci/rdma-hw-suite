@@ -97,6 +97,16 @@ def stable_resource_text(name, text):
     return text
 
 
+def resource_dirty_reason(name, text):
+    if name == "rdma-proc.txt" and text.strip():
+        return "ibv_rc_pingpong process present before case"
+    if name == "rdma-mr.txt" and text.strip():
+        return "RDMA MR present before case"
+    if name in ("rdma-qp.txt", "rdma-cq.txt", "rdma-pd.txt") and " pid " in f" {text} ":
+        return f"user {name.removesuffix('.txt')} resource present before case"
+    return None
+
+
 def resource_snapshot(host, outdir, m02):
     outdir.mkdir(parents=True, exist_ok=True)
     cmds = {
@@ -105,6 +115,7 @@ def resource_snapshot(host, outdir, m02):
         "rdma-cq.txt": "rdma res show cq",
         "rdma-mr.txt": "rdma res show mr",
         "rdma-pd.txt": "rdma res show pd",
+        "rdma-proc.txt": "pgrep -ax ibv_rc_pingpong || true",
     }
     hashes = {}
     for name, cmd in cmds.items():
@@ -115,6 +126,7 @@ def resource_snapshot(host, outdir, m02):
         hashes[name] = {
             "sha256": digest,
             "ok": "COMMAND_EXIT=" not in text and "COMMAND_TIMEOUT=" not in text,
+            "dirty_reason": resource_dirty_reason(name, text),
         }
     return hashes
 
@@ -170,13 +182,44 @@ def snapshots_ok(snapshot):
     return all(entry["ok"] for host in snapshot.values() for entry in host.values())
 
 
+def lab_dirty_reasons(snapshot):
+    reasons = []
+    for host, resources in snapshot.items():
+        for name, entry in resources.items():
+            if entry.get("dirty_reason"):
+                reasons.append(f"{host}/{name}: {entry['dirty_reason']}")
+    return reasons
+
+
 def run_case(case, args, ctx, result_dir):
     cid, host, timeout, tmpl = case
     cdir = result_dir / "cases" / cid.replace(".", "_")
     cdir.mkdir(parents=True, exist_ok=True)
     before = snapshot_hosts(cid, host, cdir, args, "before")
+    dirty_reasons = lab_dirty_reasons(before)
     cmd = tmpl.format(**ctx, case_dir=str(cdir))
     log = cdir / "case.log"
+    if dirty_reasons:
+        row = {
+            "case_id": cid,
+            "verdict": "infra",
+            "rc": 125,
+            "counters": {"resource_baseline_returned": False, "resource_baseline_gated": False},
+            "bytes_verified": None,
+            "mismatches": None,
+            "elapsed_s": 0.0,
+            "product_sha": args.mono,
+            "runner_sha": args.runner_sha,
+            "log": str(log),
+            "resources_before": before,
+            "resources_after": before,
+            "command": cmd,
+            "infra_error": "lab not clean before case",
+            "dirty_reasons": dirty_reasons,
+        }
+        log.write_text("INFRA_ERROR: lab not clean before case\n" + "\n".join(dirty_reasons) + "\n")
+        (cdir / "verdict.json").write_text(json.dumps(row, indent=2) + "\n")
+        return row
     if host == "m02":
         rc, elapsed = ssh(args.m02, cmd, log, timeout)
     else:
