@@ -32,6 +32,8 @@ RUST_CARGO_LOCK_SHA256_AFTER=""
 RUST_CARGO_LOCK_STATUS_BEFORE=""
 RUST_CARGO_LOCK_STATUS_AFTER=""
 RUST_CARGO_LOCK_DIFF_SHA256=""
+M02_RUN_DIR="/tmp/unified-rdma-gate-m02-run"
+M02_EVIDENCE_COLLECTED="0"
 
 usage() {
   cat <<'USAGE'
@@ -89,8 +91,66 @@ require_cmd() {
   }
 }
 
+dc_ack_timeout_seen() {
+  grep -q "rdma tcp read dc registration ack failed" "$log" 2>/dev/null
+}
+
+collect_m02_evidence() {
+  [ "$M02_EVIDENCE_COLLECTED" = "0" ] || return 0
+  M02_EVIDENCE_COLLECTED=1
+  local out="$run_dir/m02-evidence"
+  mkdir -p "$out"
+  echo "== collect M02 evidence =="
+  if ssh "$M02_HOST" "test -d '$M02_RUN_DIR/logs'"; then
+    mkdir -p "$out/run"
+    ssh "$M02_HOST" "tar -C '$M02_RUN_DIR' -cf - logs" | tar -C "$out/run" -xf -
+    find "$out/run/logs" -type f -maxdepth 1 -print0 | xargs -0r sha256sum > "$out/run-logs.sha256"
+  else
+    echo "missing $M02_RUN_DIR/logs" > "$out/run-logs.missing"
+  fi
+  if dc_ack_timeout_seen; then
+    ssh "$M02_HOST" "RUN='$M02_RUN_DIR' bash -s" > "$out/weed-volume-thread-state.tar" <<'REMOTE'
+set +e
+out=$(mktemp -d /tmp/rdma-dc-thread-state.XXXXXX) || exit 0
+pidfile="$RUN/volume.pid"
+echo "run=$RUN" > "$out/meta.txt"
+if [ -f "$pidfile" ]; then
+  pid=$(cat "$pidfile")
+  echo "pid=$pid" >> "$out/meta.txt"
+  ps -o pid=,ppid=,user=,lstart=,args= -p "$pid" > "$out/ps.txt" 2>&1
+  if kill -0 "$pid" 2>/dev/null; then
+    mkdir -p "$out/tasks"
+    for task in /proc/$pid/task/*; do
+      tid=${task##*/}
+      mkdir -p "$out/tasks/$tid"
+      for f in comm wchan stat; do cat "$task/$f" > "$out/tasks/$tid/$f" 2>&1; done
+    done
+    if command -v gdb >/dev/null 2>&1; then
+      gdb -batch -p "$pid" -ex "thread apply all bt" > "$out/gdb-thread-bt.txt" 2>&1
+      echo $? > "$out/gdb.exit"
+    else
+      echo gdb_not_found > "$out/gdb.unavailable"
+    fi
+  else
+    echo volume_pid_not_running > "$out/not-running.txt"
+  fi
+else
+  echo volume_pidfile_missing > "$out/pidfile.missing"
+fi
+tar -C "$out" -cf - .
+rm -rf "$out"
+REMOTE
+    mkdir -p "$out/weed-volume-thread-state"
+    tar -C "$out/weed-volume-thread-state" -xf "$out/weed-volume-thread-state.tar" 2>/dev/null || true
+    find "$out/weed-volume-thread-state" -type f -print0 | xargs -0r sha256sum > "$out/weed-volume-thread-state.sha256"
+  else
+    echo "dc_ack_timeout_not_seen" > "$out/weed-volume-thread-state.skipped"
+  fi
+}
+
 cleanup_lab() {
   set +e
+  collect_m02_evidence
   if [ -n "$CLEANUP_M01_SCRIPT" ] && [ -f "$CLEANUP_M01_SCRIPT" ]; then
     bash "$CLEANUP_M01_SCRIPT" m01
   fi
@@ -228,7 +288,7 @@ run_unified_gate() {
   fi
 
   test -n "$GO_WEED_BIN" || { echo "GO_WEED_BIN missing; build_unified_gate must run before startup" >&2; exit 1; }
-  ssh "$M02_HOST" "$dc_env MONO='$m02_src' WEED='$GO_WEED_BIN' bash '$m02_src/$gate/m02-up.sh'"
+  ssh "$M02_HOST" "$dc_env RUN='$M02_RUN_DIR' MONO='$m02_src' WEED='$GO_WEED_BIN' bash '$m02_src/$gate/m02-up.sh'"
 
   local dc_m01=""
   if [ "$ENABLE_DC" = "1" ]; then
@@ -307,6 +367,7 @@ write_summary() {
     echo "RDMA_CI_RUST_CARGO_LOCK_SHA256_BEFORE=$RUST_CARGO_LOCK_SHA256_BEFORE"
     echo "RDMA_CI_RUST_CARGO_LOCK_SHA256_AFTER=$RUST_CARGO_LOCK_SHA256_AFTER"
     echo "RDMA_CI_RUST_CARGO_LOCK_DIFF_SHA256=$RUST_CARGO_LOCK_DIFF_SHA256"
+    echo "RDMA_CI_M02_EVIDENCE_DIR=m02-evidence"
   } | tee "$run_dir/summary.env"
   {
     echo "<!doctype html><meta charset=\"utf-8\"><title>RDMA lab $run_id</title>"
