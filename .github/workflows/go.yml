@@ -238,6 +238,12 @@ jobs:
     # 386 test binaries run natively on the amd64 runner. This catches what vet
     # can't: unaligned 64-bit atomics and arithmetic that wraps at runtime.
     # -short skips the e2e suites already covered on amd64.
+    # -timeout 20m: the weed/storage suite (TestMemIndexCompaction +
+    # TestLDBIndexCompaction alone write 20k needles through LevelDB) takes
+    # ~549s on main on 386 — right at go test's 10m default. A branch that adds
+    # a little more I/O tips it over and the whole job dies with a
+    # "test timed out after 10m0s" panic. Give it headroom instead of
+    # chasing the moving boundary.
     - name: Test linux/386
       working-directory: seaweedfs-source/enterprise/weed
-      run: GOOS=linux GOARCH=386 go test -short ./...
+      run: GOOS=linux GOARCH=386 go test -short -timeout 20m ./...
