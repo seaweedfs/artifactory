@@ -512,16 +512,22 @@ build_unified_gate() {
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
   KMOD_UNAME_R="$(uname -r)"
   echo "VFS_KERNEL_TREE_CLEAN_START path=$m01_src/seaweed-vfs/kernel"
-  git -C "$m01_src" clean -ffd -- seaweed-vfs/kernel
-  echo "VFS_KERNEL_TREE_CLEAN_DONE path=$m01_src/seaweed-vfs/kernel"
+  git -C "$m01_src" clean -ffdx -n -- seaweed-vfs/kernel | tee "$run_dir/vfs-kernel-clean.txt"
+  git -C "$m01_src" clean -ffdx -- seaweed-vfs/kernel
+  echo "VFS_KERNEL_TREE_CLEAN_DONE path=$m01_src/seaweed-vfs/kernel log=vfs-kernel-clean.txt"
   if bash -lc "cd '$m01_src/seaweed-vfs/kernel' && make"; then
     KMOD_BIN="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
     test -f "$KMOD_BIN" || { echo "kernel module build did not produce $KMOD_BIN" >&2; exit 1; }
     KMOD_SHA256="$(sha256sum "$KMOD_BIN" | awk '{print $1}')"
     KMOD_VERMAGIC="$(modinfo -F vermagic "$KMOD_BIN")"
   else
-    VFS_KERNEL_EXCLUDED="1"
-    VFS_KERNEL_EXCLUSION_REASON="seaweedvfs.ko_build_failed_for_${KMOD_UNAME_R}"
+    if [ "$SKIP_VFS" = "1" ]; then
+      VFS_KERNEL_EXCLUDED="1"
+      VFS_KERNEL_EXCLUSION_REASON="seaweedvfs.ko_build_failed_for_${KMOD_UNAME_R}"
+    else
+      echo "kernel module build failed for ${KMOD_UNAME_R} with SKIP_VFS=0" >&2
+      exit 1
+    fi
   fi
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise\" && go build -o weed-rdma ./weed && cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
   GO_WEED_BIN="$m02_src/enterprise/weed-rdma"
@@ -662,10 +668,6 @@ write_summary() {
     if [ "$SKIP_VFS" = "1" ]; then
       echo "RDMA_CI_VFS_EXCLUDED=1"
       echo "RDMA_CI_VFS_EXCLUSION_REASON=skip_vfs_request"
-      echo "RDMA_CI_VFS_EXCLUSION_ISSUE=D-3"
-    elif [ "$VFS_KERNEL_EXCLUDED" = "1" ]; then
-      echo "RDMA_CI_VFS_EXCLUDED=1"
-      echo "RDMA_CI_VFS_EXCLUSION_REASON=$VFS_KERNEL_EXCLUSION_REASON"
       echo "RDMA_CI_VFS_EXCLUSION_ISSUE=D-3"
     else
       echo "RDMA_CI_VFS_EXCLUDED=0"
