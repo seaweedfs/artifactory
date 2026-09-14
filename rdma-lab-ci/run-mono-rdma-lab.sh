@@ -141,17 +141,60 @@ collect_m02_evidence() {
   local out="$run_dir/m02-evidence"
   mkdir -p "$out"
   echo "== collect M02 evidence =="
-  if m02_ssh "test -d '$M02_RUN_DIR/logs'"; then
+  if m02_ssh "test -d '$M02_RUN_DIR'"; then
     mkdir -p "$out/run"
-    if m02_ssh "tar -C '$M02_RUN_DIR' -cf - logs" > "$out/run-logs.tar"; then
-      tar -C "$out/run" -xf "$out/run-logs.tar" 2>/dev/null || true
-      find "$out/run/logs" -type f -maxdepth 1 -print0 | xargs -0r sha256sum > "$out/run-logs.sha256"
+    if m02_ssh "tar -C '$M02_RUN_DIR' -cf - logs master.pid filer.pid volume.pid volume.identity 2>/dev/null" > "$out/run-state.tar"; then
+      tar -C "$out/run" -xf "$out/run-state.tar" 2>/dev/null || true
+      find "$out/run" -type f -print0 | xargs -0r sha256sum > "$out/run-state.sha256"
     else
-      echo "failed to capture $M02_RUN_DIR/logs" > "$out/run-logs.capture_failed"
+      echo "failed to capture $M02_RUN_DIR run logs/pids" > "$out/run-state.capture_failed"
     fi
   else
-    echo "missing $M02_RUN_DIR/logs" > "$out/run-logs.missing"
+    echo "missing $M02_RUN_DIR" > "$out/run-state.missing"
   fi
+  if [ -n "$M02_VOLBIN" ]; then
+    m02_ssh "sha256sum '$M02_VOLBIN' 2>&1" > "$out/volume-binary.sha256"       || echo "volume binary hash capture failed" > "$out/volume-binary.capture_failed"
+  fi
+  if ! m02_ssh "RUN='$M02_RUN_DIR' VOLBIN='$M02_VOLBIN' bash -s" > "$out/m02-runtime-snapshot.tar" <<'REMOTE'
+set +e
+out=$(mktemp -d /tmp/rdma-m02-runtime-snapshot.XXXXXX) || exit 0
+pid=$(cat "$RUN/volume.pid" 2>/dev/null)
+echo "run=$RUN" > "$out/meta.txt"
+echo "volbin=$VOLBIN" >> "$out/meta.txt"
+echo "pid=${pid:-}" >> "$out/meta.txt"
+if [ -n "${pid:-}" ]; then
+  ps -fp "$pid" > "$out/volume.ps" 2>&1
+  for f in stat wchan cmdline; do
+    cat "/proc/$pid/$f" > "$out/volume.proc.$f" 2>&1
+  done
+fi
+ss -tanp > "$out/ss-tanp.txt" 2>&1
+ss -ltnp > "$out/ss-ltnp.txt" 2>&1
+for port in 7532 7534 7535 8105 18105 9106; do
+  (ss -tanp 2>&1 | grep ":$port" || true) > "$out/ss-port-$port.txt"
+done
+if command -v rdma >/dev/null 2>&1; then
+  rdma link > "$out/rdma-link.txt" 2>&1
+  rdma res show qp > "$out/rdma-res-qp.txt" 2>&1
+  rdma res show cq > "$out/rdma-res-cq.txt" 2>&1
+  rdma res show mr > "$out/rdma-res-mr.txt" 2>&1
+else
+  echo rdma_not_found > "$out/rdma.unavailable"
+fi
+if command -v ibv_devinfo >/dev/null 2>&1; then
+  ibv_devinfo > "$out/ibv-devinfo.txt" 2>&1
+else
+  echo ibv_devinfo_not_found > "$out/ibv-devinfo.unavailable"
+fi
+tar -C "$out" -cf - .
+rm -rf "$out"
+REMOTE
+  then
+    echo "runtime snapshot capture ssh timeout/failure" > "$out/m02-runtime-snapshot.capture_failed"
+  fi
+  mkdir -p "$out/m02-runtime-snapshot"
+  tar -C "$out/m02-runtime-snapshot" -xf "$out/m02-runtime-snapshot.tar" 2>/dev/null || true
+  find "$out/m02-runtime-snapshot" -type f -print0 | xargs -0r sha256sum > "$out/m02-runtime-snapshot.sha256"
   if dc_ack_timeout_seen; then
     if ! m02_ssh "RUN='$M02_RUN_DIR' VOLBIN='$M02_VOLBIN' GDB_TIMEOUT='$M02_GDB_TIMEOUT_SECS' bash -s" > "$out/weed-volume-thread-state.tar" <<'REMOTE'
 set +e
@@ -360,6 +403,48 @@ DIAG
   sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh"
 }
 
+apply_dc_push_capture() {
+  echo "== prepare DC push evidence capture wrapper =="
+  cat > "$run_dir/s3-loader-capture-wrapper.sh" <<'DIAG'
+#!/bin/bash
+set -euo pipefail
+args=("$@")
+backend=""
+direction=""
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --backend) backend="${args[$((i+1))]:-}" ;;
+    --direction) direction="${args[$((i+1))]:-}" ;;
+  esac
+done
+if [ "${args[0]:-}" = "proxy-get-bench" ] && [ "$backend" = "dc" ] && [ "$direction" = "push" ]; then
+  mkdir -p "${DC_CAPTURE_DIR:?}"
+  idx_file="$DC_CAPTURE_DIR/.dc-push-index"
+  if [ -f "$idx_file" ]; then idx=$(cat "$idx_file"); else idx=0; fi
+  idx=$((idx + 1)); echo "$idx" > "$idx_file"
+  prefix="$DC_CAPTURE_DIR/dc-push-$idx"
+  {
+    printf 'REAL_S3LOADER=%q' "$REAL_S3LOADER"
+    for arg in "${args[@]}"; do printf ' %q' "$arg"; done
+    printf '\n'
+  } > "$prefix.command"
+  set +e
+  "$REAL_S3LOADER" "${args[@]}" > "$prefix.stdout" 2> "$prefix.stderr"
+  rc=$?
+  set -e
+  echo "$rc" > "$prefix.rc"
+  sha256sum "$prefix.command" "$prefix.stdout" "$prefix.stderr" "$prefix.rc" > "$prefix.sha256" 2>/dev/null || true
+  cat "$prefix.stdout"
+  cat "$prefix.stderr" >&2
+  exit "$rc"
+fi
+exec "$REAL_S3LOADER" "${args[@]}"
+DIAG
+  mkdir -p "$run_dir/dc-push-capture"
+  chmod +x "$run_dir/s3-loader-capture-wrapper.sh"
+  sha256sum "$run_dir/s3-loader-capture-wrapper.sh"
+}
+
 sync_source_to_m02() {
   echo "== sync source to M02 =="
   local src="$M01_WORKDIR/seaweed-mono"
@@ -469,7 +554,7 @@ run_unified_gate() {
   local vfs_m01="SKIP_VFS=1 KMOD=$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
   echo "UNIFIED_RC_DIAGNOSTIC_SKIP_VFS=1"
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" WORK="/tmp/unified-rdma-gate-m01-run" MASTER_IP="192.168.1.184" RDMA="10.0.0.3:7534" CTRL="10.0.0.3:7535" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" DIAG_DIR="$run_dir/object-bench-diagnostics" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" bash "$m01_src/$gate/m01-unified.sh"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" WORK="/tmp/unified-rdma-gate-m01-run" MASTER_IP="192.168.1.184" RDMA="10.0.0.3:7534" CTRL="10.0.0.3:7535" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" DIAG_DIR="$run_dir/object-bench-diagnostics" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" REAL_S3LOADER="$m01_src/enterprise/rust/target/release/sw-rdma-s3-loader" S3LOADER="$run_dir/s3-loader-capture-wrapper.sh" DC_CAPTURE_DIR="$run_dir/dc-push-capture" bash "$m01_src/$gate/m01-unified.sh"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
@@ -487,6 +572,9 @@ write_provenance() {
     echo "rc_not_found_diagnostic=1"
     echo "rc_not_found_diagnostic_wrapper=object-bench-diagnostic-wrapper.sh"
     echo "rc_not_found_diagnostic_wrapper_sha256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
+    echo "dc_push_capture_wrapper=s3-loader-capture-wrapper.sh"
+    echo "dc_push_capture_wrapper_sha256=$(sha256sum "$run_dir/s3-loader-capture-wrapper.sh" | awk '{print $1}')"
+    echo "dc_push_capture_dir=dc-push-capture"
     echo "go_weed_bin=$GO_WEED_BIN"
     echo "go_weed_sha256=$GO_WEED_SHA256"
     echo "go_version=$GO_VERSION"
@@ -525,6 +613,8 @@ write_summary() {
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
     echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC=1"
     echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC_WRAPPER_SHA256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
+    echo "RDMA_CI_DC_PUSH_CAPTURE_WRAPPER_SHA256=$(sha256sum "$run_dir/s3-loader-capture-wrapper.sh" | awk '{print $1}')"
+    echo "RDMA_CI_DC_PUSH_CAPTURE_DIR=dc-push-capture"
     echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
     echo "RDMA_CI_GO_VERSION=$GO_VERSION"
     echo "RDMA_CI_KMOD_SHA256=$KMOD_SHA256"
@@ -562,6 +652,7 @@ write_summary() {
 preflight
 checkout_source
 apply_rc_not_found_diagnostics
+apply_dc_push_capture
 sync_source_to_m02
 if [ "$SKIP_BUILD" = "1" ]; then
   echo "== skip build =="
@@ -574,6 +665,9 @@ case "$PROFILE" in
   *) echo "unsupported profile: $PROFILE" >&2; exit 2 ;;
 esac
 
+if [ -d "$run_dir/dc-push-capture" ]; then
+  find "$run_dir/dc-push-capture" -type f -print0 | xargs -0r sha256sum > "$run_dir/dc-push-capture.sha256"
+fi
 write_provenance
 write_summary
 
