@@ -66,7 +66,7 @@ def lab_env():
 
 
 def remote_env_cmd(cmd):
-    prefix = os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX", "/home/testdev/.cargo/bin:/snap/bin:/usr/local/go/bin")
+    prefix = os.environ["RDMA_HW_SUITE_REMOTE_PATH_PREFIX"]
     return f"export PATH={shlex.quote(prefix)}:$PATH; {cmd}"
 
 
