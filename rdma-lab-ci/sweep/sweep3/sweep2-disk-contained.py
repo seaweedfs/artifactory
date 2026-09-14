@@ -2,6 +2,7 @@
 import os, pathlib, subprocess, json, datetime, fcntl, yaml
 P=pathlib.Path(os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product')); H=pathlib.Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))
 R=pathlib.Path(os.environ['SWEEP_ROOT']); B=R/'bin'
+if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-disk-contained');raise SystemExit
 os.environ['PATH']='/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 lock=open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','w');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
 a=open('/mnt/smb/work/share/testops/WHO-IS-RUNNING','a',buffering=1);a.write('START codex02 integration faults '+datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n')

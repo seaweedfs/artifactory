@@ -3,11 +3,12 @@ set -u
 export PATH=/opt/work/codex02-coverage-tools/bin:/home/testdev/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/opt/work/codex02-coverage-target
 root="${SWEEP_ROOT:?}/coverage-retained"
+[ "${SWEEP_DRY_RUN:-0}" = 1 ] && { echo DRY sweep2-coverage; exit 0; }
 mkdir -p "$root"
 exec 9>/mnt/smb/work/share/testops/locks/rdma-lab.lock
 flock -n 9 || { echo LAB_LOCK_BUSY; exit 3; }
-printf 'START codex02 integration coverage ac7f4e0f0 %s\n' "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING
-trap 'printf "END codex02 integration coverage ac7f4e0f0 %s\n" "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING' EXIT
+printf 'START codex02 integration coverage %s %s\n' "${SWEEP_PRODUCT:?}" "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING
+trap 'printf "END codex02 integration coverage %s %s\n" "${SWEEP_PRODUCT:?}" "$(date -u +%FT%TZ)" >> /mnt/smb/work/share/testops/WHO-IS-RUNNING' EXIT
 cp /opt/work/codex02-sweep2-product/enterprise/rust/Cargo.lock "$root/workspace.lock.before"
 cp /opt/work/codex02-sweep2-product/enterprise/seaweed-volume/Cargo.lock "$root/volume.lock.before"
 finish_coverage() {

@@ -10,6 +10,7 @@ VOLUMES = {'A':os.environ.get('SWEEP_REFERENCE_VOLUME_BIN','/opt/work/bin/weed-v
 REFERENCE_SHA=os.environ['SWEEP_REFERENCE']
 PRODUCT_SHA=os.environ['SWEEP_PRODUCT']
 SEED=int(os.environ.get('SWEEP_SEED','20260914'))
+if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-paired');raise SystemExit
 
 def call(args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)

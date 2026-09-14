@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+[ "${SWEEP_DRY_RUN:-0}" = 1 ] && { : "${SWEEP_ROOT:?}"; echo DRY sweep2-resume-final; exit 0; }
 set -a
 source /opt/work/lab.env
 set +a

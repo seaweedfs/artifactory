@@ -2,6 +2,7 @@ import datetime,fcntl,hashlib,json,os,pathlib,shutil,subprocess
 R=pathlib.Path(os.environ['SWEEP_ROOT']);B=R/'bin'
 P=pathlib.Path(os.environ.get('SWEEP_PRODUCT_TREE','/opt/work/codex02-sweep2-product'));H=pathlib.Path(os.environ.get('SWEEP_HARNESS_TREE','/opt/work/codex02-sweep2-harness'))
 SHA=os.environ['SWEEP_PRODUCT'];HSHA=os.environ['SWEEP_HARNESS']
+if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-lab-prep');raise SystemExit
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 with open('/mnt/smb/work/share/testops/locks/rdma-lab.lock','a') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)

@@ -5,6 +5,7 @@ B=pathlib.Path(os.environ.get('SWEEP_PAIRED_ROOT', str(R/'paired')))
 P=os.environ['SWEEP_PRODUCT']
 H=os.environ['SWEEP_HARNESS']
 W=os.environ.get('SWEEP_WIKI','sweep3-unpublished')
+if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-status');raise SystemExit
 OUT=R/'lab-status';OUT.mkdir(exist_ok=True)
 now=datetime.datetime.now(datetime.timezone.utc).isoformat()
 index=json.loads((R/'sweep2-index.json').read_text())
@@ -36,7 +37,7 @@ for item in index['out_of_scope']:
 written=[]
 assert len({r['id'] for r in rows})==len(rows)
 for row in rows:
-    gate='sweep-ac7f4e0f0-'+row['id']
+    gate='sweep-'+P[:8]+'-'+row['id']
     assert re.fullmatch('[a-z0-9][a-z0-9-]*',gate)
     assert row['actual'] in ('green','red','error','skipped')
     assert row['expected'] in ('green','red')

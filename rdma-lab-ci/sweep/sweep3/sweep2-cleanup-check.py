@@ -1,6 +1,7 @@
 import os,pathlib,json,subprocess,re,fcntl,datetime
 R=pathlib.Path(os.environ['SWEEP_ROOT']);T=pathlib.Path(os.environ.get('SWEEP_T3_ROOT', str(R/'t3')))
 B=pathlib.Path(os.environ.get('SWEEP_PAIRED_ROOT', str(R/'paired')))
+if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-cleanup-check');raise SystemExit
 markers=[str(R),str(T),str(B)]
 alive=[]
 for p in pathlib.Path('/proc').iterdir():
