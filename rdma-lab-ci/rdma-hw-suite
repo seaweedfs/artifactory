@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+import argparse, contextlib, datetime, hashlib, json, os, pathlib, re, shlex, subprocess, sys, time
+try:
+    import fcntl
+except ImportError:  # non-Linux review hosts can still inspect --help/parse
+    fcntl = None
+
+DEFAULT_REPO = "https://github.com/seaweedfs/seaweed-mono.git"
+DEFAULT_LOCK = "/mnt/smb/work/share/testops/locks/rdma-lab.lock"
+DEFAULT_ACTIVITY = "/mnt/smb/work/share/testops/WHO-IS-RUNNING"
+DEFAULT_T3_STEP05_ROOT = "/opt/work/codex-step05"
+
+
+SELF_LOCKING_CASES = {"t3.stale_key"}
+
+CASES = [
+    ("volume.dat_lifecycle", "m02", 240, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features rdma,test-support --test rdma_dat_lifecycle_e2e -- --nocapture --test-threads=1"),
+    ("volume.ec_lifecycle", "m02", 240, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features rdma,rdma-dc,test-support --test rdma_ec_lifecycle_e2e -- --nocapture --test-threads=1"),
+    ("volume.ec_shard_read", "m02", 240, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features rdma,test-support --test rdma_ec_shard_read_e2e -- --nocapture --test-threads=1"),
+    ("volume.kv_slab_read", "m02", 240, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RDMA_TEST_IP={rdma_ip} cargo test --features rdma,kvcache,test-support --test rdma_kv_slab_read_e2e -- --nocapture --test-threads=1"),
+    ("volume.copy", "m02", 300, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features rdma,test-support --test rdma_copy_e2e -- --nocapture --test-threads=1"),
+    ("volume.main_plan_peer", "m02", 240, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features rdma,test-support --test rdma_main_plan_peer_e2e -- --nocapture --test-threads=1"),
+    ("volume.dc_write_contract", "m02", 180, "cd {m02_src}/enterprise/seaweed-volume && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features rdma,rdma-dc,test-support --test rdma_dc_write_contract -- --nocapture --test-threads=1"),
+    ("vfs.rdma_lifecycle", "m02", 300, "cd {m02_src}/enterprise/rust/sw-rdma-vfs && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features real-rdma --test rdma_lifecycle_e2e -- --nocapture --test-threads=1"),
+    ("vfs.rdma_ec_read", "m02", 240, "cd {m02_src}/enterprise/rust/sw-rdma-vfs && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features real-rdma --test rdma_ec_read_e2e -- --nocapture --test-threads=1"),
+    ("vfs.rdma_reregister", "m02", 240, "cd {m02_src}/enterprise/rust/sw-rdma-vfs && RUSTUP_AUTO_INSTALL=0 RXE_IP={rdma_ip} cargo test --features real-rdma --test rdma_reregister_wire_e2e -- --nocapture --test-threads=1"),
+    ("t3.stale_key", "m01", 600, "python3 {suite_dir}/sweep/sweep3/sweep2-t3.py"),
+    ("unified.short_rc_dc", "m01", 900, "ENABLE_DC=1 RDMA_PIPES=4 bash {suite_dir}/run-mono-rdma-lab.sh --repo {repo} --ref {mono} --profile unified --artifacts {case_dir}/unified"),
+]
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def run(argv, log, timeout=None, cwd=None, env=None):
+    start = time.time()
+    with open(log, "w", encoding="utf-8", errors="replace") as out:
+        try:
+            proc = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT, timeout=timeout)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            out.write(f"\nTIMEOUT after {timeout}s\n")
+            rc = 124
+    return rc, time.time() - start
+
+
+def shell(cmd, log, timeout=None, cwd=None, env=None):
+    return run(["bash", "-lc", cmd], log, timeout, cwd, env)
+
+
+def lab_env():
+    env = os.environ.copy()
+    prefix = env.get("RDMA_HW_SUITE_PATH_PREFIX", "")
+    if prefix:
+        env["PATH"] = prefix + ":" + env.get("PATH", "")
+    return env
+
+
+def ssh(host, cmd, log, timeout=None):
+    return run(["ssh", "-o", "BatchMode=yes", host, cmd], log, timeout)
+
+
+def capture(host, cmd, path, timeout=30):
+    if host == "m01":
+        argv = ["bash", "-lc", cmd]
+    else:
+        argv = ["ssh", "-o", "BatchMode=yes", host, cmd]
+    try:
+        out = subprocess.check_output(argv, stderr=subprocess.STDOUT, timeout=timeout, text=True)
+    except subprocess.CalledProcessError as e:
+        out = e.output + f"\nCOMMAND_EXIT={e.returncode}\n"
+    except subprocess.TimeoutExpired as e:
+        out = (e.output or "") + f"\nCOMMAND_TIMEOUT={timeout}\n"
+    path.write_text(out)
+    return hashlib.sha256(out.encode()).hexdigest()
+
+
+def resource_snapshot(host, outdir, m02):
+    outdir.mkdir(parents=True, exist_ok=True)
+    cmds = {
+        "rdma-link.txt": "rdma link",
+        "rdma-qp.txt": "rdma res show qp",
+        "rdma-cq.txt": "rdma res show cq",
+        "rdma-mr.txt": "rdma res show mr",
+        "rdma-pd.txt": "rdma res show pd",
+    }
+    hashes = {}
+    for name, cmd in cmds.items():
+        path = outdir / name
+        digest = capture("m01" if host == "m01" else m02, cmd, path)
+        text = path.read_text(errors="replace")
+        hashes[name] = {"sha256": digest, "ok": "COMMAND_EXIT=" not in text and "COMMAND_TIMEOUT=" not in text}
+    return hashes
+
+
+def checked(argv, log, timeout=None, cwd=None, env=None):
+    rc, elapsed = run(argv, log, timeout, cwd, env)
+    if rc != 0:
+        raise SystemExit(f"command failed rc={rc}: {' '.join(map(str, argv))}; see {log}")
+    return elapsed
+
+
+def stage_mono(args, result_dir):
+    src = pathlib.Path(args.workdir) / "seaweed-mono"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    if not (src / ".git").exists():
+        checked(["git", "clone", args.repo, str(src)], result_dir / "git-clone.log", 900)
+    checked(["git", "-C", str(src), "fetch", "--all", "--prune"], result_dir / "git-fetch.log", 900)
+    checked(["git", "-C", str(src), "checkout", "--force", args.mono], result_dir / "git-checkout.log", 120)
+    got = subprocess.check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
+    if got != args.mono:
+        raise SystemExit(f"mono checkout mismatch: got {got}, want {args.mono}")
+    (src / "RDMA_HW_SUITE_SOURCE_SHA").write_text(args.mono + "\n")
+    m02_src = f"{args.m02_workdir.rstrip('/')}/seaweed-mono-{args.mono[:8]}"
+    checked(["ssh", "-o", "BatchMode=yes", args.m02, f"rm -rf {shlex.quote(m02_src)} && mkdir -p {shlex.quote(m02_src)}"], result_dir / "m02-mkdir.log", 120)
+    checked(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "target", f"{src}/", f"{args.m02}:{m02_src}/"], result_dir / "m02-rsync.log", 900)
+    marker = subprocess.check_output(["ssh", "-o", "BatchMode=yes", args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA"], text=True).strip()
+    if marker != args.mono:
+        raise SystemExit(f"M02 staged source mismatch: got {marker}, want {args.mono}")
+    return str(src), m02_src
+
+
+def build_suite_bins(mono_src, result_dir):
+    bindir = result_dir / "bin"
+    bindir.mkdir(exist_ok=True)
+    env = lab_env()
+    for name in ("sw-test-runner",):
+        checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / name))} ./testops/cmd/{name}"], result_dir / f"{name}-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env)
+    checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / 'weed'))} ./weed"], result_dir / "weed-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env)
+    checked(["bash", "-lc", f"RUSTUP_AUTO_INSTALL=0 cargo build --release --manifest-path enterprise/seaweed-volume/Cargo.toml --features rdma,rdma-dc --bin weed-volume && cp enterprise/seaweed-volume/target/release/weed-volume {shlex.quote(str(bindir / 'weed-volume'))}"], result_dir / "weed-volume-build.log", 1800, cwd=mono_src, env=env)
+    provenance = {"product_sha": None, "binary_sha256": {}}
+    for name in ("sw-test-runner", "weed", "weed-volume"):
+        provenance["binary_sha256"][name] = sha256(bindir / name)
+    (result_dir / "build-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    return bindir
+
+
+def snapshot_hosts(cid, host, cdir, args, when):
+    hosts = ("m01", "m02") if cid == "unified.short_rc_dc" else (host,)
+    return {name: resource_snapshot(name, cdir / f"resources-{when}" / name, args.m02) for name in hosts}
+
+
+def snapshots_ok(snapshot):
+    return all(entry["ok"] for host in snapshot.values() for entry in host.values())
+
+
+def run_case(case, args, ctx, result_dir):
+    cid, host, timeout, tmpl = case
+    cdir = result_dir / "cases" / cid.replace(".", "_")
+    cdir.mkdir(parents=True, exist_ok=True)
+    before = snapshot_hosts(cid, host, cdir, args, "before")
+    cmd = tmpl.format(**ctx, case_dir=str(cdir))
+    log = cdir / "case.log"
+    if host == "m02":
+        rc, elapsed = ssh(args.m02, cmd, log, timeout)
+    else:
+        env = lab_env()
+        if cid == "t3.stale_key":
+            env.update(ctx["t3_env"])
+        rc, elapsed = shell(cmd, log, timeout, env=env)
+    after = snapshot_hosts(cid, host, cdir, args, "after")
+    baseline_returned = before == after and snapshots_ok(before) and snapshots_ok(after)
+    verdict = "pass" if rc == 0 else "fail"
+    row = {
+        "case_id": cid,
+        "verdict": verdict,
+        "rc": rc,
+        "counters": {"resource_baseline_returned": baseline_returned, "resource_baseline_gated": False},
+        "bytes_verified": None,
+        "mismatches": None,
+        "elapsed_s": round(elapsed, 3),
+        "product_sha": args.mono,
+        "runner_sha": args.runner_sha,
+        "log": str(log),
+        "resources_before": before,
+        "resources_after": after,
+        "command": cmd,
+    }
+    (cdir / "verdict.json").write_text(json.dumps(row, indent=2) + "\n")
+    return row
+
+
+@contextlib.contextmanager
+def lab_lock(args):
+    if fcntl is None:
+        raise SystemExit("rdma-hw-suite requires fcntl on the lab host")
+    with open(args.lock, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def required(name, value):
+    if not value:
+        raise SystemExit(f"{name} is required; set the matching RDMA_HW_SUITE_* env var or pass the CLI flag")
+    return value
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="rdma-hw-suite")
+    ap.add_argument("--tier", required=True, choices=["S"])
+    ap.add_argument("--mono", required=True, help="40-char product sha")
+    ap.add_argument("--repo", default=DEFAULT_REPO)
+    ap.add_argument("--m02", default=os.environ.get("RDMA_HW_SUITE_M02"))
+    ap.add_argument("--rdma-ip", default=os.environ.get("RDMA_HW_SUITE_RDMA_IP"))
+    ap.add_argument("--t3-client-host", default=os.environ.get("RDMA_HW_SUITE_T3_CLIENT_HOST"))
+    ap.add_argument("--t3-client-user", default=os.environ.get("RDMA_HW_SUITE_T3_CLIENT_USER"))
+    ap.add_argument("--t3-client-key", default=os.environ.get("RDMA_HW_SUITE_T3_CLIENT_KEY"))
+    ap.add_argument("--t3-rdma-device", default=os.environ.get("RDMA_HW_SUITE_T3_RDMA_DEVICE"))
+    ap.add_argument("--t3-gid-index", default=os.environ.get("RDMA_HW_SUITE_T3_GID_INDEX"))
+    ap.add_argument("--t3-server-ip", default=os.environ.get("RDMA_HW_SUITE_T3_SERVER_IP"))
+    ap.add_argument("--t3-server-ssh", default=os.environ.get("RDMA_HW_SUITE_T3_SERVER_SSH"))
+    ap.add_argument("--workdir", default="/opt/rdma-lab-ci/work")
+    ap.add_argument("--m02-workdir", default="/opt/rdma-lab-ci/work")
+    ap.add_argument("--results", default="/mnt/smb/work/share/testops/results/rdma-hw-suite")
+    ap.add_argument("--lock", default=DEFAULT_LOCK)
+    ap.add_argument("--activity", default=DEFAULT_ACTIVITY)
+    ap.add_argument("--t3-step05-root", default=os.environ.get("HW_SUITE_T3_STEP05_ROOT", DEFAULT_T3_STEP05_ROOT))
+    args = ap.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.mono):
+        raise SystemExit("--mono must be a 40-char sha")
+    args.m02 = required("RDMA_HW_SUITE_M02/--m02", args.m02)
+    args.rdma_ip = required("RDMA_HW_SUITE_RDMA_IP/--rdma-ip", args.rdma_ip)
+    args.t3_client_host = required("RDMA_HW_SUITE_T3_CLIENT_HOST/--t3-client-host", args.t3_client_host)
+    args.t3_client_user = required("RDMA_HW_SUITE_T3_CLIENT_USER/--t3-client-user", args.t3_client_user)
+    args.t3_client_key = required("RDMA_HW_SUITE_T3_CLIENT_KEY/--t3-client-key", args.t3_client_key)
+    args.t3_rdma_device = required("RDMA_HW_SUITE_T3_RDMA_DEVICE/--t3-rdma-device", args.t3_rdma_device)
+    args.t3_gid_index = required("RDMA_HW_SUITE_T3_GID_INDEX/--t3-gid-index", args.t3_gid_index)
+    args.t3_server_ip = args.t3_server_ip or args.rdma_ip
+    args.t3_server_ssh = args.t3_server_ssh or args.m02
+    suite_dir = pathlib.Path(__file__).resolve().parent
+    args.runner_sha = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
+    run_id = f"hw-suite-S-{args.mono[:8]}-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    result_dir = pathlib.Path(args.results) / run_id
+    result_dir.mkdir(parents=True, exist_ok=False)
+    with lab_lock(args):
+        with open(args.activity, "a") as a:
+            a.write(f"START codex02 rdma-hw-suite tier=S mono={args.mono} run={run_id} {now()}\n")
+        mono_src, m02_src = stage_mono(args, result_dir)
+        bindir = build_suite_bins(mono_src, result_dir)
+
+    provenance = json.loads((result_dir / "build-provenance.json").read_text())
+    provenance["product_sha"] = args.mono
+    (result_dir / "build-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    t3_env = {
+        "SWEEP_PRODUCT": args.mono,
+        "SWEEP_HARNESS": args.mono,
+        "SWEEP_PRODUCT_TREE": mono_src,
+        "SWEEP_HARNESS_TREE": mono_src,
+        "SWEEP_ROOT": str(result_dir),
+        "SWEEP_STEP05_ROOT": args.t3_step05_root,
+        "SWEEP_VOLUME_BIN": str(bindir / "weed-volume"),
+        "T3_CLIENT_HOST": args.t3_client_host,
+        "T3_CLIENT_USER": args.t3_client_user,
+        "T3_CLIENT_KEY": args.t3_client_key,
+        "T3_SERVER_IP": args.t3_server_ip,
+        "T3_SERVER_SSH": args.t3_server_ssh,
+        "T3_RDMA_DEVICE": args.t3_rdma_device,
+        "T3_GID_INDEX": args.t3_gid_index,
+        "T3_RESULT_ROOT": str(result_dir / "t3-local"),
+        "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
+    }
+    ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
+    rows = []
+    for case in CASES:
+        if case[0] in SELF_LOCKING_CASES:
+            rows.append(run_case(case, args, ctx, result_dir))
+        else:
+            with lab_lock(args):
+                rows.append(run_case(case, args, ctx, result_dir))
+    status = "pass" if all(r["verdict"] == "pass" for r in rows) else "fail"
+    summary = {"run_id": run_id, "tier": args.tier, "status": status, "product_sha": args.mono, "runner_sha": args.runner_sha, "case_count": len(rows), "cases": rows}
+    (result_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    with lab_lock(args):
+        with open(args.activity, "a") as a:
+            a.write(f"END codex02 rdma-hw-suite tier=S mono={args.mono} run={run_id} status={status} {now()}\n")
+    print(json.dumps({"run_id": run_id, "status": status, "result_dir": str(result_dir)}, indent=2))
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
