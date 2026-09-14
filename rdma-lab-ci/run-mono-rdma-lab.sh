@@ -12,6 +12,7 @@ ARTIFACT_DIR="${ARTIFACT_DIR:-$PWD/rdma-lab-runs}"
 RDMA_PIPES="${RDMA_PIPES:-8}"
 ENABLE_DC="${ENABLE_DC:-0}"
 DC_INITIATORS="${DC_INITIATORS:-4}"
+SKIP_VFS="${SKIP_VFS:-0}"
 CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
 GO_WEED_BIN=""
@@ -510,6 +511,9 @@ build_unified_gate() {
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin sw-rdma-push-client-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
   KMOD_UNAME_R="$(uname -r)"
+  echo "VFS_KERNEL_TREE_CLEAN_START path=$m01_src/seaweed-vfs/kernel"
+  git -C "$m01_src" clean -ffd -- seaweed-vfs/kernel
+  echo "VFS_KERNEL_TREE_CLEAN_DONE path=$m01_src/seaweed-vfs/kernel"
   if bash -lc "cd '$m01_src/seaweed-vfs/kernel' && make"; then
     KMOD_BIN="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
     test -f "$KMOD_BIN" || { echo "kernel module build did not produce $KMOD_BIN" >&2; exit 1; }
@@ -585,10 +589,17 @@ run_unified_gate() {
   if [ "$ENABLE_DC" = "1" ]; then
     dc_m01="ENABLE_DC=1"
   fi
-  local vfs_m01="SKIP_VFS=1 KMOD=$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
-  echo "UNIFIED_RC_DIAGNOSTIC_SKIP_VFS=1"
+  case "$SKIP_VFS" in
+    0|1) ;;
+    *) echo "invalid SKIP_VFS=$SKIP_VFS; expected 0 or 1" >&2; exit 2 ;;
+  esac
+  if [ "$SKIP_VFS" = "1" ]; then
+    echo "UNIFIED_VFS_EXPLICITLY_EXCLUDED reason=skip_vfs_request issue=D-3"
+  else
+    echo "UNIFIED_VFS_REQUESTED_ON"
+  fi
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" WORK="/tmp/unified-rdma-gate-m01-run" MASTER_IP="192.168.1.184" RDMA="10.0.0.3:7534" CTRL="10.0.0.3:7535" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" DIAG_DIR="$run_dir/object-bench-diagnostics" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" REAL_S3LOADER="$m01_src/enterprise/rust/target/release/sw-rdma-s3-loader" S3LOADER="$run_dir/s3-loader-capture-wrapper.sh" DC_CAPTURE_DIR="$run_dir/dc-push-capture" bash "$m01_src/$gate/m01-unified.sh"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" WORK="/tmp/unified-rdma-gate-m01-run" MASTER_IP="192.168.1.184" RDMA="10.0.0.3:7534" CTRL="10.0.0.3:7535" ENABLE_DC="$ENABLE_DC" SKIP_VFS="$SKIP_VFS" KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" DIAG_DIR="$run_dir/object-bench-diagnostics" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" REAL_S3LOADER="$m01_src/enterprise/rust/target/release/sw-rdma-s3-loader" S3LOADER="$run_dir/s3-loader-capture-wrapper.sh" DC_CAPTURE_DIR="$run_dir/dc-push-capture" bash "$m01_src/$gate/m01-unified.sh"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
@@ -603,6 +614,7 @@ write_provenance() {
     echo "m02=$M02_HOST"
     echo "rdma_pipes=$RDMA_PIPES"
     echo "enable_dc=$ENABLE_DC"
+    echo "skip_vfs=$SKIP_VFS"
     echo "rc_not_found_diagnostic=1"
     echo "rc_not_found_diagnostic_wrapper=object-bench-diagnostic-wrapper.sh"
     echo "rc_not_found_diagnostic_wrapper_sha256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
@@ -646,6 +658,20 @@ write_summary() {
     echo "RDMA_CI_MONO_REF=$MONO_REF"
     echo "RDMA_CI_MONO_SHA=$(cat "$run_dir/mono.sha")"
     echo "RDMA_CI_PASS=$pass"
+    echo "RDMA_CI_SKIP_VFS=$SKIP_VFS"
+    if [ "$SKIP_VFS" = "1" ]; then
+      echo "RDMA_CI_VFS_EXCLUDED=1"
+      echo "RDMA_CI_VFS_EXCLUSION_REASON=skip_vfs_request"
+      echo "RDMA_CI_VFS_EXCLUSION_ISSUE=D-3"
+    elif [ "$VFS_KERNEL_EXCLUDED" = "1" ]; then
+      echo "RDMA_CI_VFS_EXCLUDED=1"
+      echo "RDMA_CI_VFS_EXCLUSION_REASON=$VFS_KERNEL_EXCLUSION_REASON"
+      echo "RDMA_CI_VFS_EXCLUSION_ISSUE=D-3"
+    else
+      echo "RDMA_CI_VFS_EXCLUDED=0"
+      echo "RDMA_CI_VFS_EXCLUSION_REASON="
+      echo "RDMA_CI_VFS_EXCLUSION_ISSUE="
+    fi
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
     echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC=1"
     echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC_WRAPPER_SHA256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
