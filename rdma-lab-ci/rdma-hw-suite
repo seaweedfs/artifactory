@@ -284,17 +284,17 @@ def required_git_objects(product_sha):
 
 
 def git_object_exists(repo, obj):
-    return subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{obj}^{{tree}}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
+    return git_object_closure_error(repo, obj) is None
 
 
 def remote_git_object_exists(host, repo, obj):
     if host is None:
         return git_object_exists(repo, obj)
     try:
-        remote_text(host, f"git -C {shlex.quote(str(repo))} cat-file -e {shlex.quote(obj)}^{{tree}}")
+        remote_text(
+            host,
+            f"git -C {shlex.quote(str(repo))} fsck --connectivity-only --no-dangling {shlex.quote(obj)} >/dev/null",
+        )
         return True
     except Exception:
         return False
@@ -303,6 +303,14 @@ def remote_git_object_exists(host, repo, obj):
 def staging_repo_path(workdir):
     workdir = pathlib.Path(workdir)
     return workdir.with_name(workdir.name + "-git")
+
+
+def git_object_closure_error(repo, obj):
+    result = subprocess.run(
+        ["git", "-C", str(repo), "fsck", "--connectivity-only", "--no-dangling", obj],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    return None if result.returncode == 0 else (result.stdout.strip() or f"git fsck {obj} rc={result.returncode}")
 
 
 def repo_fsck_error(repo):
@@ -358,26 +366,30 @@ def preflight_self_test(mode):
             ["git", "-C", str(fixture), "hash-object", "-w", "--stdin"],
             input="dangling tree marker\n", text=True,
         ).strip()
-        missing_tree = subprocess.check_output(
+        nested_tree = subprocess.check_output(
             ["git", "-C", str(fixture), "mktree"],
             input=f"100644 blob {marker_blob}\tdangling-tree-marker\n", text=True,
         ).strip()
-        dangling = subprocess.check_output(
-            ["git", "-C", str(fixture), "commit-tree", missing_tree, "-m", "dangling tree"], text=True,
+        top_tree = subprocess.check_output(
+            ["git", "-C", str(fixture), "mktree"],
+            input=f"040000 tree {nested_tree}\tdangling-subtree\n", text=True,
         ).strip()
-        subprocess.check_call(["git", "-C", str(fixture), "update-ref", "refs/heads/dangling", dangling])
-        tree_object = fixture / ".git" / "objects" / missing_tree[:2] / missing_tree[2:]
+        dangling = subprocess.check_output(
+            ["git", "-C", str(fixture), "commit-tree", top_tree, "-m", "dangling subtree"], text=True,
+        ).strip()
+        tree_object = fixture / ".git" / "objects" / nested_tree[:2] / nested_tree[2:]
         tree_object.chmod(0o600)
         tree_object.unlink()
         assert subprocess.run(["git", "-C", str(fixture), "cat-file", "-e", f"{dangling}^{{commit}}"], stderr=subprocess.DEVNULL).returncode == 0
+        assert subprocess.run(["git", "-C", str(fixture), "cat-file", "-e", f"{dangling}^{{tree}}"], stderr=subprocess.DEVNULL).returncode == 0
         assert not git_object_exists(fixture, dangling)
-        assert repo_fsck_error(fixture) is not None
+        assert repo_fsck_error(fixture) is None
         assert staging_repo_path("/opt/work/rdma-lab-ci") == pathlib.Path("/opt/work/rdma-lab-ci-git")
         objects = required_git_objects(commit)
         assert set(objects) == {case[0] for case in CASES}
         assert MAIN_PLAN_OBJECT in objects["volume.main_plan_peer"]
         assert T3_DONOR_OBJECT in objects["t3.stale_key"]
-        print("PREFLIGHT_SELF_TEST PASS git-objects-ok tree_lookup=true dangling_commit=RED fsck_clean=PASS fsck_broken=RED derived_repo=/opt/work/rdma-lab-ci-git cases=12")
+        print("PREFLIGHT_SELF_TEST PASS git-objects-ok recursive_closure=true dangling_commit=RED missing_subtree=true top_tree_only=RED repo_refs_fsck=PASS derived_repo=/opt/work/rdma-lab-ci-git cases=12")
 
 
 def t3_server_ip_error(value, host):
