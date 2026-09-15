@@ -1,0 +1,11 @@
+# NIXL provider CPU gate floors.
+#
+# This profile is for scenarios/nixl-provider-cpu-gate.yaml. It intentionally
+# checks CPU provider behavior only; no GPU/cuObject claim is made here.
+
+__rdma_nixl_provider_gate_pass=1
+__rdma_nixl_provider_get_pass=1
+__rdma_nixl_provider_bench_pass=1
+__rdma_nixl_provider_put_pass=1
+__rdma_nixl_provider_read_mib_s>=5120
+__rdma_nixl_provider_put_bytes=20971520
