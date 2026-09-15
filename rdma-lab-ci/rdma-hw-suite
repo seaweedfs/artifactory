@@ -245,7 +245,12 @@ def input_preflight(args, result_dir):
         manifest["inputs"][item] = bool(value)
         if not value: return fail(item, "required value is empty")
         ok(item, str(value))
-    result_parent_error = t3_result_parent_error(args.t3_result_parent)
+    try:
+        share_mount, _ = mount_info(args.results)
+        _, result_parent_fs = mount_info(args.t3_result_parent)
+    except SuiteStepError as e:
+        return fail(e.item, e.reason)
+    result_parent_error = t3_result_parent_error(args.t3_result_parent, result_parent_fs, share_mount)
     if result_parent_error:
         return fail("t3_result_parent", result_parent_error)
     args.t3_server_ip = args.t3_server_ip or args.rdma_ip
@@ -441,16 +446,40 @@ def nested_t3_result(path, case_dir):
         return {"result": str(path), "error": str(e)}, False
 
 
-def t3_result_parent_error(value):
+def path_is_within(path, root):
+    try:
+        pathlib.Path(path).resolve().relative_to(pathlib.Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def mount_info(path):
+    probe = pathlib.Path(path)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    result = subprocess.run(
+        ["findmnt", "-n", "-T", str(probe), "-o", "TARGET,FSTYPE"],
+        text=True, capture_output=True,
+    )
+    if result.returncode != 0 or len(result.stdout.split()) < 2:
+        raise SuiteStepError("t3_result_parent", f"cannot determine filesystem for {path}: {result.stderr.strip()}")
+    return result.stdout.split()[:2]
+
+
+def t3_result_parent_error(value, fs_type, share_mount):
     parent = pathlib.PurePosixPath(value)
-    if not parent.is_absolute() or parent.parts[:3] != ("/", "data", "nvme"):
-        return "must be an M01-local path under /data/nvme, never the result share"
+    if not parent.is_absolute():
+        return "must be an absolute M01-local path outside the result share"
+    if fs_type.lower() in {"cifs", "smb", "smb3"} or path_is_within(value, share_mount):
+        return "must be on an M01-local filesystem, never the SMB result share"
     return None
 
 
 def t3_result_self_test():
-    assert t3_result_parent_error("/data/nvme/testops/t3") is None
-    assert t3_result_parent_error("/mnt/smb/work/share/testops/results")
+    assert t3_result_parent_error("/opt/rdma-lab-ci/work/t3-results", "ext4", "/mnt/smb") is None
+    assert t3_result_parent_error("/mnt/smb/work/share/testops/results", "cifs", "/mnt/smb")
+    assert t3_result_parent_error("/mnt/smb/other", "ext4", "/mnt/smb")
     root = pathlib.Path(tempfile.mkdtemp())
     live = root / "live" / "complete.json"
     live.parent.mkdir(parents=True)
@@ -579,6 +608,7 @@ def main():
     ap.add_argument("--t3-step05-root", default=os.environ.get("HW_SUITE_T3_STEP05_ROOT", DEFAULT_T3_STEP05_ROOT))
     ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
     args = ap.parse_args()
+    args.t3_result_parent = args.t3_result_parent or str(pathlib.Path(args.workdir) / "t3-results")
     if not re.fullmatch(r"[0-9a-f]{40}", args.mono):
         raise SystemExit("--mono must be a 40-char sha")
     suite_dir = pathlib.Path(__file__).resolve().parent
