@@ -473,11 +473,14 @@ def t3_result_parent_error(value, fs_type, share_mount):
         return "must be an absolute M01-local path outside the result share"
     if fs_type.lower() in {"cifs", "smb", "smb3"} or path_is_within(value, share_mount):
         return "must be on an M01-local filesystem, never the SMB result share"
+    if not any(path_is_within(value, root) for root in ("/tmp", "/opt/work", "/data/nvme")):
+        return "must be below the T3 gate allow-list: /tmp, /opt/work, or /data/nvme"
     return None
 
 
 def t3_result_self_test():
-    assert t3_result_parent_error("/opt/rdma-lab-ci/work/t3-results", "ext4", "/mnt/smb") is None
+    assert t3_result_parent_error("/opt/work/rdma-lab-ci/t3-results", "ext4", "/mnt/smb") is None
+    assert t3_result_parent_error("/opt/rdma-lab-ci/work/t3-results", "ext4", "/mnt/smb")
     assert t3_result_parent_error("/mnt/smb/work/share/testops/results", "cifs", "/mnt/smb")
     assert t3_result_parent_error("/mnt/smb/other", "ext4", "/mnt/smb")
     root = pathlib.Path(tempfile.mkdtemp())
