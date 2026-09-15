@@ -54,6 +54,10 @@ def dotted(node):
     return ""
 
 
+def words(call):
+    return {node.value for node in ast.walk(call) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+
+
 def errors(path=STAGER, run_self_test=True):
     if not path.is_file():
         return ["missing stage-d11-paired.py"]
@@ -79,15 +83,28 @@ def errors(path=STAGER, run_self_test=True):
         found.append("layout does not bind paths to the workdir filesystem")
     build = function(tree, "stage_build")
     build_text = ast.get_source_segment(source, build) if build else ""
-    for token in ("git", "worktree", "CARGO_TARGET_DIR", "cargo", "--locked", "object_read", "ec_read"):
-        if token not in build_text:
-            found.append(f"stage_build missing {token}")
+    git_calls = [call for call in calls(build) if {"git", "worktree", "add", "--detach"}.issubset(words(call))]
+    cargo_calls = [call for call in calls(build) if {"cargo", "build", "--locked"}.issubset(words(call))]
+    if len(git_calls) != 1 or not {"D11_PARENT_SHA", "D11_HEAD_SHA"}.issubset({node.id for node in ast.walk(build) if isinstance(node, ast.Name)}):
+        found.append("stage_build does not call git worktree add at both pinned refs")
+    if len(cargo_calls) != 1 or "CARGO_TARGET_DIR" not in build_text or not {"object_read", "ec_read"}.issubset(words(cargo_calls[0])):
+        found.append("stage_build does not call cargo build --locked for both readers")
+    if not COMMANDS.issubset({node.value for node in ast.walk(build) if isinstance(node, ast.Constant) and isinstance(node.value, str)}):
+        found.append("stage_build does not bind all commands to built paths")
+    target = next((node.value for node in ast.walk(build) if isinstance(node, ast.Assign)
+                   and any(isinstance(item, ast.Name) and item.id == "target" for item in node.targets)), None)
+    if target is None or not any(isinstance(node, ast.Name) and node.id == "workdir" for node in ast.walk(target)):
+        found.append("CARGO_TARGET_DIR is not derived from workdir")
     emit = function(tree, "emit_commands")
     emit_text = ast.get_source_segment(source, emit) if emit else ""
     if "D11_COMMAND_VARS" not in emit_text:
         found.append("emit_commands does not iterate the exhaustive command set")
     if "os.access" not in {dotted(call.func) for call in calls(emit)} or "X_OK" not in emit_text:
         found.append("emitted command executables are not checked")
+    main_fn = function(tree, "main")
+    main_text = ast.get_source_segment(source, main_fn) if main_fn else ""
+    if "stage_build(" not in main_text or "emit_commands(" not in main_text or main_text.index("stage_build(") > main_text.index("emit_commands("):
+        found.append("main does not stage builds before emitting their commands")
     self_test = function(tree, "self_test")
     self_text = ast.get_source_segment(source, self_test) if self_test else ""
     self_calls = {dotted(call.func) for call in calls(self_test)}
@@ -113,8 +130,15 @@ D11_MIN_FREE_BYTES=21474836480
 def validate_layout(workdir, paths):
     root=pathlib.Path(workdir).resolve(); device=os.stat(root).st_dev
     return all(pathlib.Path(p).resolve().is_relative_to(root) and os.stat(p).st_dev == device for p in paths)
-def stage_build():
-    spec="git worktree CARGO_TARGET_DIR cargo --locked object_read ec_read"
+def run(args, **kwargs): pass
+def stage_build(workdir):
+    workdir=pathlib.Path(workdir); target=workdir/"target"; built={}
+    for label,sha in {"A":D11_PARENT_SHA,"B":D11_HEAD_SHA}.items():
+        source=workdir/"source"/label
+        run(["git","worktree","add","--detach",str(source),sha])
+        run(["cargo","build","--locked","object_read","ec_read"],env={"CARGO_TARGET_DIR":str(target/label)})
+    return {"SWEEP_D11_OBJECT_READ_A_CMD":target/"A"/"object_read", "SWEEP_D11_OBJECT_READ_B_CMD":target/"B"/"object_read",
+            "SWEEP_D11_EC_READ_A_CMD":target/"A"/"ec_read", "SWEEP_D11_EC_READ_B_CMD":target/"B"/"ec_read"}
 def emit_commands(paths):
     values={name:str(paths[name]) for name in D11_COMMAND_VARS}
     assert all(os.access(value, os.X_OK) for value in values.values())
@@ -134,6 +158,8 @@ def self_test():
         else: raise AssertionError("missing-executable")
         outside.unlink()
     print("D11_STAGE_SELF_TEST PASS")
+def main():
+    built=stage_build(pathlib.Path("/opt/work/d11")); return emit_commands(built)
 if __name__ == "__main__": self_test()
 ''' % (PARENT, HEAD, tuple(sorted(COMMANDS)))
     with tempfile.TemporaryDirectory() as td:
@@ -142,7 +168,11 @@ if __name__ == "__main__": self_test()
         assert not errors(candidate), errors(candidate)
         candidate.write_text(fixture.replace("D11_MIN_FREE_BYTES=21474836480", "D11_MIN_FREE_BYTES=1"), encoding="utf-8")
         assert any("20 GiB" in item for item in errors(candidate, False))
-    print("D11-STAGE-CONTRACT-SELF-TEST PASS future=PASS wrong-floor=RED")
+        candidate.write_text(fixture.replace("built=stage_build(pathlib.Path(\"/opt/work/d11\")); ", "built={}; "), encoding="utf-8")
+        assert any("main does not stage" in item for item in errors(candidate, False))
+        candidate.write_text(fixture.replace('target=workdir/"target"', 'target=pathlib.Path("/target")'), encoding="utf-8")
+        assert any("derived from workdir" in item for item in errors(candidate, False))
+    print("D11-STAGE-CONTRACT-SELF-TEST PASS future=PASS wrong-floor=RED uncalled-stage=RED root-target=RED")
 
 
 def main():
