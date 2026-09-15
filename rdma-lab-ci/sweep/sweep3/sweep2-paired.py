@@ -1,16 +1,20 @@
-import fcntl, hashlib, json, math, os, random, resource, signal, statistics, subprocess, time, urllib.request
+import fcntl, hashlib, json, math, os, random, re, resource, shlex, signal, statistics, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
-ROOT = Path(os.environ['SWEEP_STEP05_ROOT'])
-OUT = Path(os.environ.get('SWEEP_PAIRED_ROOT', str(Path(os.environ['SWEEP_ROOT'])/'paired')))
+D11_CLI = '--d11-self-test' in sys.argv or '--d11-cost' in sys.argv
+def sweep_env(name):
+    return os.environ.get(name, '') if D11_CLI else os.environ[name]
+
+ROOT = Path(sweep_env('SWEEP_STEP05_ROOT') or '.')
+OUT = Path(os.environ.get('SWEEP_PAIRED_ROOT', str(Path(sweep_env('SWEEP_ROOT') or '.')/'paired')))
 CLIENT = 'testdev@192.168.1.181'
-REMOTE = os.environ.get('SWEEP_PAIRED_REMOTE', '/opt/work/codex02-sweep3-paired-'+os.environ['SWEEP_PRODUCT'][:8])
-WEED = os.environ.get('SWEEP_WEED_BIN', '/opt/work/bin/weed-'+os.environ['SWEEP_REFERENCE'])
-VOLUMES = {'A':os.environ.get('SWEEP_REFERENCE_VOLUME_BIN','/opt/work/bin/weed-volume-'+os.environ['SWEEP_REFERENCE']+'-sweep-rdma'), 'B':os.environ.get('SWEEP_VOLUME_BIN','/opt/work/bin/weed-volume-'+os.environ['SWEEP_PRODUCT']+'-sweep-rdma')}
-REFERENCE_SHA=os.environ['SWEEP_REFERENCE']
-PRODUCT_SHA=os.environ['SWEEP_PRODUCT']
+REMOTE = os.environ.get('SWEEP_PAIRED_REMOTE', '/opt/work/codex02-sweep3-paired-'+sweep_env('SWEEP_PRODUCT')[:8])
+WEED = os.environ.get('SWEEP_WEED_BIN', '/opt/work/bin/weed-'+sweep_env('SWEEP_REFERENCE'))
+VOLUMES = {'A':os.environ.get('SWEEP_REFERENCE_VOLUME_BIN','/opt/work/bin/weed-volume-'+sweep_env('SWEEP_REFERENCE')+'-sweep-rdma'), 'B':os.environ.get('SWEEP_VOLUME_BIN','/opt/work/bin/weed-volume-'+sweep_env('SWEEP_PRODUCT')+'-sweep-rdma')}
+REFERENCE_SHA=sweep_env('SWEEP_REFERENCE')
+PRODUCT_SHA=sweep_env('SWEEP_PRODUCT')
 SEED=int(os.environ.get('SWEEP_SEED','20260914'))
-if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-paired');raise SystemExit
+if not D11_CLI and os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-paired');raise SystemExit
 
 def call(args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
@@ -29,6 +33,119 @@ def wait(url, predicate=lambda r: True):
     raise RuntimeError('endpoint not ready: '+url)
 
 def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+D11_CALLERS = {
+    'object_read': 'sw-rdma-object/src/service.rs:read_client_buffer',
+    'ec_read': 'seaweed-volume/src/server/store_ec.rs:read_into',
+}
+
+def d11_command(mode, build):
+    name = 'SWEEP_D11_'+mode.upper()+'_'+build+'_CMD'
+    value = os.environ.get(name)
+    if not value: raise RuntimeError('missing '+name)
+    return shlex.split(value)
+
+def d11_sample(mode, build, command, expected_sha):
+    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+    if result.returncode: raise RuntimeError(f'{mode}/{build} rc={result.returncode}: {result.stdout[-2000:]}')
+    rows = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+    if len(rows) != 1: raise RuntimeError(f'{mode}/{build} emitted {len(rows)} JSON rows, expected one')
+    row = rows[0]
+    required = {'mode','product_sha','binary_sha256','caller','verified','copied_bytes','elapsed_s','cpu_s'}
+    missing = required-row.keys()
+    if missing: raise RuntimeError(f'{mode}/{build} missing fields {sorted(missing)}')
+    if row['mode'] != mode or row['caller'] != D11_CALLERS[mode]:
+        raise RuntimeError(f'{mode}/{build} caller binding mismatch')
+    if row['product_sha'] != expected_sha or row['verified'] is not True:
+        raise RuntimeError(f'{mode}/{build} provenance or verification mismatch')
+    if not re.fullmatch(r'[0-9a-f]{64}', row['binary_sha256']):
+        raise RuntimeError(f'{mode}/{build} binary_sha256 is invalid')
+    if not isinstance(row['copied_bytes'], int) or row['copied_bytes'] <= 0:
+        raise RuntimeError(f'{mode}/{build} copied_bytes must be a positive integer')
+    if not isinstance(row['elapsed_s'], (int,float)) or row['elapsed_s'] <= 0:
+        raise RuntimeError(f'{mode}/{build} elapsed_s must be positive')
+    if not isinstance(row['cpu_s'], (int,float)) or row['cpu_s'] < 0:
+        raise RuntimeError(f'{mode}/{build} cpu_s must be non-negative')
+    row['build'] = build
+    row['mib_s'] = row['copied_bytes']/(1024*1024)/row['elapsed_s']
+    return row
+
+def d11_metrics(samples, blocks):
+    output={}
+    critical = 2.145 if blocks == 15 else 2.045
+    for mode in D11_CALLERS:
+        effects=[]; orders={'ABBA':[],'BAAB':[]}
+        for block in range(blocks):
+            rows=[r for r in samples if r['mode']==mode and r['block']==block]
+            if len(rows)!=4: raise RuntimeError(f'{mode} block {block} has {len(rows)} samples')
+            effect=statistics.mean(math.log(r['mib_s']) for r in rows if r['build']=='B')-statistics.mean(math.log(r['mib_s']) for r in rows if r['build']=='A')
+            effects.append(effect); orders[''.join(r['build'] for r in rows)].append(effect)
+        mean=statistics.mean(effects); sd=statistics.stdev(effects)
+        half=critical*sd/math.sqrt(blocks); interval=[math.exp(mean-half),math.exp(mean+half)]
+        denom=sum((x-mean)**2 for x in effects)
+        lag1=sum((effects[i]-mean)*(effects[i-1]-mean) for i in range(1,blocks))/denom if denom else 0
+        order_effect=statistics.mean(orders['ABBA'])-statistics.mean(orders['BAAB'])
+        unflagged=abs(lag1)<=0.3 and abs(order_effect)<=math.log(1.02)
+        output[mode]={'ratio':math.exp(mean),'interval':interval,'lag1':lag1,
+                      'order_log_difference':order_effect,'dependence_unflagged':unflagged,
+                      'classification':('INCONCLUSIVE_DEPENDENCE' if not unflagged else
+                          'RETURN_BELOW_BAND' if interval[1]<0.95 else
+                          'INCONCLUSIVE_CROSSES_BAND' if interval[0]<0.95 else 'ACCEPT')}
+    return output
+
+def d11_cost():
+    blocks=int(os.environ.get('SWEEP_D11_BLOCKS','15'))
+    if blocks < 2: raise RuntimeError('SWEEP_D11_BLOCKS must be >=2')
+    out=Path(os.environ['SWEEP_D11_OUT']); out.mkdir(parents=True)
+    shas={'A':os.environ['SWEEP_D11_PARENT_SHA'],'B':os.environ['SWEEP_D11_HEAD_SHA']}
+    commands={mode:{build:d11_command(mode,build) for build in 'AB'} for mode in D11_CALLERS}
+    rng=random.Random(int(os.environ.get('SWEEP_SEED','20260915'))); schedule=[]
+    for mode in D11_CALLERS:
+        orders=(['ABBA']*((blocks+1)//2)+['BAAB']*(blocks//2)); rng.shuffle(orders)
+        schedule += [(mode,block,slot,build) for block,order in enumerate(orders) for slot,build in enumerate(order)]
+    (out/'predeclared.json').write_text(json.dumps({'modes':D11_CALLERS,'blocks':blocks,
+        'schedule':schedule,'parent_sha':shas['A'],'head_sha':shas['B'],'retries':0,
+        'acceptance_band':[0.95,1.05],'commands':commands},indent=2))
+    samples=[]
+    for mode,block,slot,build in schedule:
+        row=d11_sample(mode,build,commands[mode][build],shas[build])
+        row.update(block=block,slot=slot,sample_index=len(samples)); samples.append(row)
+        (out/'samples.json').write_text(json.dumps(samples,indent=2))
+    metrics=d11_metrics(samples,blocks)
+    cpu={build:sum(r['cpu_s'] for r in samples if r['build']==build) for build in 'AB'}
+    copied=sum(r['copied_bytes'] for r in samples)
+    result={'product_sha':shas,'samples':samples,'metrics':metrics,'cpu_s':cpu,
+            'copied_bytes':copied,'harness_sha256':sha(__file__)}
+    (out/'complete.json').write_text(json.dumps(result,indent=2))
+    oi=metrics['object_read']['interval']; ei=metrics['ec_read']['interval']
+    dependence=','.join(f'{m}:{metrics[m]["dependence_unflagged"]}' for m in D11_CALLERS)
+    print(f'D11-PAIRED-COST object_ratio={metrics["object_read"]["ratio"]:.6f} object_interval={oi[0]:.6f}..{oi[1]:.6f} '
+          f'ec_ratio={metrics["ec_read"]["ratio"]:.6f} ec_interval={ei[0]:.6f}..{ei[1]:.6f} '
+          f'dependence={dependence} cpu={cpu["A"]:.3f}/{cpu["B"]:.3f} copied_bytes={copied}')
+
+def d11_self_test():
+    with tempfile.TemporaryDirectory() as tmp:
+        script=Path(tmp)/'sample.py'
+        script.write_text("import json,os\nprint(json.dumps({'mode':os.environ['M'],'product_sha':os.environ['S'],'binary_sha256':'0'*64,'caller':os.environ['C'],'verified':True,'copied_bytes':4194304,'elapsed_s':float(os.environ['E']),'cpu_s':0.5}))\n")
+        samples=[]
+        for mode in D11_CALLERS:
+            for block in range(4):
+                for slot,build in enumerate('ABBA' if block%2==0 else 'BAAB'):
+                    env=dict(os.environ,M=mode,S=build,C=D11_CALLERS[mode],E='1.0' if build=='A' else '0.99')
+                    command=[sys.executable,str(script)]
+                    before=os.environ.copy(); os.environ.update(env)
+                    try: row=d11_sample(mode,build,command,build)
+                    finally: os.environ.clear(); os.environ.update(before)
+                    row.update(block=block,slot=slot); samples.append(row)
+        metrics=d11_metrics(samples,4)
+        if set(metrics)!=set(D11_CALLERS): raise AssertionError('both modes were not measured')
+        bad=dict(samples[0],caller='generic-read')
+        try:
+            if bad['caller'] != D11_CALLERS[bad['mode']]: raise RuntimeError('caller binding mismatch')
+        except RuntimeError: pass
+        else: raise AssertionError('wrong-caller negative did not fail')
+    print('D11_PAIRED_SELF_TEST PASS modes=object_read,ec_read undeclared_caller=RED')
 
 
 def telemetry():
@@ -189,4 +306,9 @@ def main():
 def interrupted(signum, frame):
     raise KeyboardInterrupt('lab run interrupted')
 signal.signal(signal.SIGTERM, interrupted)
-main()
+if '--d11-self-test' in sys.argv:
+    d11_self_test()
+elif '--d11-cost' in sys.argv:
+    d11_cost()
+else:
+    main()
