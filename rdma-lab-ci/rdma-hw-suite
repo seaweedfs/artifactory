@@ -207,6 +207,18 @@ def remote_text(host, cmd, timeout=30):
     return subprocess.check_output(["ssh", "-o", "BatchMode=yes", host, cmd], stderr=subprocess.STDOUT, timeout=timeout, text=True).strip()
 
 
+def require_manifest_details(manifest, paths):
+    missing = []
+    for dotted in paths:
+        cur = manifest
+        for part in dotted.split("."):
+            if not isinstance(cur, dict) or part not in cur or cur[part] in (None, ""):
+                missing.append(dotted)
+                break
+            cur = cur[part]
+    return missing
+
+
 def input_preflight(args, result_dir):
     checks, manifest = [], {"inputs": {}, "paths": {}}
     def ok(item, detail):
@@ -242,7 +254,7 @@ def input_preflight(args, result_dir):
 
 def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, t3_volume_path, provenance):
     log = []
-    manifest = {"inputs": {}, "paths": {}, "tools": {}, "artifacts": {}, "t3": {}, "unified": {}, "negative_control": args.preflight_negative_control}
+    manifest = {"product_sha": args.mono, "runner_sha": args.runner_sha, "inputs": {}, "paths": {}, "tools": {}, "artifacts": {}, "t3": {}, "unified": {}, "negative_control": args.preflight_negative_control}
     def ok(item, detail):
         log.append({"item": item, "ok": True, "detail": detail})
     def fail(item, reason):
@@ -259,8 +271,10 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
     manifest["inputs"]["local_path_prefix"] = local_prefix
     ok("local_path_prefix", local_prefix or "<system PATH>")
     if not pathlib.Path(args.lock).parent.exists(): return fail("lab_lock", f"lock parent missing {pathlib.Path(args.lock).parent}")
+    manifest["paths"]["lab_lock"] = args.lock
     ok("lab_lock", args.lock)
     if not pathlib.Path(args.activity).parent.exists(): return fail("activity_log", f"activity parent missing {pathlib.Path(args.activity).parent}")
+    manifest["paths"]["activity_log"] = args.activity
     ok("activity_log", args.activity)
     try:
         probe = result_dir / f".writable-{os.getpid()}"; probe.write_text("ok\n"); probe.unlink()
@@ -290,7 +304,9 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
     manifest["unified"]["dc_env"] = {"ENABLE_DC": "1", "RDMA_PIPES": "4"}
     manifest["unified"]["evidence_export_root"] = str(result_dir)
 
-    marker = (mono_src / "RDMA_HW_SUITE_SOURCE_SHA").read_text().strip() if (mono_src / "RDMA_HW_SUITE_SOURCE_SHA").exists() else ""
+    marker_path = mono_src / "RDMA_HW_SUITE_SOURCE_SHA"
+    marker = marker_path.read_text().strip() if marker_path.exists() else ""
+    manifest["paths"]["m01_source"] = {"path": str(mono_src), "marker_path": str(marker_path), "marker_sha256": sha256(marker_path) if marker_path.exists() else None}
     if marker != args.mono:
         return fail("m01_source_marker", f"got {marker!r}, want {args.mono}")
     ok("m01_source_marker", marker)
@@ -307,6 +323,11 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         return fail("m02_staged_source", str(e))
     if remote_marker != args.mono:
         return fail("m02_source_marker", f"got {remote_marker!r}, want {args.mono}")
+    try:
+        m02_marker_sha = remote_text(args.m02, f"sha256sum {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA | awk '{{print $1}}'")
+    except Exception as e:
+        return fail("m02_source_marker_sha", str(e))
+    manifest["paths"]["m02_source"] = {"path": m02_src, "marker_path": f"{m02_src}/RDMA_HW_SUITE_SOURCE_SHA", "marker_sha256": m02_marker_sha}
     ok("m02_staged_source", m02_src)
 
     for name in ("sw-test-runner", "weed", "weed-volume"):
@@ -314,6 +335,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         if err: return fail(err["failed_item"], err["reason"])
         digest = sha256(bindir / name)
         if digest != provenance["binary_sha256"].get(name): return fail(f"bin_{name}", "sha256 does not match build provenance")
+        manifest["artifacts"][name] = {"path": str(bindir / name), "sha256": digest}
         ok(f"bin_{name}", digest)
     for item, path, digest in (("m01_weed_uds", weed_uds_path, provenance.get("unified_weed_sha256")), ("t3_volume", t3_volume_path, provenance.get("t3_volume_sha256"))):
         err = assert_file(item, path, executable=True)
@@ -327,6 +349,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         return fail("m02_weed_uds", str(e))
     if m02_weed_sha != provenance.get("unified_weed_sha256"):
         return fail("m02_weed_uds", "sha256 does not match provenance")
+    manifest["artifacts"]["m02_weed_uds"] = {"path": str(weed_uds_path), "sha256": m02_weed_sha}
     ok("m02_weed_uds", m02_weed_sha)
 
     t3_cache = pathlib.Path(t3_step05_root) / "tcp-client"
@@ -340,7 +363,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         t3_prov = json.loads((t3_cache / "provenance.json").read_text())
     except Exception as e:
         return fail("t3_cache_provenance", str(e))
-    manifest["t3"] = {"step05_root": str(t3_step05_root), "cache": str(t3_cache), "result_parent": args.t3_result_parent, "client_key": args.t3_client_key, "client_key_readable": os.access(args.t3_client_key, os.R_OK), "client_root": f"/tmp/seaweed-t3-client-rdma-hw-suite-*", "provenance_keys": sorted(t3_prov.keys())}
+    manifest["t3"] = {"step05_root": str(t3_step05_root), "cache": str(t3_cache), "result_parent": args.t3_result_parent, "client_key": args.t3_client_key, "client_key_readable": os.access(args.t3_client_key, os.R_OK), "client_root": f"/tmp/seaweed-t3-client-rdma-hw-suite-*", "wire_client": {"path": str(t3_cache / "t3-wire-client"), "sha256": sha256(t3_cache / "t3-wire-client")}, "provenance": {"path": str(t3_cache / "provenance.json"), "sha256": sha256(t3_cache / "provenance.json"), "keys": sorted(t3_prov.keys())}}
     ok("t3_cache", str(t3_cache))
     ok("t3_result_parent", args.t3_result_parent)
 
@@ -350,10 +373,18 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
     dirty = lab_dirty_reasons(before)
     if dirty: return fail("clean_rdma_resources", "; ".join(dirty))
     ok("clean_rdma_resources", "m01/m02")
-    required_manifest = ("inputs", "paths", "tools", "artifacts", "t3", "unified", "negative_control")
-    if args.preflight_negative_control == "manifest-incomplete": manifest.pop("unified", None)
-    missing = [key for key in required_manifest if key not in manifest]
-    if missing: return fail("manifest_completeness", "missing manifest keys: " + ",".join(missing))
+    required_manifest = (
+        "product_sha", "runner_sha", "inputs.m02", "inputs.rdma_ip", "inputs.remote_path_prefix", "inputs.local_path_prefix",
+        "inputs.t3_result_parent", "inputs.t3_client_host", "inputs.t3_client_user", "inputs.t3_client_key", "inputs.t3_rdma_device", "inputs.t3_gid_index", "inputs.t3_server_ip", "inputs.t3_server_ssh",
+        "paths.result_root", "paths.lab_lock", "paths.activity_log", "paths.m01_source.path", "paths.m01_source.marker_path", "paths.m01_source.marker_sha256", "paths.m02_source.path", "paths.m02_source.marker_path", "paths.m02_source.marker_sha256",
+        "tools.local_git", "tools.local_ssh", "tools.local_rsync", "tools.local_bash", "tools.local_python3", "tools.local_go", "tools.local_cargo", "tools.m02",
+        "artifacts.sw-test-runner.path", "artifacts.sw-test-runner.sha256", "artifacts.weed.path", "artifacts.weed.sha256", "artifacts.weed-volume.path", "artifacts.weed-volume.sha256", "artifacts.m01_weed_uds.path", "artifacts.m01_weed_uds.sha256", "artifacts.m02_weed_uds.path", "artifacts.m02_weed_uds.sha256", "artifacts.t3_volume.path", "artifacts.t3_volume.sha256",
+        "t3.step05_root", "t3.cache", "t3.result_parent", "t3.client_key", "t3.client_key_readable", "t3.client_root", "t3.wire_client.path", "t3.wire_client.sha256", "t3.provenance.path", "t3.provenance.sha256", "t3.provenance.keys",
+        "unified.unified_script", "unified.object_bench_manifest", "unified.dc_env", "unified.evidence_export_root", "negative_control",
+    )
+    if args.preflight_negative_control == "manifest-incomplete": manifest["artifacts"]["m02_weed_uds"].pop("sha256", None)
+    missing = require_manifest_details(manifest, required_manifest)
+    if missing: return fail("manifest_completeness", "missing manifest details: " + ",".join(missing))
     row = {"preflight_status": "pass", "failed_item": None, "reason": None, "manifest": manifest, "checks": log}
     return write_preflight(result_dir, row)
 
