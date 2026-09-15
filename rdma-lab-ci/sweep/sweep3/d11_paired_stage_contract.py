@@ -95,6 +95,12 @@ def errors(path=STAGER, run_self_test=True):
                    and any(isinstance(item, ast.Name) and item.id == "target" for item in node.targets)), None)
     if target is None or not any(isinstance(node, ast.Name) and node.id == "workdir" for node in ast.walk(target)):
         found.append("CARGO_TARGET_DIR is not derived from workdir")
+    source_path = next((node.value for node in ast.walk(build) if isinstance(node, ast.Assign)
+                        and any(isinstance(item, ast.Name) and item.id == "source" for item in node.targets)), None)
+    if source_path is None or not any(isinstance(node, ast.Name) and node.id == "workdir" for node in ast.walk(source_path)):
+        found.append("source worktrees are not derived from workdir")
+    if not {"sources", "targets", "binaries", "commands"}.issubset(words(build)):
+        found.append("stage_build does not return the full staged path set")
     emit = function(tree, "emit_commands")
     emit_text = ast.get_source_segment(source, emit) if emit else ""
     if "D11_COMMAND_VARS" not in emit_text:
@@ -105,6 +111,12 @@ def errors(path=STAGER, run_self_test=True):
     main_text = ast.get_source_segment(source, main_fn) if main_fn else ""
     if "stage_build(" not in main_text or "emit_commands(" not in main_text or main_text.index("stage_build(") > main_text.index("emit_commands("):
         found.append("main does not stage builds before emitting their commands")
+    stage_pos, floor_pos = main_text.find("stage_build("), main_text.find("D11_MIN_FREE_BYTES")
+    if "shutil.disk_usage" not in main_text or floor_pos < 0 or stage_pos < 0 or floor_pos > stage_pos:
+        found.append("main does not enforce the 20 GiB floor before staging")
+    layout_pos, emit_pos = main_text.find("validate_layout("), main_text.find("emit_commands(")
+    if layout_pos < 0 or emit_pos < 0 or layout_pos > emit_pos:
+        found.append("main does not validate all staged paths before emission")
     self_test = function(tree, "self_test")
     self_text = ast.get_source_segment(source, self_test) if self_test else ""
     self_calls = {dotted(call.func) for call in calls(self_test)}
@@ -134,13 +146,15 @@ def run(args, **kwargs):
     exe=shutil.which(args[0]); command=["cmd","/c",exe]+args[1:] if os.name=="nt" else [exe]+args[1:]
     subprocess.run(command,check=True,**kwargs)
 def stage_build(workdir):
-    workdir=pathlib.Path(workdir); target=workdir/"target"; built={}
+    workdir=pathlib.Path(workdir); target=workdir/"target"; staged={"sources":[],"targets":[],"binaries":[],"commands":{}}
     for label,sha in {"A":D11_PARENT_SHA,"B":D11_HEAD_SHA}.items():
         source=workdir/"source"/label
         run(["git","worktree","add","--detach",str(source),sha])
         run(["cargo","build","--locked","object_read","ec_read"],env=dict(os.environ,CARGO_TARGET_DIR=str(target/label)))
-    return {"SWEEP_D11_OBJECT_READ_A_CMD":target/"A"/"object_read", "SWEEP_D11_OBJECT_READ_B_CMD":target/"B"/"object_read",
-            "SWEEP_D11_EC_READ_A_CMD":target/"A"/"ec_read", "SWEEP_D11_EC_READ_B_CMD":target/"B"/"ec_read"}
+        staged["sources"].append(source); staged["targets"].append(target/label)
+    staged["commands"]={"SWEEP_D11_OBJECT_READ_A_CMD":target/"A"/"object_read", "SWEEP_D11_OBJECT_READ_B_CMD":target/"B"/"object_read",
+                        "SWEEP_D11_EC_READ_A_CMD":target/"A"/"ec_read", "SWEEP_D11_EC_READ_B_CMD":target/"B"/"ec_read"}
+    staged["binaries"]=list(staged["commands"].values()); return staged
 def emit_commands(paths):
     values={name:str(paths[name]) for name in D11_COMMAND_VARS}
     assert all(os.access(value, os.X_OK) for value in values.values())
@@ -159,8 +173,9 @@ def self_test():
     with tempfile.TemporaryDirectory() as td:
         root=pathlib.Path(td); work=root/"work"; work.mkdir(); old=os.environ.get("PATH","")
         os.environ["PATH"]=str(install_shims(root))+os.pathsep+old
+        original=shutil.disk_usage; shutil.disk_usage=lambda path:type("U",(),{"free":D11_MIN_FREE_BYTES+1})()
         try: commands=main(work)
-        finally: os.environ["PATH"]=old
+        finally: os.environ["PATH"]=old; shutil.disk_usage=original
         assert set(commands)==set(D11_COMMAND_VARS)
         assert all(pathlib.Path(value).resolve().is_relative_to(work.resolve()) and pathlib.Path(value).read_text()=="shim-built" for value in commands.values())
         assert validate_layout(work, commands.values()); emit_commands(commands)
@@ -174,7 +189,10 @@ def self_test():
         outside.unlink()
     print("D11_STAGE_SELF_TEST PASS")
 def main(workdir):
-    built=stage_build(pathlib.Path(workdir)); return emit_commands(built)
+    usage=shutil.disk_usage(workdir)
+    if usage.free < D11_MIN_FREE_BYTES: raise RuntimeError("insufficient free space")
+    staged=stage_build(pathlib.Path(workdir)); paths=staged["sources"]+staged["targets"]+staged["binaries"]+list(staged["commands"].values())
+    assert validate_layout(workdir,paths); return emit_commands(staged["commands"])
 if __name__ == "__main__": self_test()
 ''' % (PARENT, HEAD, tuple(sorted(COMMANDS)))
     with tempfile.TemporaryDirectory() as td:
@@ -183,11 +201,15 @@ if __name__ == "__main__": self_test()
         assert not errors(candidate), errors(candidate)
         candidate.write_text(fixture.replace("D11_MIN_FREE_BYTES=21474836480", "D11_MIN_FREE_BYTES=1"), encoding="utf-8")
         assert any("20 GiB" in item for item in errors(candidate, False))
-        candidate.write_text(fixture.replace("built=stage_build(pathlib.Path(workdir)); ", "built={}; "), encoding="utf-8")
+        candidate.write_text(fixture.replace("if usage.free < D11_MIN_FREE_BYTES", "if False"), encoding="utf-8")
+        assert any("floor before staging" in item for item in errors(candidate, False))
+        candidate.write_text(fixture.replace("staged=stage_build(pathlib.Path(workdir)); ", "staged={}; "), encoding="utf-8")
         assert any("main does not stage" in item for item in errors(candidate, False))
         candidate.write_text(fixture.replace('target=workdir/"target"', 'target=pathlib.Path("/target")'), encoding="utf-8")
         assert any("derived from workdir" in item for item in errors(candidate, False))
-    print("D11-STAGE-CONTRACT-SELF-TEST PASS future=PASS wrong-floor=RED uncalled-stage=RED root-target=RED")
+        candidate.write_text(fixture.replace('source=workdir/"source"/label', 'source=pathlib.Path("/outside-source")/label'), encoding="utf-8")
+        assert any("source worktrees" in item for item in errors(candidate, False))
+    print("D11-STAGE-CONTRACT-SELF-TEST PASS future=PASS wrong-floor=RED unused-floor=RED uncalled-stage=RED root-target=RED outside-source=RED")
 
 
 def main():
