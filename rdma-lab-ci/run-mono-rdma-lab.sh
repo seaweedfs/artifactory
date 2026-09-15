@@ -11,6 +11,7 @@ M02_WORKDIR="${M02_WORKDIR:-/opt/rdma-lab-ci/work}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$PWD/rdma-lab-runs}"
 RDMA_PIPES="${RDMA_PIPES:-8}"
 ENABLE_DC="${ENABLE_DC:-0}"
+SKIP_VFS="${SKIP_VFS:-0}"
 DC_INITIATORS="${DC_INITIATORS:-4}"
 CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
@@ -31,6 +32,7 @@ Options:
   --m02-workdir PATH  M02 work directory
   --artifacts PATH    local artifact directory
   --enable-dc         enable DC rows in the unified gate
+  --skip-vfs          skip VFS rows with reason D-17
   --skip-build        reuse existing build artifacts
   --d13-self-test     exercise readiness and evidence capture with fake hosts
   -h, --help          show this help
@@ -47,6 +49,7 @@ while [ "$#" -gt 0 ]; do
     --m02-workdir) M02_WORKDIR="$2"; shift 2 ;;
     --artifacts) ARTIFACT_DIR="$2"; shift 2 ;;
     --enable-dc) ENABLE_DC=1; shift ;;
+    --skip-vfs) SKIP_VFS=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --d13-self-test) D13_SELF_TEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -240,6 +243,13 @@ d13_self_test() {
   grep -q 'name=seaweedvfs.ko' "$fixture/stale-module.log"
   D13_TEST_KMOD_VERMAGIC='current-kernel SMP' D13_TEST_UNAME_R='current-kernel' \
     verify_unified_binaries "$binary_root" >/dev/null
+  rm -f "$binary_root/enterprise/rust/target/release/sw-rdma-kd" \
+    "$binary_root/seaweed-vfs/target/release/sw-kd" "$kmod"
+  SKIP_VFS=1 verify_unified_binaries "$binary_root" >/dev/null
+  SKIP_VFS=1 record_vfs_skip > "$fixture/skip-vfs.log"
+  grep -q 'row=vfs.cross_access status=SKIPPED reason=D-17' "$fixture/skip-vfs.log"
+  grep -q 'row=vfs.read_matrix status=SKIPPED reason=D-17' "$fixture/skip-vfs.log"
+  SKIP_VFS=0
   local cleanup_definition cleanup_script trace rc
   cleanup_definition="$(declare -f cleanup_lab)"
   cleanup_script="$fixture/teardown-m01.sh"
@@ -260,7 +270,7 @@ exit $body_status"
     test "$rc" = "$expected"
     test "$(sort "$trace" | tr '\n' ' ')" = "m01 m02 "
   done
-  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED stale_module=vermagic:RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED stale_module=vermagic:RED skip_vfs_rows=2 reason=D-17 logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
 }
 
 require_cmd git
@@ -318,9 +328,12 @@ build_unified_gate() {
     volume_features="rdma,rdma-dc"
   fi
 
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
-  make -C "$m01_src/seaweed-vfs/kernel"
+  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin seaweedfs-sw-rdma-kvcache"
+  if [ "$SKIP_VFS" != "1" ]; then
+    bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
+    bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
+    make -C "$m01_src/seaweed-vfs/kernel"
+  fi
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
 }
 
@@ -331,9 +344,12 @@ unified_required_binaries() {
     "sw-rdma-object-get=$root/enterprise/rust/target/release/sw-rdma-object-get" \
     "sw-rdma-object-bench=$root/enterprise/rust/target/release/sw-rdma-object-bench" \
     "sw-rdma-s3-loader=$root/enterprise/rust/target/release/sw-rdma-s3-loader" \
-    "seaweedfs-sw-rdma-kvcache=$root/enterprise/rust/target/release/seaweedfs-sw-rdma-kvcache" \
-    "sw-rdma-kd=$root/enterprise/rust/target/release/sw-rdma-kd" \
-    "sw-kd=$root/seaweed-vfs/target/release/sw-kd"
+    "seaweedfs-sw-rdma-kvcache=$root/enterprise/rust/target/release/seaweedfs-sw-rdma-kvcache"
+  if [ "$SKIP_VFS" != "1" ]; then
+    printf '%s\n' \
+      "sw-rdma-kd=$root/enterprise/rust/target/release/sw-rdma-kd" \
+      "sw-kd=$root/seaweed-vfs/target/release/sw-kd"
+  fi
 }
 
 verify_unified_binaries() {
@@ -351,23 +367,32 @@ verify_unified_binaries() {
       return 1
     fi
   done < <(unified_required_files "$root")
-  local kmod="$root/seaweed-vfs/kernel/seaweedvfs.ko"
-  local running_kernel="${D13_TEST_UNAME_R:-$(uname -r)}"
-  local module_vermagic
-  module_vermagic="${D13_TEST_KMOD_VERMAGIC:-$(modinfo -F vermagic "$kmod")}" || {
-    echo "UNIFIED_PREFLIGHT_STALE_ARTIFACT name=seaweedvfs.ko reason=modinfo_failed" >&2
-    return 1
-  }
-  if [ "${module_vermagic%% *}" != "$running_kernel" ]; then
-    echo "UNIFIED_PREFLIGHT_STALE_ARTIFACT name=seaweedvfs.ko module_vermagic=${module_vermagic%% *} running_kernel=$running_kernel" >&2
-    return 1
+  if [ "$SKIP_VFS" != "1" ]; then
+    local kmod="$root/seaweed-vfs/kernel/seaweedvfs.ko"
+    local running_kernel="${D13_TEST_UNAME_R:-$(uname -r)}"
+    local module_vermagic
+    module_vermagic="${D13_TEST_KMOD_VERMAGIC:-$(modinfo -F vermagic "$kmod")}" || {
+      echo "UNIFIED_PREFLIGHT_STALE_ARTIFACT name=seaweedvfs.ko reason=modinfo_failed" >&2
+      return 1
+    }
+    if [ "${module_vermagic%% *}" != "$running_kernel" ]; then
+      echo "UNIFIED_PREFLIGHT_STALE_ARTIFACT name=seaweedvfs.ko module_vermagic=${module_vermagic%% *} running_kernel=$running_kernel" >&2
+      return 1
+    fi
   fi
   echo "UNIFIED_BINARY_PREFLIGHT_PASS product_sha=$MONO_REF"
 }
 
 unified_required_files() {
   local root="$1"
-  printf '%s\n' "seaweedvfs.ko=$root/seaweed-vfs/kernel/seaweedvfs.ko"
+  if [ "$SKIP_VFS" != "1" ]; then
+    printf '%s\n' "seaweedvfs.ko=$root/seaweed-vfs/kernel/seaweedvfs.ko"
+  fi
+}
+
+record_vfs_skip() {
+  echo "UNIFIED_ROW row=vfs.cross_access status=SKIPPED reason=D-17"
+  echo "UNIFIED_ROW row=vfs.read_matrix status=SKIPPED reason=D-17"
 }
 
 if [ "$D13_SELF_TEST" = "1" ]; then
@@ -409,7 +434,10 @@ run_unified_gate() {
     dc_m01="ENABLE_DC=1"
   fi
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 bash '$m01_src/$gate/m01-unified.sh'"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" SKIP_VFS="$SKIP_VFS" bash -c "$dc_m01 SKIP_VFS='$SKIP_VFS' bash '$m01_src/$gate/m01-unified.sh'"
+  if [ "$SKIP_VFS" = "1" ]; then
+    record_vfs_skip
+  fi
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
@@ -424,6 +452,7 @@ write_provenance() {
     echo "m02=$M02_HOST"
     echo "rdma_pipes=$RDMA_PIPES"
     echo "enable_dc=$ENABLE_DC"
+    echo "skip_vfs=$SKIP_VFS"
   } | tee "$run_dir/provenance.txt"
 }
 

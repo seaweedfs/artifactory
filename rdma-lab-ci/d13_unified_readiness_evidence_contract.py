@@ -49,6 +49,7 @@ def errors(path=RUNNER):
                   "failed_body_status_preserved=23", "teardowns=both", "required_binaries=PASS",
                   "missing_binary=seaweedfs-sw-rdma-kvcache:RED", "missing_module=seaweedvfs.ko:RED",
                   "stale_module=vermagic:RED",
+                  "skip_vfs_rows=2 reason=D-17",
                   "D13_SELF_TEST PASS"):
         if token not in self_test:
             found.append(f"runtime self-test missing {token}")
@@ -72,6 +73,11 @@ def errors(path=RUNNER):
         found.append("kernel module vermagic preflight is not fail-closed")
     if "seaweed-vfs/kernel/seaweedvfs.ko" not in text:
         found.append("required file artifact manifest is missing seaweedvfs.ko")
+    for token in ('--skip-vfs', 'SKIP_VFS="$SKIP_VFS"',
+                  'row=vfs.cross_access status=SKIPPED reason=D-17',
+                  'row=vfs.read_matrix status=SKIPPED reason=D-17'):
+        if token not in text:
+            found.append(f"D-17 VFS skip accounting missing {token}")
     verify_call = text.rfind('verify_unified_binaries "$M01_WORKDIR/seaweed-mono"')
     case_call = text.rfind('case "$PROFILE" in')
     if verify_call < 0 or case_call < 0 or verify_call > case_call:
@@ -111,6 +117,7 @@ d13_self_test() {
   test master.log weed-volume.log filer.log loader.log success_capture_failure_exit=7
   test failed_body_status_preserved=23 teardowns=both required_binaries=PASS
   test missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED stale_module=vermagic:RED
+  test 'skip_vfs_rows=2 reason=D-17'
   echo D13_SELF_TEST PASS
 }
 build_unified_gate() {
@@ -127,6 +134,12 @@ verify_unified_binaries() {
   modinfo -F vermagic module; uname -r; echo UNIFIED_PREFLIGHT_STALE_ARTIFACT
 }
 unified_required_files() { echo seaweed-vfs/kernel/seaweedvfs.ko; }
+record_vfs_skip() {
+  echo 'row=vfs.cross_access status=SKIPPED reason=D-17'
+  echo 'row=vfs.read_matrix status=SKIPPED reason=D-17'
+}
+run_unified_gate() { SKIP_VFS="$SKIP_VFS"; }
+# --skip-vfs
 verify_unified_binaries "$M01_WORKDIR/seaweed-mono"
 case "$PROFILE" in unified) true ;; esac
 '''
