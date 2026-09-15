@@ -285,7 +285,7 @@ def required_git_objects(product_sha):
 
 def git_object_exists(repo, obj):
     return subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{obj}^{{commit}}"],
+        ["git", "-C", str(repo), "cat-file", "-e", f"{obj}^{{tree}}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
 
@@ -294,10 +294,33 @@ def remote_git_object_exists(host, repo, obj):
     if host is None:
         return git_object_exists(repo, obj)
     try:
-        remote_text(host, f"git -C {shlex.quote(str(repo))} cat-file -e {shlex.quote(obj)}^{{commit}}")
+        remote_text(host, f"git -C {shlex.quote(str(repo))} cat-file -e {shlex.quote(obj)}^{{tree}}")
         return True
     except Exception:
         return False
+
+
+def staging_repo_path(workdir):
+    workdir = pathlib.Path(workdir)
+    return workdir.with_name(workdir.name + "-git")
+
+
+def repo_fsck_error(repo):
+    result = subprocess.run(
+        ["git", "-C", str(repo), "fsck", "--connectivity-only", "--no-dangling"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    return None if result.returncode == 0 else (result.stdout.strip() or f"git fsck rc={result.returncode}")
+
+
+def remote_repo_fsck_error(host, repo):
+    if host is None:
+        return repo_fsck_error(repo)
+    try:
+        remote_text(host, f"git -C {shlex.quote(str(repo))} fsck --connectivity-only --no-dangling >/dev/null")
+        return None
+    except Exception as error:
+        return str(error)
 
 
 def preflight_self_test(mode):
@@ -330,11 +353,31 @@ def preflight_self_test(mode):
         missing = "0" * 40
         assert git_object_exists(fixture, commit) and remote_git_object_exists(None, fixture, commit)
         assert not git_object_exists(fixture, missing) and not remote_git_object_exists(None, fixture, missing)
+        assert repo_fsck_error(fixture) is None
+        marker_blob = subprocess.check_output(
+            ["git", "-C", str(fixture), "hash-object", "-w", "--stdin"],
+            input="dangling tree marker\n", text=True,
+        ).strip()
+        missing_tree = subprocess.check_output(
+            ["git", "-C", str(fixture), "mktree"],
+            input=f"100644 blob {marker_blob}\tdangling-tree-marker\n", text=True,
+        ).strip()
+        dangling = subprocess.check_output(
+            ["git", "-C", str(fixture), "commit-tree", missing_tree, "-m", "dangling tree"], text=True,
+        ).strip()
+        subprocess.check_call(["git", "-C", str(fixture), "update-ref", "refs/heads/dangling", dangling])
+        tree_object = fixture / ".git" / "objects" / missing_tree[:2] / missing_tree[2:]
+        tree_object.chmod(0o600)
+        tree_object.unlink()
+        assert subprocess.run(["git", "-C", str(fixture), "cat-file", "-e", f"{dangling}^{{commit}}"], stderr=subprocess.DEVNULL).returncode == 0
+        assert not git_object_exists(fixture, dangling)
+        assert repo_fsck_error(fixture) is not None
+        assert staging_repo_path("/opt/work/rdma-lab-ci") == pathlib.Path("/opt/work/rdma-lab-ci-git")
         objects = required_git_objects(commit)
         assert set(objects) == {case[0] for case in CASES}
         assert MAIN_PLAN_OBJECT in objects["volume.main_plan_peer"]
         assert T3_DONOR_OBJECT in objects["t3.stale_key"]
-        print("PREFLIGHT_SELF_TEST PASS git-objects-ok real_lookup=true missing_lookup=RED cases=12")
+        print("PREFLIGHT_SELF_TEST PASS git-objects-ok tree_lookup=true dangling_commit=RED fsck_clean=PASS fsck_broken=RED derived_repo=/opt/work/rdma-lab-ci-git cases=12")
 
 
 def t3_server_ip_error(value, host):
@@ -370,7 +413,7 @@ def input_preflight(args, result_dir):
         checks.append({"item": item, "ok": False, "reason": reason})
         return write_preflight(result_dir, {"preflight_status": "fail", "failed_item": item, "reason": reason, "manifest": manifest, "checks": checks})
     required_inputs = (
-        ("m02", args.m02), ("rdma_ip", args.rdma_ip), ("remote_path_prefix", os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX")),
+        ("m02", args.m02), ("rdma_ip", args.rdma_ip), ("repo", args.repo), ("remote_path_prefix", os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX")),
         ("t3_client_host", args.t3_client_host), ("t3_client_user", args.t3_client_user), ("t3_client_key", args.t3_client_key),
         ("t3_rdma_device", args.t3_rdma_device), ("t3_gid_index", args.t3_gid_index), ("t3_result_parent", args.t3_result_parent),
         ("t3_server_ip", args.t3_server_ip), ("t3_server_ssh", args.t3_server_ssh),
@@ -379,6 +422,19 @@ def input_preflight(args, result_dir):
         manifest["inputs"][item] = bool(value)
         if not value: return fail(item, "required value is empty")
         ok(item, str(value))
+    expected_repo = staging_repo_path(args.workdir)
+    if pathlib.Path(args.repo) != expected_repo:
+        return fail("staging_repo_path", f"got {args.repo}, want {expected_repo}")
+    for host, error in (("m01", repo_fsck_error(args.repo)), ("m02", remote_repo_fsck_error(args.m02, args.repo))):
+        if error:
+            return fail("staging_repo_fsck", f"host={host} repo={args.repo}: {error}")
+        ok("staging_repo_fsck", f"host={host} repo={args.repo} clean=true")
+    for case, objects in required_git_objects(args.mono).items():
+        for obj in objects:
+            for host, exists in (("m01", git_object_exists(args.repo, obj)), ("m02", remote_git_object_exists(args.m02, args.repo, obj))):
+                if not exists:
+                    return fail("staging_repo_tree", f"host={host} case={case} missing tree for {obj}")
+            ok("staging_repo_tree", f"case={case} object={obj} hosts=m01,m02")
     if args.preflight_negative_control == "wrong-t3-server-ip":
         args.t3_server_ip = "192.0.2.255"
     server_ip_error = t3_server_ip_error(args.t3_server_ip, args.t3_server_ssh)
@@ -502,9 +558,9 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
             except OSError:
                 exists = False
             if not exists:
-                return fail("m01_case_git_object", f"case={case} missing commit {want}")
+                return fail("m01_case_git_object", f"case={case} missing tree for {want}")
             if not remote_git_object_exists(args.m02, m02_src, want):
-                return fail("m02_case_git_object", f"case={case} missing commit {want}")
+                return fail("m02_case_git_object", f"case={case} missing tree for {want}")
             ok("case_git_object", f"case={case} commit={required_object} hosts=m01,m02")
     try:
         remote_marker = remote_text(args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA")
@@ -767,7 +823,7 @@ def main():
     ap = argparse.ArgumentParser(prog="rdma-hw-suite")
     ap.add_argument("--tier", required=True, choices=["S"])
     ap.add_argument("--mono", required=True, help="40-char product sha")
-    ap.add_argument("--repo", default=DEFAULT_REPO)
+    ap.add_argument("--repo")
     ap.add_argument("--m02", default=os.environ.get("RDMA_HW_SUITE_M02"))
     ap.add_argument("--rdma-ip", default=os.environ.get("RDMA_HW_SUITE_RDMA_IP"))
     ap.add_argument("--t3-client-host", default=os.environ.get("RDMA_HW_SUITE_T3_CLIENT_HOST"))
@@ -787,6 +843,7 @@ def main():
     ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-case-git-object", "low-root-space", "low-workdir-space", "wrong-t3-server-ip", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
     args = ap.parse_args()
     args.t3_result_parent = args.t3_result_parent or str(pathlib.Path(args.workdir) / "t3-results")
+    args.repo = args.repo or str(staging_repo_path(args.workdir))
     if not re.fullmatch(r"[0-9a-f]{40}", args.mono):
         raise SystemExit("--mono must be a 40-char sha")
     suite_dir = pathlib.Path(__file__).resolve().parent

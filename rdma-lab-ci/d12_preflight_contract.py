@@ -25,6 +25,8 @@ ROWS = (
     ("D12.3-objects-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test git-objects-ok", "all per-case objects resolve on M01 and M02"),
     ("D12.4-banner-moving", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test root-space-ok", "banner without numeric last non-empty line is RED"),
     ("D12.4-banner-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test root-space-ok", "clean number and banner-prefixed number parse the last non-empty line"),
+    ("D12.5-dangling-commit", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test git-objects-ok", "commit without its tree is RED before staging"),
+    ("D12.5-repo-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test git-objects-ok", "workdir-derived bundle repo is fsck-clean and every per-case tree resolves on M01/M02"),
 )
 
 
@@ -74,6 +76,9 @@ def errors(path, after_suite=False):
     for token in ("parse_remote_free_bytes", "banner_before_number=PASS", "banner_without_number=RED"):
         if token not in text:
             result.append(f"missing remote probe parsing control {token}")
+    for token in ("staging_repo_path", "staging_repo_fsck", "staging_repo_tree", "dangling_commit=RED"):
+        if token not in text:
+            result.append(f"missing bundle repo control {token}")
     return result
 
 
