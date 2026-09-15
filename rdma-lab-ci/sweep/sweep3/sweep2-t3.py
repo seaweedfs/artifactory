@@ -5,7 +5,7 @@ BASE=os.environ.get('T3_BASE',os.environ['SWEEP_PRODUCT'])
 PIN=os.environ.get('T3_PRODUCT',BASE)
 HARNESS=os.environ.get('T3_HARNESS',BASE)
 tag=os.environ.get('T3_RESULT_TAG','codex02-sweep3-t3-'+os.environ['T3_TAG'])
-results=Path('/data/nvme/testdev')/tag
+results=Path(os.environ.get('T3_RESULT_PARENT','/data/nvme/testdev'))/tag
 share=Path('/mnt/smb/work/share/testops/results')/tag
 source=Path(os.environ['SWEEP_PRODUCT_TREE'])/'enterprise'
 if HARNESS != BASE: source=Path(os.environ['SWEEP_HARNESS_TREE'])/'enterprise'

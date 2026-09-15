@@ -329,6 +329,8 @@ def main():
     weed_uds_path.chmod(0o755)
     provenance["unified_weed_path"] = str(weed_uds_path)
     provenance["unified_weed_sha256"] = hashlib.sha256(weed_bytes).hexdigest()
+    checked(["ssh", "-o", "BatchMode=yes", args.m02, f"mkdir -p {shlex.quote(str(weed_uds_path.parent))}"], result_dir / "m02-weed-uds-mkdir.log", 120)
+    checked(["rsync", "-a", str(weed_uds_path), f"{args.m02}:{weed_uds_path}"], result_dir / "m02-weed-uds-rsync.log", 120)
     t3_volume_path = pathlib.Path("/opt/work/bin") / f"weed-volume-{args.mono}-rdma"
     t3_volume_path.parent.mkdir(parents=True, exist_ok=True)
     volume_bytes = (bindir / "weed-volume").read_bytes()
@@ -346,6 +348,7 @@ def main():
         "SWEEP_STEP05_ROOT": args.t3_step05_root,
         "T3_TAG": f"rdma-hw-suite-{run_id}-t3",
         "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
+        "T3_RESULT_PARENT": args.t3_result_parent,
     }
     ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
     rows = []
