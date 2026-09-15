@@ -110,10 +110,13 @@ def preflight_error(tree):
         return "ownership validator is detached from input_preflight"
     error = assigned_name(calls[0], func)
     bound = error and any(
-        isinstance(node, ast.Call) and call_name(node) == "fail" and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Constant) and node.args[0].value == "t3_server_ip"
-        and isinstance(node.args[1], ast.Name) and node.args[1].id == error for node in ast.walk(func))
-    return None if bound else "validator result does not fail t3_server_ip inside input_preflight"
+        isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == error
+        and any(isinstance(child, ast.Return) and isinstance(child.value, ast.Call)
+                and call_name(child.value) == "fail" and len(child.value.args) >= 2
+                and isinstance(child.value.args[0], ast.Constant) and child.value.args[0].value == "t3_server_ip"
+                and isinstance(child.value.args[1], ast.Name) and child.value.args[1].id == error
+                for child in ast.walk(node)) for node in ast.walk(func))
+    return None if bound else "validator failure is not returned from input_preflight as failed_item=t3_server_ip"
 
 
 def nested_error(runner, helper):
@@ -204,7 +207,11 @@ scenario = dict(server_env_file=str(server_env))
         failures = errors(runner_path, True, helper_path)
         assert any("input_preflight" in item for item in failures)
         assert any("nested T3" in item for item in failures)
-    print("D14-SELF-TEST PASS future=PASS unused_remote_output=RED detached_call_env=RED")
+        helper_path.write_text(helper, encoding="utf-8")
+        runner_path.write_text(future.replace('if error: return fail("t3_server_ip", error)',
+                                               'if error: fail("t3_server_ip", error)'), encoding="utf-8")
+        assert any("not returned" in item for item in errors(runner_path, True, helper_path))
+    print("D14-SELF-TEST PASS future=PASS unused_remote_output=RED detached_call_env=RED nonreturning_fail=RED")
 
 
 def main():
