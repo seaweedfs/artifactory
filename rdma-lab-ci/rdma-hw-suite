@@ -256,6 +256,9 @@ def filesystem_probe(path):
 
 
 def remote_filesystem_free(host, path):
+    if host is None:
+        probe, free_bytes = filesystem_probe(path)
+        return str(probe), free_bytes
     quoted = shlex.quote(str(path))
     command = (
         f"probe={quoted}; while [ ! -e \"$probe\" ] && [ \"$probe\" != / ]; do probe=$(dirname \"$probe\"); done; "
@@ -273,15 +276,50 @@ def required_git_objects(product_sha):
     }
 
 
-def git_object_self_test(mode):
-    objects = required_git_objects("1" * 40)
-    assert set(objects) == {case[0] for case in CASES}
-    assert MAIN_PLAN_OBJECT in objects["volume.main_plan_peer"]
-    assert T3_DONOR_OBJECT in objects["t3.stale_key"]
-    if mode == "git-objects-ok":
-        print("PREFLIGHT_SELF_TEST PASS git-objects-ok cases=12")
-    else:
-        print(f"PREFLIGHT_SELF_TEST PASS {mode} free_bytes>={MIN_PREFLIGHT_FREE_BYTES}")
+def git_object_exists(repo, obj):
+    return subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{obj}^{{commit}}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def remote_git_object_exists(host, repo, obj):
+    if host is None:
+        return git_object_exists(repo, obj)
+    try:
+        remote_text(host, f"git -C {shlex.quote(str(repo))} cat-file -e {shlex.quote(obj)}^{{commit}}")
+        return True
+    except Exception:
+        return False
+
+
+def preflight_self_test(mode):
+    with tempfile.TemporaryDirectory() as td:
+        fixture = pathlib.Path(td)
+        if mode in ("root-space-ok", "workdir-space-ok"):
+            local_probe, local_free = filesystem_probe(fixture)
+            remote_probe, remote_free = remote_filesystem_free(None, fixture)
+            assert local_probe == pathlib.Path(remote_probe)
+            assert local_free > 0 and remote_free > 0
+            assert local_free >= 1 and remote_free >= 1
+            assert local_free < local_free + 1 and remote_free < remote_free + 1
+            print(f"PREFLIGHT_SELF_TEST PASS {mode} real_probe=true still_threshold=1 moving_threshold=free_plus_one")
+            return
+        subprocess.check_call(["git", "init", "-q", str(fixture)])
+        subprocess.check_call(["git", "-C", str(fixture), "config", "user.email", "preflight@example.invalid"])
+        subprocess.check_call(["git", "-C", str(fixture), "config", "user.name", "preflight"])
+        (fixture / "marker").write_text("ok\n")
+        subprocess.check_call(["git", "-C", str(fixture), "add", "marker"])
+        subprocess.check_call(["git", "-C", str(fixture), "commit", "-qm", "fixture"])
+        commit = subprocess.check_output(["git", "-C", str(fixture), "rev-parse", "HEAD"], text=True).strip()
+        missing = "0" * 40
+        assert git_object_exists(fixture, commit) and remote_git_object_exists(None, fixture, commit)
+        assert not git_object_exists(fixture, missing) and not remote_git_object_exists(None, fixture, missing)
+        objects = required_git_objects(commit)
+        assert set(objects) == {case[0] for case in CASES}
+        assert MAIN_PLAN_OBJECT in objects["volume.main_plan_peer"]
+        assert T3_DONOR_OBJECT in objects["t3.stale_key"]
+        print("PREFLIGHT_SELF_TEST PASS git-objects-ok real_lookup=true missing_lookup=RED cases=12")
 
 
 def input_preflight(args, result_dir):
@@ -415,13 +453,13 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
                 want = "0" * 40
                 missing_control_used = True
             try:
-                subprocess.check_call(["git", "-C", str(mono_src), "cat-file", "-e", f"{want}^{{commit}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except subprocess.CalledProcessError:
+                exists = git_object_exists(mono_src, want)
+            except OSError:
+                exists = False
+            if not exists:
                 return fail("m01_case_git_object", f"case={case} missing commit {want}")
-            try:
-                remote_text(args.m02, f"git -C {shlex.quote(m02_src)} cat-file -e {shlex.quote(want)}^{{commit}}")
-            except Exception as e:
-                return fail("m02_case_git_object", f"case={case} missing commit {want}: {e}")
+            if not remote_git_object_exists(args.m02, m02_src, want):
+                return fail("m02_case_git_object", f"case={case} missing commit {want}")
             ok("case_git_object", f"case={case} commit={required_object} hosts=m01,m02")
     try:
         remote_marker = remote_text(args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA")
@@ -678,7 +716,7 @@ def main():
         t3_result_self_test()
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == "--preflight-self-test" and sys.argv[2] in ("root-space-ok", "workdir-space-ok", "git-objects-ok"):
-        git_object_self_test(sys.argv[2])
+        preflight_self_test(sys.argv[2])
         return 0
     ap = argparse.ArgumentParser(prog="rdma-hw-suite")
     ap.add_argument("--tier", required=True, choices=["S"])
