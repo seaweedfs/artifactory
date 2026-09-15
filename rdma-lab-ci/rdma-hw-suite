@@ -131,10 +131,17 @@ def resource_snapshot(host, outdir, m02):
     return hashes
 
 
-def checked(argv, log, timeout=None, cwd=None, env=None):
+class SuiteStepError(Exception):
+    def __init__(self, item, reason):
+        super().__init__(reason)
+        self.item = item
+        self.reason = reason
+
+
+def checked(argv, log, timeout=None, cwd=None, env=None, item="staging_command"):
     rc, elapsed = run(argv, log, timeout, cwd, env)
     if rc != 0:
-        raise SystemExit(f"command failed rc={rc}: {' '.join(map(str, argv))}; see {log}")
+        raise SuiteStepError(item, f"command failed rc={rc}: {' '.join(map(str, argv))}; see {log}")
     return elapsed
 
 
@@ -142,19 +149,19 @@ def stage_mono(args, result_dir):
     src = pathlib.Path(args.workdir) / "seaweed-mono"
     src.parent.mkdir(parents=True, exist_ok=True)
     if not (src / ".git").exists():
-        checked(["git", "clone", args.repo, str(src)], result_dir / "git-clone.log", 900)
-    checked(["git", "-C", str(src), "fetch", "--all", "--prune"], result_dir / "git-fetch.log", 900)
-    checked(["git", "-C", str(src), "checkout", "--force", args.mono], result_dir / "git-checkout.log", 120)
+        checked(["git", "clone", args.repo, str(src)], result_dir / "git-clone.log", 900, item="stage_git_clone")
+    checked(["git", "-C", str(src), "fetch", "--all", "--prune"], result_dir / "git-fetch.log", 900, item="stage_git_fetch")
+    checked(["git", "-C", str(src), "checkout", "--force", args.mono], result_dir / "git-checkout.log", 120, item="stage_git_checkout")
     got = subprocess.check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
     if got != args.mono:
-        raise SystemExit(f"mono checkout mismatch: got {got}, want {args.mono}")
+        raise SuiteStepError("stage_git_checkout", f"mono checkout mismatch: got {got}, want {args.mono}")
     (src / "RDMA_HW_SUITE_SOURCE_SHA").write_text(args.mono + "\n")
     m02_src = f"{args.m02_workdir.rstrip('/')}/seaweed-mono-{args.mono[:8]}"
-    checked(["ssh", "-o", "BatchMode=yes", args.m02, f"rm -rf {shlex.quote(m02_src)} && mkdir -p {shlex.quote(m02_src)}"], result_dir / "m02-mkdir.log", 120)
-    checked(["rsync", "-a", "--delete", "--exclude", "target", f"{src}/", f"{args.m02}:{m02_src}/"], result_dir / "m02-rsync.log", 900)
+    checked(["ssh", "-o", "BatchMode=yes", args.m02, f"rm -rf {shlex.quote(m02_src)} && mkdir -p {shlex.quote(m02_src)}"], result_dir / "m02-mkdir.log", 120, item="stage_m02_mkdir")
+    checked(["rsync", "-a", "--delete", "--exclude", "target", f"{src}/", f"{args.m02}:{m02_src}/"], result_dir / "m02-rsync.log", 900, item="stage_m02_rsync")
     marker = subprocess.check_output(["ssh", "-o", "BatchMode=yes", args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA"], text=True).strip()
     if marker != args.mono:
-        raise SystemExit(f"M02 staged source mismatch: got {marker}, want {args.mono}")
+        raise SuiteStepError("stage_m02_marker", f"M02 staged source mismatch: got {marker}, want {args.mono}")
     return str(src), m02_src
 
 
@@ -163,16 +170,18 @@ def build_suite_bins(mono_src, result_dir, args):
     bindir.mkdir(exist_ok=True)
     env = lab_env()
     for name in ("sw-test-runner",):
-        checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / name))} ./testops/cmd/{name}"], result_dir / f"{name}-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env)
-    checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / 'weed'))} ./weed"], result_dir / "weed-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env)
-    checked(["bash", "-lc", f"RUSTUP_AUTO_INSTALL=0 cargo build --release --manifest-path enterprise/seaweed-volume/Cargo.toml --features rdma,rdma-dc --bin weed-volume && cp enterprise/seaweed-volume/target/release/weed-volume {shlex.quote(str(bindir / 'weed-volume'))}"], result_dir / "weed-volume-build.log", 1800, cwd=mono_src, env=env)
-    t3_root = result_dir / "t3-step05"
+        checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / name))} ./testops/cmd/{name}"], result_dir / f"{name}-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env, item=f"build_{name}")
+    checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / 'weed'))} ./weed"], result_dir / "weed-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env, item="build_weed")
+    checked(["bash", "-lc", f"RUSTUP_AUTO_INSTALL=0 cargo build --release --manifest-path enterprise/seaweed-volume/Cargo.toml --features rdma,rdma-dc --bin weed-volume && cp enterprise/seaweed-volume/target/release/weed-volume {shlex.quote(str(bindir / 'weed-volume'))}"], result_dir / "weed-volume-build.log", 1800, cwd=mono_src, env=env, item="build_weed-volume")
+    t3_root = pathlib.Path(args.workdir) / "t3-step05" / args.mono[:8]
+    if t3_root.exists():
+        shutil.rmtree(t3_root)
     t3_cache = t3_root / "tcp-client"
     t3_cache.parent.mkdir(parents=True, exist_ok=True)
     t3_env = env.copy()
     t3_env["TESTOPS_T3_BUILD_ROOT"] = str(pathlib.Path(args.workdir) / "t3-build-root")
     t3_env["CARGO_TARGET_DIR"] = str(pathlib.Path(args.workdir) / "t3-cargo-target")
-    checked(["bash", str(pathlib.Path(mono_src) / "enterprise/testops/packs/kv/scripts/build_t3_wire_client.sh"), mono_src, args.mono, str(t3_cache)], result_dir / "t3-wire-client-build.log", 1800, cwd=mono_src, env=t3_env)
+    checked(["bash", str(pathlib.Path(mono_src) / "enterprise/testops/packs/kv/scripts/build_t3_wire_client.sh"), mono_src, args.mono, str(t3_cache)], result_dir / "t3-wire-client-build.log", 1800, cwd=mono_src, env=t3_env, item="build_t3_wire_client")
     provenance = {"product_sha": None, "binary_sha256": {}}
     for name in ("sw-test-runner", "weed", "weed-volume"):
         provenance["binary_sha256"][name] = sha256(bindir / name)
@@ -363,7 +372,14 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         t3_prov = json.loads((t3_cache / "provenance.json").read_text())
     except Exception as e:
         return fail("t3_cache_provenance", str(e))
-    manifest["t3"] = {"step05_root": str(t3_step05_root), "cache": str(t3_cache), "result_parent": args.t3_result_parent, "client_key": args.t3_client_key, "client_key_readable": os.access(args.t3_client_key, os.R_OK), "client_root": f"/tmp/seaweed-t3-client-rdma-hw-suite-*", "wire_client": {"path": str(t3_cache / "t3-wire-client"), "sha256": sha256(t3_cache / "t3-wire-client")}, "provenance": {"path": str(t3_cache / "provenance.json"), "sha256": sha256(t3_cache / "provenance.json"), "keys": sorted(t3_prov.keys())}}
+    try:
+        t3_bundle_cache = result_dir / "t3-step05" / "tcp-client"
+        t3_bundle_cache.mkdir(parents=True, exist_ok=True)
+        (t3_bundle_cache / "t3-wire-client").write_bytes((t3_cache / "t3-wire-client").read_bytes())
+        (t3_bundle_cache / "provenance.json").write_bytes((t3_cache / "provenance.json").read_bytes())
+    except Exception as e:
+        return fail("t3_bundle_copy", str(e))
+    manifest["t3"] = {"step05_root": str(t3_step05_root), "cache": str(t3_cache), "bundle_cache": str(t3_bundle_cache), "result_parent": args.t3_result_parent, "client_key": args.t3_client_key, "client_key_readable": os.access(args.t3_client_key, os.R_OK), "client_root": f"/tmp/seaweed-t3-client-rdma-hw-suite-*", "wire_client": {"path": str(t3_cache / "t3-wire-client"), "sha256": sha256(t3_cache / "t3-wire-client"), "bundle_path": str(t3_bundle_cache / "t3-wire-client"), "bundle_sha256": sha256(t3_bundle_cache / "t3-wire-client")}, "provenance": {"path": str(t3_cache / "provenance.json"), "sha256": sha256(t3_cache / "provenance.json"), "bundle_path": str(t3_bundle_cache / "provenance.json"), "bundle_sha256": sha256(t3_bundle_cache / "provenance.json"), "keys": sorted(t3_prov.keys())}}
     ok("t3_cache", str(t3_cache))
     ok("t3_result_parent", args.t3_result_parent)
 
@@ -379,7 +395,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         "paths.result_root", "paths.lab_lock", "paths.activity_log", "paths.m01_source.path", "paths.m01_source.marker_path", "paths.m01_source.marker_sha256", "paths.m02_source.path", "paths.m02_source.marker_path", "paths.m02_source.marker_sha256",
         "tools.local_git", "tools.local_ssh", "tools.local_rsync", "tools.local_bash", "tools.local_python3", "tools.local_go", "tools.local_cargo", "tools.m02",
         "artifacts.sw-test-runner.path", "artifacts.sw-test-runner.sha256", "artifacts.weed.path", "artifacts.weed.sha256", "artifacts.weed-volume.path", "artifacts.weed-volume.sha256", "artifacts.m01_weed_uds.path", "artifacts.m01_weed_uds.sha256", "artifacts.m02_weed_uds.path", "artifacts.m02_weed_uds.sha256", "artifacts.t3_volume.path", "artifacts.t3_volume.sha256",
-        "t3.step05_root", "t3.cache", "t3.result_parent", "t3.client_key", "t3.client_key_readable", "t3.client_root", "t3.wire_client.path", "t3.wire_client.sha256", "t3.provenance.path", "t3.provenance.sha256", "t3.provenance.keys",
+        "t3.step05_root", "t3.cache", "t3.bundle_cache", "t3.result_parent", "t3.client_key", "t3.client_key_readable", "t3.client_root", "t3.wire_client.path", "t3.wire_client.sha256", "t3.wire_client.bundle_path", "t3.wire_client.bundle_sha256", "t3.provenance.path", "t3.provenance.sha256", "t3.provenance.bundle_path", "t3.provenance.bundle_sha256", "t3.provenance.keys",
         "unified.unified_script", "unified.object_bench_manifest", "unified.dc_env", "unified.evidence_export_root", "negative_control",
     )
     if args.preflight_negative_control == "manifest-incomplete": manifest["artifacts"]["m02_weed_uds"].pop("sha256", None)
@@ -525,47 +541,58 @@ def main():
         preflight_summary(result_dir, run_id, args, preflight)
         print(json.dumps({"run_id": run_id, "status": "infra", "preflight_status": "fail", "failed_item": preflight["failed_item"], "reason": preflight["reason"], "result_dir": str(result_dir)}, indent=2))
         return 1
-    with lab_lock(args):
-        with open(args.activity, "a") as a:
-            a.write(f"START codex02 rdma-hw-suite tier=S mono={args.mono} run={run_id} {now()}\n")
-        mono_src, m02_src = stage_mono(args, result_dir)
-        bindir, t3_step05_root = build_suite_bins(mono_src, result_dir, args)
+    try:
+        with lab_lock(args):
+            with open(args.activity, "a") as a:
+                a.write(f"START codex02 rdma-hw-suite tier=S mono={args.mono} run={run_id} {now()}\n")
+            mono_src, m02_src = stage_mono(args, result_dir)
+            bindir, t3_step05_root = build_suite_bins(mono_src, result_dir, args)
 
-    provenance = json.loads((result_dir / "build-provenance.json").read_text())
-    provenance["product_sha"] = args.mono
-    weed_uds_path = pathlib.Path("/opt/work/weed-uds")
-    weed_uds_path.parent.mkdir(parents=True, exist_ok=True)
-    weed_bytes = (bindir / "weed").read_bytes()
-    weed_uds_path.write_bytes(weed_bytes)
-    weed_uds_path.chmod(0o755)
-    provenance["unified_weed_path"] = str(weed_uds_path)
-    provenance["unified_weed_sha256"] = hashlib.sha256(weed_bytes).hexdigest()
-    checked(["ssh", "-o", "BatchMode=yes", args.m02, f"mkdir -p {shlex.quote(str(weed_uds_path.parent))}"], result_dir / "m02-weed-uds-mkdir.log", 120)
-    checked(["rsync", "-a", str(weed_uds_path), f"{args.m02}:{weed_uds_path}"], result_dir / "m02-weed-uds-rsync.log", 120)
-    t3_volume_path = pathlib.Path("/opt/work/bin") / f"weed-volume-{args.mono}-rdma"
-    t3_volume_path.parent.mkdir(parents=True, exist_ok=True)
-    volume_bytes = (bindir / "weed-volume").read_bytes()
-    t3_volume_path.write_bytes(volume_bytes)
-    t3_volume_path.chmod(0o755)
-    provenance["t3_volume_path"] = str(t3_volume_path)
-    provenance["t3_volume_sha256"] = hashlib.sha256(volume_bytes).hexdigest()
-    (result_dir / "build-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    if args.preflight_negative_control == "missing-t3-client":
-        target = pathlib.Path(t3_step05_root) / "tcp-client" / "t3-wire-client"
-        if target.exists():
-            target.unlink()
-    t3_env = {
-        "SWEEP_PRODUCT": args.mono,
-        "SWEEP_HARNESS": args.mono,
-        "SWEEP_PRODUCT_TREE": mono_src,
-        "SWEEP_HARNESS_TREE": mono_src,
-        "SWEEP_ROOT": str(result_dir),
-        "SWEEP_STEP05_ROOT": str(t3_step05_root),
-        "T3_TAG": f"rdma-hw-suite-{run_id}-t3",
-        "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
-        "T3_RESULT_PARENT": args.t3_result_parent,
-    }
-    ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
+        provenance = json.loads((result_dir / "build-provenance.json").read_text())
+        provenance["product_sha"] = args.mono
+        weed_uds_path = pathlib.Path("/opt/work/weed-uds")
+        weed_uds_path.parent.mkdir(parents=True, exist_ok=True)
+        weed_bytes = (bindir / "weed").read_bytes()
+        weed_uds_path.write_bytes(weed_bytes)
+        weed_uds_path.chmod(0o755)
+        provenance["unified_weed_path"] = str(weed_uds_path)
+        provenance["unified_weed_sha256"] = hashlib.sha256(weed_bytes).hexdigest()
+        checked(["ssh", "-o", "BatchMode=yes", args.m02, f"mkdir -p {shlex.quote(str(weed_uds_path.parent))}"], result_dir / "m02-weed-uds-mkdir.log", 120, item="stage_m02_weed_uds_mkdir")
+        checked(["rsync", "-a", str(weed_uds_path), f"{args.m02}:{weed_uds_path}"], result_dir / "m02-weed-uds-rsync.log", 120, item="stage_m02_weed_uds_rsync")
+        t3_volume_path = pathlib.Path("/opt/work/bin") / f"weed-volume-{args.mono}-rdma"
+        t3_volume_path.parent.mkdir(parents=True, exist_ok=True)
+        volume_bytes = (bindir / "weed-volume").read_bytes()
+        t3_volume_path.write_bytes(volume_bytes)
+        t3_volume_path.chmod(0o755)
+        provenance["t3_volume_path"] = str(t3_volume_path)
+        provenance["t3_volume_sha256"] = hashlib.sha256(volume_bytes).hexdigest()
+        if args.preflight_negative_control == "missing-t3-client":
+            target = pathlib.Path(t3_step05_root) / "tcp-client" / "t3-wire-client"
+            if target.exists():
+                target.unlink()
+        (result_dir / "build-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+        t3_env = {
+            "SWEEP_PRODUCT": args.mono,
+            "SWEEP_HARNESS": args.mono,
+            "SWEEP_PRODUCT_TREE": mono_src,
+            "SWEEP_HARNESS_TREE": mono_src,
+            "SWEEP_ROOT": str(result_dir),
+            "SWEEP_STEP05_ROOT": str(t3_step05_root),
+            "T3_TAG": f"rdma-hw-suite-{run_id}-t3",
+            "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
+            "T3_RESULT_PARENT": args.t3_result_parent,
+        }
+        ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
+    except SuiteStepError as e:
+        row = write_preflight(result_dir, {"preflight_status": "fail", "failed_item": e.item, "reason": e.reason, "manifest": {"product_sha": args.mono, "runner_sha": args.runner_sha}, "checks": [{"item": e.item, "ok": False, "reason": e.reason}]})
+        preflight_summary(result_dir, run_id, args, row)
+        print(json.dumps({"run_id": run_id, "status": "infra", "preflight_status": "fail", "failed_item": row["failed_item"], "reason": row["reason"], "result_dir": str(result_dir)}, indent=2))
+        return 1
+    except Exception as e:
+        row = write_preflight(result_dir, {"preflight_status": "fail", "failed_item": "staging_exception", "reason": str(e), "manifest": {"product_sha": args.mono, "runner_sha": args.runner_sha}, "checks": [{"item": "staging_exception", "ok": False, "reason": str(e)}]})
+        preflight_summary(result_dir, run_id, args, row)
+        print(json.dumps({"run_id": run_id, "status": "infra", "preflight_status": "fail", "failed_item": row["failed_item"], "reason": row["reason"], "result_dir": str(result_dir)}, indent=2))
+        return 1
     preflight = run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, t3_volume_path, provenance)
     if preflight["preflight_status"] != "pass":
         summary = {"run_id": run_id, "tier": args.tier, "status": "infra", "product_sha": args.mono, "runner_sha": args.runner_sha, "case_count": 0, "preflight_status": "fail", "failed_item": preflight["failed_item"], "reason": preflight["reason"], "cases": []}
