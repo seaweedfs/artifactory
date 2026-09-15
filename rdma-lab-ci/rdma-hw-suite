@@ -216,12 +216,13 @@ def remote_text(host, cmd, timeout=30):
     return subprocess.check_output(["ssh", "-o", "BatchMode=yes", host, cmd], stderr=subprocess.STDOUT, timeout=timeout, text=True).strip()
 
 
-def require_manifest_details(manifest, paths):
+def require_manifest_details(manifest, paths, nullable=()):
+    nullable = set(nullable)
     missing = []
     for dotted in paths:
         cur = manifest
         for part in dotted.split("."):
-            if not isinstance(cur, dict) or part not in cur or (cur[part] == ""):
+            if not isinstance(cur, dict) or part not in cur or cur[part] == "" or (cur[part] is None and dotted not in nullable):
                 missing.append(dotted)
                 break
             cur = cur[part]
@@ -399,7 +400,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         "unified.unified_script", "unified.object_bench_manifest", "unified.dc_env", "unified.evidence_export_root", "negative_control",
     )
     if args.preflight_negative_control == "manifest-incomplete": manifest["artifacts"]["m02_weed_uds"].pop("sha256", None)
-    missing = require_manifest_details(manifest, required_manifest)
+    missing = require_manifest_details(manifest, required_manifest, nullable={"negative_control"})
     if missing: return fail("manifest_completeness", "missing manifest details: " + ",".join(missing))
     row = {"preflight_status": "pass", "failed_item": None, "reason": None, "manifest": manifest, "checks": log}
     return write_preflight(result_dir, row)
