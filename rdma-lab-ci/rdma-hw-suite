@@ -299,7 +299,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
         manifest["tools"][f"local_{name}"] = found
         ok(f"tool_{name}", found)
     try:
-        remote_tools = remote_text(args.m02, "for t in git bash python3 cargo rustc rdma sha256sum; do command -v $t >/dev/null || { echo missing:$t; exit 9; }; done; echo ok")
+        remote_tools = remote_text(args.m02, remote_env_cmd("for t in git bash python3 cargo rustc rdma sha256sum; do command -v $t >/dev/null || { echo missing:$t; exit 9; }; done; echo ok"))
     except Exception as e:
         return fail("m02_tools", str(e))
     if remote_tools != "ok": return fail("m02_tools", remote_tools)
