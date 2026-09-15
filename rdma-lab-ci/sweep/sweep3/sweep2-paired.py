@@ -73,7 +73,7 @@ def d11_sample(mode, build, command, expected_sha):
 
 def d11_metrics(samples, blocks):
     output={}
-    critical = 2.145 if blocks == 15 else 2.045
+    critical = 2.145
     for mode in D11_CALLERS:
         effects=[]; orders={'ABBA':[],'BAAB':[]}
         for block in range(blocks):
@@ -89,14 +89,19 @@ def d11_metrics(samples, blocks):
         unflagged=abs(lag1)<=0.3 and abs(order_effect)<=math.log(1.02)
         output[mode]={'ratio':math.exp(mean),'interval':interval,'lag1':lag1,
                       'order_log_difference':order_effect,'dependence_unflagged':unflagged,
-                      'classification':('INCONCLUSIVE_DEPENDENCE' if not unflagged else
-                          'RETURN_BELOW_BAND' if interval[1]<0.95 else
-                          'INCONCLUSIVE_CROSSES_BAND' if interval[0]<0.95 else 'ACCEPT')}
+                      'classification':d11_decision(interval,unflagged)}
     return output
 
-def d11_cost():
+def d11_decision(interval, dependence_unflagged):
+    if interval[1] < 0.95: return 'RETURN_BELOW_BAND'
+    if not dependence_unflagged: return 'INCONCLUSIVE_DEPENDENCE'
+    if interval[0] < 0.95: return 'INCONCLUSIVE_CROSSES_BAND'
+    if interval[0] > 1.05: return 'ACCEPT_IMPROVEMENT'
+    return 'ACCEPT'
+
+def d11_cost_locked():
     blocks=int(os.environ.get('SWEEP_D11_BLOCKS','15'))
-    if blocks < 2: raise RuntimeError('SWEEP_D11_BLOCKS must be >=2')
+    if blocks != 15: raise RuntimeError('SWEEP_D11_BLOCKS must be exactly 15')
     out=Path(os.environ['SWEEP_D11_OUT']); out.mkdir(parents=True)
     shas={'A':os.environ['SWEEP_D11_PARENT_SHA'],'B':os.environ['SWEEP_D11_HEAD_SHA']}
     commands={mode:{build:d11_command(mode,build) for build in 'AB'} for mode in D11_CALLERS}
@@ -116,13 +121,20 @@ def d11_cost():
     cpu={build:sum(r['cpu_s'] for r in samples if r['build']==build) for build in 'AB'}
     copied=sum(r['copied_bytes'] for r in samples)
     result={'product_sha':shas,'samples':samples,'metrics':metrics,'cpu_s':cpu,
-            'copied_bytes':copied,'harness_sha256':sha(__file__)}
+            'copied_bytes':copied,'harness_sha256':sha(__file__),
+            'verdict':('RETURN_BELOW_BAND' if any(x['classification']=='RETURN_BELOW_BAND' for x in metrics.values()) else 'COMPLETE')}
     (out/'complete.json').write_text(json.dumps(result,indent=2))
     oi=metrics['object_read']['interval']; ei=metrics['ec_read']['interval']
     dependence=','.join(f'{m}:{metrics[m]["dependence_unflagged"]}' for m in D11_CALLERS)
     print(f'D11-PAIRED-COST object_ratio={metrics["object_read"]["ratio"]:.6f} object_interval={oi[0]:.6f}..{oi[1]:.6f} '
           f'ec_ratio={metrics["ec_read"]["ratio"]:.6f} ec_interval={ei[0]:.6f}..{ei[1]:.6f} '
           f'dependence={dependence} cpu={cpu["A"]:.3f}/{cpu["B"]:.3f} copied_bytes={copied}')
+    return 2 if result['verdict']=='RETURN_BELOW_BAND' else 0
+
+def d11_cost():
+    with open(os.environ['TESTOPS_LOCK_FILE'],'a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        return d11_cost_locked()
 
 def d11_self_test():
     with tempfile.TemporaryDirectory() as tmp:
@@ -130,7 +142,7 @@ def d11_self_test():
         script.write_text("import json,os\nprint(json.dumps({'mode':os.environ['M'],'product_sha':os.environ['S'],'binary_sha256':'0'*64,'caller':os.environ['C'],'verified':True,'copied_bytes':4194304,'elapsed_s':float(os.environ['E']),'cpu_s':0.5}))\n")
         samples=[]
         for mode in D11_CALLERS:
-            for block in range(4):
+            for block in range(15):
                 for slot,build in enumerate('ABBA' if block%2==0 else 'BAAB'):
                     env=dict(os.environ,M=mode,S=build,C=D11_CALLERS[mode],E='1.0' if build=='A' else '0.99')
                     command=[sys.executable,str(script)]
@@ -138,14 +150,19 @@ def d11_self_test():
                     try: row=d11_sample(mode,build,command,build)
                     finally: os.environ.clear(); os.environ.update(before)
                     row.update(block=block,slot=slot); samples.append(row)
-        metrics=d11_metrics(samples,4)
+        metrics=d11_metrics(samples,15)
         if set(metrics)!=set(D11_CALLERS): raise AssertionError('both modes were not measured')
+        decisions={(0.90,0.94,False):'RETURN_BELOW_BAND',(0.94,1.01,True):'INCONCLUSIVE_CROSSES_BAND',
+                   (1.06,1.09,True):'ACCEPT_IMPROVEMENT',(0.98,1.02,False):'INCONCLUSIVE_DEPENDENCE',
+                   (0.98,1.02,True):'ACCEPT'}
+        for (lo,hi,dep),expected in decisions.items():
+            if d11_decision([lo,hi],dep)!=expected: raise AssertionError(f'decision rule did not move to {expected}')
         bad=dict(samples[0],caller='generic-read')
         try:
             if bad['caller'] != D11_CALLERS[bad['mode']]: raise RuntimeError('caller binding mismatch')
         except RuntimeError: pass
         else: raise AssertionError('wrong-caller negative did not fail')
-    print('D11_PAIRED_SELF_TEST PASS modes=object_read,ec_read undeclared_caller=RED')
+    print('D11_PAIRED_SELF_TEST PASS modes=object_read,ec_read undeclared_caller=RED decisions=5/5')
 
 
 def telemetry():
@@ -309,6 +326,6 @@ signal.signal(signal.SIGTERM, interrupted)
 if '--d11-self-test' in sys.argv:
     d11_self_test()
 elif '--d11-cost' in sys.argv:
-    d11_cost()
+    raise SystemExit(d11_cost())
 else:
     main()
