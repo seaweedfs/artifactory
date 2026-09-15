@@ -165,12 +165,38 @@ def checked(argv, log, timeout=None, cwd=None, env=None, item="staging_command")
     return elapsed
 
 
-def stage_mono(args, result_dir):
+def quarantine_checkout(src):
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target = src.with_name(f"{src.name}.stale-{stamp}")
+    if target.exists():
+        target = src.with_name(f"{src.name}.stale-{stamp}-{os.getpid()}")
+    src.rename(target)
+    return target
+
+
+def prepare_stage_checkout(args, result_dir):
     src = pathlib.Path(args.workdir) / "seaweed-mono"
     src.parent.mkdir(parents=True, exist_ok=True)
-    if not (src / ".git").exists():
-        checked(["git", "clone", args.repo, str(src)], result_dir / "git-clone.log", 900, item="stage_git_clone")
-    checked(["git", "-C", str(src), "fetch", "--all", "--prune"], result_dir / "git-fetch.log", 900, item="stage_git_fetch")
+    reuse_error = None
+    if (src / ".git").exists():
+        try:
+            checked(["git", "-C", str(src), "remote", "set-url", "origin", args.repo], result_dir / "git-origin.log", 120, item="stage_git_origin")
+            checked(["git", "-C", str(src), "fetch", "--all", "--prune"], result_dir / "git-fetch.log", 900, item="stage_git_fetch")
+            if git_object_exists(src, args.mono):
+                return src
+            reuse_error = f"required object closure is missing after fetch: {args.mono}"
+        except SuiteStepError as error:
+            reuse_error = str(error)
+        quarantined = quarantine_checkout(src)
+        (result_dir / "git-quarantine.log").write_text(f"path={quarantined}\nreason={reuse_error}\n")
+    checked(["git", "clone", args.repo, str(src)], result_dir / "git-clone.log", 900, item="stage_git_clone")
+    if not git_object_exists(src, args.mono):
+        raise SuiteStepError("stage_git_object", f"required object closure is missing after clone: {args.mono}")
+    return src
+
+
+def stage_mono(args, result_dir):
+    src = prepare_stage_checkout(args, result_dir)
     checked(["git", "-C", str(src), "checkout", "--force", args.mono], result_dir / "git-checkout.log", 120, item="stage_git_checkout")
     got = subprocess.check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
     if got != args.mono:
@@ -331,7 +357,51 @@ def remote_repo_fsck_error(host, repo):
         return str(error)
 
 
+def stage_checkout_self_test():
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        good_work = root / "good-work"
+        foreign_work = root / "foreign-work"
+        for repo, value in ((good_work, "wanted"), (foreign_work, "foreign")):
+            subprocess.check_call(["git", "init", "-q", str(repo)])
+            subprocess.check_call(["git", "-C", str(repo), "config", "user.email", "preflight@example.invalid"])
+            subprocess.check_call(["git", "-C", str(repo), "config", "user.name", "preflight"])
+            (repo / "marker").write_text(value + "\n")
+            subprocess.check_call(["git", "-C", str(repo), "add", "marker"])
+            subprocess.check_call(["git", "-C", str(repo), "commit", "-qm", value])
+        wanted = subprocess.check_output(["git", "-C", str(good_work), "rev-parse", "HEAD"], text=True).strip()
+        good_bare = root / "good.git"
+        foreign_bare = root / "foreign.git"
+        subprocess.check_call(["git", "clone", "--bare", "-q", str(good_work), str(good_bare)])
+        subprocess.check_call(["git", "clone", "--bare", "-q", str(foreign_work), str(foreign_bare)])
+        workdir = root / "run"
+        staged = workdir / "seaweed-mono"
+        workdir.mkdir()
+        subprocess.check_call(["git", "clone", "-q", str(foreign_bare), str(staged)])
+        foreign_bare.rename(root / "foreign-unavailable.git")
+        result_dir = root / "result"
+        result_dir.mkdir()
+        args = argparse.Namespace(workdir=str(workdir), repo=str(good_bare), mono=wanted)
+        assert prepare_stage_checkout(args, result_dir) == staged
+        assert subprocess.check_output(["git", "-C", str(staged), "remote", "get-url", "origin"], text=True).strip() == str(good_bare)
+        assert git_object_exists(staged, wanted)
+        assert not list(workdir.glob("seaweed-mono.stale-*"))
+        sentinel = staged / ".clean-reuse-sentinel"
+        sentinel.write_text("reuse\n")
+        assert prepare_stage_checkout(args, result_dir) == staged
+        assert sentinel.exists()
+        assert not list(workdir.glob("seaweed-mono.stale-*"))
+        subprocess.check_call(["git", "-C", str(staged), "remote", "remove", "origin"])
+        assert prepare_stage_checkout(args, result_dir) == staged
+        assert git_object_exists(staged, wanted)
+        assert len(list(workdir.glob("seaweed-mono.stale-*"))) == 1
+        print("PREFLIGHT_SELF_TEST PASS stage-checkout-reuse stale_origin=RED origin_rebound=PASS recursive_closure=PASS clean_reuse=PASS quarantine_reclone=PASS")
+
+
 def preflight_self_test(mode):
+    if mode == "stage-checkout-reuse":
+        stage_checkout_self_test()
+        return
     with tempfile.TemporaryDirectory() as td:
         fixture = pathlib.Path(td)
         if mode in ("root-space-ok", "workdir-space-ok"):
@@ -828,7 +898,7 @@ def main():
     if sys.argv[1:] == ["--t3-result-self-test"]:
         t3_result_self_test()
         return 0
-    if len(sys.argv) == 3 and sys.argv[1] == "--preflight-self-test" and sys.argv[2] in ("root-space-ok", "workdir-space-ok", "git-objects-ok", "t3-server-ip-ok"):
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight-self-test" and sys.argv[2] in ("root-space-ok", "workdir-space-ok", "git-objects-ok", "t3-server-ip-ok", "stage-checkout-reuse"):
         if sys.argv[2] == "t3-server-ip-ok": t3_server_ip_self_test()
         else: preflight_self_test(sys.argv[2])
         return 0

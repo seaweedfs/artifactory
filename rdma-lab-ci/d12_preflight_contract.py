@@ -27,6 +27,8 @@ ROWS = (
     ("D12.4-banner-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test root-space-ok", "clean number and banner-prefixed number parse the last non-empty line"),
     ("D12.5-dangling-commit", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test git-objects-ok", "commit without its tree is RED before staging"),
     ("D12.5-repo-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test git-objects-ok", "workdir-derived bundle repo is fsck-clean and every per-case tree resolves on M01/M02"),
+    ("D12.6-stale-origin-moving", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test stage-checkout-reuse", "existing checkout origin is rebound before fetch or the checkout is quarantined and recloned"),
+    ("D12.6-clean-reuse-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test stage-checkout-reuse", "checkout with the declared origin and complete case object closure is reused"),
 )
 
 
@@ -79,6 +81,9 @@ def errors(path, after_suite=False):
     for token in ("staging_repo_path", "staging_repo_fsck", "staging_repo_tree", "dangling_commit=RED"):
         if token not in text:
             result.append(f"missing bundle repo control {token}")
+    for token in ("prepare_stage_checkout", "remote", "set-url", "quarantine_checkout", "stage-checkout-reuse", "stale_origin=RED", "clean_reuse=PASS"):
+        if token not in text:
+            result.append(f"missing staged checkout reuse control {token}")
     return result
 
 
