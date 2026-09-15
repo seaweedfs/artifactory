@@ -88,7 +88,9 @@ def self_test():
         bad = source + f"\nMIN_PREFLIGHT_FREE_BYTES = {MIN_FREE_BYTES!r}\nPREFLIGHT_FILESYSTEMS = {{'root': '/', 'workdir': 'workdir'}}\nCASE_REQUIRED_GIT_OBJECTS = {missing!r}\n# root_free_space workdir_free_space missing-case-git-object case_count\": 0\n"
         candidate.write_text(bad, encoding="utf-8")
         assert any("main_plan_peer missing" in e for e in errors(candidate, True))
-        extra = future.replace("CASE_REQUIRED_GIT_OBJECTS = {", "CASE_REQUIRED_GIT_OBJECTS = {'undeclared.case': ('product',), ", 1)
+        extra_mapping = dict(mapping)
+        extra_mapping["undeclared.case"] = ("product",)
+        extra = source + f"\nMIN_PREFLIGHT_FREE_BYTES = {MIN_FREE_BYTES!r}\nPREFLIGHT_FILESYSTEMS = {{'root': '/', 'workdir': 'workdir'}}\nCASE_REQUIRED_GIT_OBJECTS = {extra_mapping!r}\n# root_free_space workdir_free_space missing-case-git-object case_count\": 0\n"
         candidate.write_text(extra, encoding="utf-8")
         assert any("classify every case" in e for e in errors(candidate, True))
     print("D12-PREFLIGHT-SELF-TEST PASS future=PASS missing_object=RED undeclared_case=RED")

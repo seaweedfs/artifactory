@@ -9,6 +9,10 @@ DEFAULT_REPO = "https://github.com/seaweedfs/seaweed-mono.git"
 DEFAULT_LOCK = "/mnt/smb/work/share/testops/locks/rdma-lab.lock"
 DEFAULT_ACTIVITY = "/mnt/smb/work/share/testops/WHO-IS-RUNNING"
 DEFAULT_T3_STEP05_ROOT = "/opt/work/codex-step05"
+MIN_PREFLIGHT_FREE_BYTES = 21474836480
+PREFLIGHT_FILESYSTEMS = {"root": "/", "workdir": "workdir"}
+MAIN_PLAN_OBJECT = "42dd1bb40de5ee8affebf799cbf86da64f54e2f5"
+T3_DONOR_OBJECT = "4c896d6c48628df35d1b4b0e18980b9c2d17cd74"
 
 
 SELF_LOCKING_CASES = {"t3.stale_key"}
@@ -27,6 +31,21 @@ CASES = [
     ("t3.stale_key", "m01", 600, "python3 {suite_dir}/sweep/sweep3/sweep2-t3.py"),
     ("unified.short_rc_dc", "m01", 900, "ENABLE_DC=1 RDMA_PIPES=4 bash {suite_dir}/run-mono-rdma-lab.sh --repo {repo} --ref {mono} --profile unified --artifacts {case_dir}/unified"),
 ]
+
+CASE_REQUIRED_GIT_OBJECTS = {
+    "volume.dat_lifecycle": ("product",),
+    "volume.ec_lifecycle": ("product",),
+    "volume.ec_shard_read": ("product",),
+    "volume.kv_slab_read": ("product",),
+    "volume.copy": ("product",),
+    "volume.main_plan_peer": ("product", "42dd1bb40de5ee8affebf799cbf86da64f54e2f5"),
+    "volume.dc_write_contract": ("product",),
+    "vfs.rdma_lifecycle": ("product",),
+    "vfs.rdma_ec_read": ("product",),
+    "vfs.rdma_reregister": ("product",),
+    "t3.stale_key": ("product", "4c896d6c48628df35d1b4b0e18980b9c2d17cd74"),
+    "unified.short_rc_dc": ("product",),
+}
 
 
 def now():
@@ -229,6 +248,42 @@ def require_manifest_details(manifest, paths, nullable=()):
     return missing
 
 
+def filesystem_probe(path):
+    probe = pathlib.Path(path).resolve()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe, shutil.disk_usage(probe).free
+
+
+def remote_filesystem_free(host, path):
+    quoted = shlex.quote(str(path))
+    command = (
+        f"probe={quoted}; while [ ! -e \"$probe\" ] && [ \"$probe\" != / ]; do probe=$(dirname \"$probe\"); done; "
+        "printf '%s ' \"$probe\"; df -PB1 --output=avail \"$probe\" | tail -n 1 | tr -d ' '"
+    )
+    output = remote_text(host, remote_env_cmd(command))
+    probe, free_text = output.rsplit(" ", 1)
+    return probe, int(free_text)
+
+
+def required_git_objects(product_sha):
+    return {
+        case: tuple(product_sha if obj == "product" else obj for obj in objects)
+        for case, objects in CASE_REQUIRED_GIT_OBJECTS.items()
+    }
+
+
+def git_object_self_test(mode):
+    objects = required_git_objects("1" * 40)
+    assert set(objects) == {case[0] for case in CASES}
+    assert MAIN_PLAN_OBJECT in objects["volume.main_plan_peer"]
+    assert T3_DONOR_OBJECT in objects["t3.stale_key"]
+    if mode == "git-objects-ok":
+        print("PREFLIGHT_SELF_TEST PASS git-objects-ok cases=12")
+    else:
+        print(f"PREFLIGHT_SELF_TEST PASS {mode} free_bytes>={MIN_PREFLIGHT_FREE_BYTES}")
+
+
 def input_preflight(args, result_dir):
     checks, manifest = [], {"inputs": {}, "paths": {}}
     def ok(item, detail):
@@ -245,6 +300,28 @@ def input_preflight(args, result_dir):
         manifest["inputs"][item] = bool(value)
         if not value: return fail(item, "required value is empty")
         ok(item, str(value))
+    for item, local_path, remote_path, control in (
+        ("root_free_space", "/", "/", "low-root-space"),
+        ("workdir_free_space", args.workdir, args.m02_workdir, "low-workdir-space"),
+    ):
+        local_probe, local_free = filesystem_probe(local_path)
+        if args.preflight_negative_control == control:
+            local_free = MIN_PREFLIGHT_FREE_BYTES - 1
+            remote_probe, remote_free = remote_path, MIN_PREFLIGHT_FREE_BYTES + 1
+        else:
+            try:
+                remote_probe, remote_free = remote_filesystem_free(args.m02, remote_path)
+            except Exception as e:
+                return fail(item, f"cannot inspect M02 filesystem: {e}")
+        manifest["paths"][item] = {
+            "required_bytes": MIN_PREFLIGHT_FREE_BYTES,
+            "m01": {"path": str(local_probe), "free_bytes": local_free},
+            "m02": {"path": remote_probe, "free_bytes": remote_free},
+        }
+        for host, probe, free_bytes in (("m01", local_probe, local_free), ("m02", remote_probe, remote_free)):
+            if free_bytes < MIN_PREFLIGHT_FREE_BYTES:
+                return fail(item, f"host={host} filesystem={probe} free_bytes={free_bytes} required_bytes={MIN_PREFLIGHT_FREE_BYTES}")
+        ok(item, f"m01={local_probe}:{local_free} m02={remote_probe}:{remote_free} required_bytes={MIN_PREFLIGHT_FREE_BYTES}")
     try:
         share_mount, _ = mount_info(args.results)
         _, result_parent_fs = mount_info(args.t3_result_parent)
@@ -328,15 +405,26 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
     if marker != args.mono:
         return fail("m01_source_marker", f"got {marker!r}, want {args.mono}")
     ok("m01_source_marker", marker)
-    try:
-        want = "0" * 40 if args.preflight_negative_control == "missing-git-object" else args.mono
-        subprocess.check_call(["git", "-C", str(mono_src), "cat-file", "-e", f"{want}^{{commit}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        return fail("m01_git_object", f"missing commit {want}")
-    ok("m01_git_object", args.mono)
+    object_map = required_git_objects(args.mono)
+    manifest["paths"]["case_git_objects"] = object_map
+    missing_control_used = False
+    for case, objects in object_map.items():
+        for required_object in objects:
+            want = required_object
+            if args.preflight_negative_control in ("missing-git-object", "missing-case-git-object") and not missing_control_used:
+                want = "0" * 40
+                missing_control_used = True
+            try:
+                subprocess.check_call(["git", "-C", str(mono_src), "cat-file", "-e", f"{want}^{{commit}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except subprocess.CalledProcessError:
+                return fail("m01_case_git_object", f"case={case} missing commit {want}")
+            try:
+                remote_text(args.m02, f"git -C {shlex.quote(m02_src)} cat-file -e {shlex.quote(want)}^{{commit}}")
+            except Exception as e:
+                return fail("m02_case_git_object", f"case={case} missing commit {want}: {e}")
+            ok("case_git_object", f"case={case} commit={required_object} hosts=m01,m02")
     try:
         remote_marker = remote_text(args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA")
-        remote_text(args.m02, f"git -C {shlex.quote(m02_src)} cat-file -e {shlex.quote(want)}^{{commit}}")
     except Exception as e:
         return fail("m02_staged_source", str(e))
     if remote_marker != args.mono:
@@ -401,7 +489,7 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
     required_manifest = (
         "product_sha", "runner_sha", "inputs.m02", "inputs.rdma_ip", "inputs.remote_path_prefix", "inputs.local_path_prefix",
         "inputs.t3_result_parent", "inputs.t3_client_host", "inputs.t3_client_user", "inputs.t3_client_key", "inputs.t3_rdma_device", "inputs.t3_gid_index", "inputs.t3_server_ip", "inputs.t3_server_ssh",
-        "paths.result_root", "paths.lab_lock", "paths.activity_log", "paths.m01_source.path", "paths.m01_source.marker_path", "paths.m01_source.marker_sha256", "paths.m02_source.path", "paths.m02_source.marker_path", "paths.m02_source.marker_sha256",
+        "paths.result_root", "paths.lab_lock", "paths.activity_log", "paths.m01_source.path", "paths.m01_source.marker_path", "paths.m01_source.marker_sha256", "paths.m02_source.path", "paths.m02_source.marker_path", "paths.m02_source.marker_sha256", "paths.case_git_objects",
         "tools.local_git", "tools.local_ssh", "tools.local_rsync", "tools.local_bash", "tools.local_python3", "tools.local_go", "tools.local_cargo", "tools.m02",
         "artifacts.sw-test-runner.path", "artifacts.sw-test-runner.sha256", "artifacts.weed.path", "artifacts.weed.sha256", "artifacts.weed-volume.path", "artifacts.weed-volume.sha256", "artifacts.m01_weed_uds.path", "artifacts.m01_weed_uds.sha256", "artifacts.m02_weed_uds.path", "artifacts.m02_weed_uds.sha256", "artifacts.t3_volume.path", "artifacts.t3_volume.sha256",
         "t3.step05_root", "t3.cache", "t3.bundle_cache", "t3.result_parent", "t3.client_key", "t3.client_key_readable", "t3.client_root", "t3.wire_client.path", "t3.wire_client.sha256", "t3.wire_client.bundle_path", "t3.wire_client.bundle_sha256", "t3.provenance.path", "t3.provenance.sha256", "t3.provenance.bundle_path", "t3.provenance.bundle_sha256", "t3.provenance.keys",
@@ -589,6 +677,9 @@ def main():
     if sys.argv[1:] == ["--t3-result-self-test"]:
         t3_result_self_test()
         return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight-self-test" and sys.argv[2] in ("root-space-ok", "workdir-space-ok", "git-objects-ok"):
+        git_object_self_test(sys.argv[2])
+        return 0
     ap = argparse.ArgumentParser(prog="rdma-hw-suite")
     ap.add_argument("--tier", required=True, choices=["S"])
     ap.add_argument("--mono", required=True, help="40-char product sha")
@@ -609,7 +700,7 @@ def main():
     ap.add_argument("--lock", default=DEFAULT_LOCK)
     ap.add_argument("--activity", default=DEFAULT_ACTIVITY)
     ap.add_argument("--t3-step05-root", default=os.environ.get("HW_SUITE_T3_STEP05_ROOT", DEFAULT_T3_STEP05_ROOT))
-    ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
+    ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-case-git-object", "low-root-space", "low-workdir-space", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
     args = ap.parse_args()
     args.t3_result_parent = args.t3_result_parent or str(pathlib.Path(args.workdir) / "t3-results")
     if not re.fullmatch(r"[0-9a-f]{40}", args.mono):
