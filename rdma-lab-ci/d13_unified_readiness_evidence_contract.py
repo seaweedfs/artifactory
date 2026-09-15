@@ -48,6 +48,7 @@ def errors(path=RUNNER):
                   "absent-m01 accepted", "failed-m02-transfer accepted", "success_capture_failure_exit=7",
                   "failed_body_status_preserved=23", "teardowns=both", "required_binaries=PASS",
                   "missing_binary=seaweedfs-sw-rdma-kvcache:RED", "missing_module=seaweedvfs.ko:RED",
+                  "stale_module=vermagic:RED",
                   "D13_SELF_TEST PASS"):
         if token not in self_test:
             found.append(f"runtime self-test missing {token}")
@@ -66,6 +67,9 @@ def errors(path=RUNNER):
         found.append("required binary preflight is not fail-closed")
     if "UNIFIED_PREFLIGHT_MISSING_ARTIFACT" not in verify or "[ ! -f" not in verify:
         found.append("required file artifact preflight is not fail-closed")
+    if "modinfo -F vermagic" not in verify or "uname -r" not in verify or \
+            "UNIFIED_PREFLIGHT_STALE_ARTIFACT" not in verify:
+        found.append("kernel module vermagic preflight is not fail-closed")
     if "seaweed-vfs/kernel/seaweedvfs.ko" not in text:
         found.append("required file artifact manifest is missing seaweedvfs.ko")
     verify_call = text.rfind('verify_unified_binaries "$M01_WORKDIR/seaweed-mono"')
@@ -106,7 +110,7 @@ d13_self_test() {
   false && echo 'failed-m02-transfer accepted'
   test master.log weed-volume.log filer.log loader.log success_capture_failure_exit=7
   test failed_body_status_preserved=23 teardowns=both required_binaries=PASS
-  test missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED
+  test missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED stale_module=vermagic:RED
   echo D13_SELF_TEST PASS
 }
 build_unified_gate() {
@@ -120,6 +124,7 @@ unified_required_binaries() {
 verify_unified_binaries() {
   [ ! -x missing ] && echo UNIFIED_PREFLIGHT_MISSING_BINARY
   [ ! -f module ] && echo UNIFIED_PREFLIGHT_MISSING_ARTIFACT
+  modinfo -F vermagic module; uname -r; echo UNIFIED_PREFLIGHT_STALE_ARTIFACT
 }
 unified_required_files() { echo seaweed-vfs/kernel/seaweedvfs.ko; }
 verify_unified_binaries "$M01_WORKDIR/seaweed-mono"

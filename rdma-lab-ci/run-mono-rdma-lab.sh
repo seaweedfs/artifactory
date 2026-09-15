@@ -232,7 +232,14 @@ d13_self_test() {
   local kmod="$binary_root/seaweed-vfs/kernel/seaweedvfs.ko"
   mkdir -p "$(dirname "$kmod")"
   printf 'module\n' > "$kmod"
-  verify_unified_binaries "$binary_root" >/dev/null
+  if D13_TEST_KMOD_VERMAGIC='stale-kernel SMP' D13_TEST_UNAME_R='current-kernel' \
+    verify_unified_binaries "$binary_root" > "$fixture/stale-module.log" 2>&1; then
+    echo "D13_SELF_TEST RED stale-kernel-module accepted" >&2
+    return 1
+  fi
+  grep -q 'name=seaweedvfs.ko' "$fixture/stale-module.log"
+  D13_TEST_KMOD_VERMAGIC='current-kernel SMP' D13_TEST_UNAME_R='current-kernel' \
+    verify_unified_binaries "$binary_root" >/dev/null
   local cleanup_definition cleanup_script trace rc
   cleanup_definition="$(declare -f cleanup_lab)"
   cleanup_script="$fixture/teardown-m01.sh"
@@ -253,12 +260,14 @@ exit $body_status"
     test "$rc" = "$expected"
     test "$(sort "$trace" | tr '\n' ' ')" = "m01 m02 "
   done
-  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED stale_module=vermagic:RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
 }
 
 require_cmd git
 require_cmd ssh
 require_cmd rsync
+require_cmd make
+require_cmd modinfo
 
 preflight() {
   echo "== preflight =="
@@ -342,6 +351,17 @@ verify_unified_binaries() {
       return 1
     fi
   done < <(unified_required_files "$root")
+  local kmod="$root/seaweed-vfs/kernel/seaweedvfs.ko"
+  local running_kernel="${D13_TEST_UNAME_R:-$(uname -r)}"
+  local module_vermagic
+  module_vermagic="${D13_TEST_KMOD_VERMAGIC:-$(modinfo -F vermagic "$kmod")}" || {
+    echo "UNIFIED_PREFLIGHT_STALE_ARTIFACT name=seaweedvfs.ko reason=modinfo_failed" >&2
+    return 1
+  }
+  if [ "${module_vermagic%% *}" != "$running_kernel" ]; then
+    echo "UNIFIED_PREFLIGHT_STALE_ARTIFACT name=seaweedvfs.ko module_vermagic=${module_vermagic%% *} running_kernel=$running_kernel" >&2
+    return 1
+  fi
   echo "UNIFIED_BINARY_PREFLIGHT_PASS product_sha=$MONO_REF"
 }
 
