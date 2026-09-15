@@ -39,11 +39,13 @@ def errors(path=RUNNER):
     launch = run.rfind("m02-up.sh")
     if trap < 0 or launch < 0 or trap > launch:
         found.append("failure capture trap must be armed before component startup")
-    if "evidence.sha256" not in capture or "logs_captured=true" not in capture:
-        found.append("captured logs need a checksum manifest and completion witness")
+    for token in ("evidence.sha256", "logs_captured=true", "logs_captured=false", "m01/client.log",
+                  "m01/loader.log"):
+        if token not in capture:
+            found.append(f"fail-closed capture missing {token}")
     self_test = function(text, "d13_self_test")
     for token in ("missing-fid accepted", "master.log", "weed-volume.log", "filer.log", "loader.log",
-                  "D13_SELF_TEST PASS"):
+                  "absent-m01 accepted", "failed-m02-transfer accepted", "D13_SELF_TEST PASS"):
         if token not in self_test:
             found.append(f"runtime self-test missing {token}")
     return found
@@ -58,6 +60,8 @@ wait_for_writable_volume() {
 capture_unified_logs() {
   mkdir m01 m02
   test -f master.log; test -f weed-volume.log; test -f filer.log
+  test -s m01/client.log; test -s m01/loader.log
+  false && echo logs_captured=false
   sha256sum master.log > evidence.sha256
   echo logs_captured=true
 }
@@ -74,6 +78,8 @@ run_unified_gate() {
 }
 d13_self_test() {
   false && echo 'missing-fid accepted'
+  false && echo 'absent-m01 accepted'
+  false && echo 'failed-m02-transfer accepted'
   test master.log weed-volume.log filer.log loader.log
   echo D13_SELF_TEST PASS
 }

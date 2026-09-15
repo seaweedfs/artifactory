@@ -81,34 +81,53 @@ require_cmd() {
 }
 
 cleanup_lab() {
+  local run_status=$?
+  local capture_status=0
   set +e
-  capture_unified_logs
+  capture_unified_logs || capture_status=$?
   if [ -n "$CLEANUP_M01_SCRIPT" ] && [ -f "$CLEANUP_M01_SCRIPT" ]; then
     bash "$CLEANUP_M01_SCRIPT" m01
   fi
   if [ -n "$CLEANUP_M02_SCRIPT" ]; then
     ssh "$M02_HOST" "bash '$CLEANUP_M02_SCRIPT' m02"
   fi
+  if [ "$run_status" = "0" ] && [ "$capture_status" != "0" ]; then
+    run_status="$capture_status"
+  fi
+  return "$run_status"
 }
 
 capture_unified_logs() {
   local evidence="$run_dir/lab-logs"
+  local missing=()
   mkdir -p "$evidence/m01" "$evidence/m02"
   if [ -d "$M01_GATE_RUN/logs" ]; then
-    cp -a "$M01_GATE_RUN/logs/." "$evidence/m01/" 2>/dev/null || true
+    cp -a "$M01_GATE_RUN/logs/." "$evidence/m01/" 2>/dev/null \
+      || missing+=("m01-log-copy")
   fi
-  cp "$log" "$evidence/m01/loader.log" 2>/dev/null || true
-  ssh "$M02_HOST" \
-    "test -d '$M02_GATE_RUN/logs' && tar -C '$M02_GATE_RUN/logs' -cf - ." \
-    | tar -C "$evidence/m02" -xf - 2>/dev/null || true
-  for name in master.log weed-volume.log filer.log; do
-    if [ ! -s "$evidence/m02/$name" ]; then
-      echo "missing_evidence=$name" >> "$evidence/capture.status"
+  if [ -s "$log" ]; then
+    cp "$log" "$evidence/m01/client.log" || missing+=("m01-client-copy")
+    cp "$log" "$evidence/m01/loader.log" || missing+=("m01-loader-copy")
+  fi
+  if ! ssh "$M02_HOST" \
+      "test -d '$M02_GATE_RUN/logs' && tar -C '$M02_GATE_RUN/logs' -cf - ." \
+      | tar -C "$evidence/m02" -xf - 2>/dev/null; then
+    missing+=("m02-log-transfer")
+  fi
+  for item in m01/client.log m01/loader.log m02/master.log m02/weed-volume.log m02/filer.log; do
+    if [ ! -s "$evidence/$item" ]; then
+      missing+=("$item")
     fi
   done
-  echo "logs_captured=true" >> "$evidence/capture.status"
+  if [ "${#missing[@]}" != "0" ]; then
+    printf 'missing_evidence=%s\n' "${missing[@]}" > "$evidence/capture.status"
+    echo "logs_captured=false" >> "$evidence/capture.status"
+  else
+    echo "logs_captured=true" > "$evidence/capture.status"
+  fi
   find "$evidence" -type f ! -name evidence.sha256 -print0 \
     | sort -z | xargs -0 -r sha256sum > "$evidence/evidence.sha256"
+  [ "${#missing[@]}" = "0" ]
 }
 
 wait_for_writable_volume() {
@@ -147,6 +166,8 @@ d13_self_test() {
       else
         printf '%s\n' '{"fid":"1,abc"}'
       fi
+    elif [ "${D13_TEST_M02_TRANSFER_FAIL:-0}" = "1" ]; then
+      return 1
     else
       tar -C "$M02_GATE_RUN/logs" -cf - .
     fi
@@ -165,7 +186,24 @@ d13_self_test() {
   test -s "$run_dir/lab-logs/m01/loader.log"
   test -s "$run_dir/lab-logs/evidence.sha256"
   grep -q '^logs_captured=true$' "$run_dir/lab-logs/capture.status"
-  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED logs_captured=PASS"
+  run_dir="$fixture/missing-m01"
+  log="$run_dir/run.log"
+  mkdir -p "$run_dir"
+  if capture_unified_logs; then
+    echo "D13_SELF_TEST RED absent-m01 accepted" >&2
+    return 1
+  fi
+  grep -q '^logs_captured=false$' "$run_dir/lab-logs/capture.status"
+  run_dir="$fixture/failed-m02"
+  log="$run_dir/run.log"
+  mkdir -p "$run_dir"
+  printf 'client and loader\n' > "$log"
+  if D13_TEST_M02_TRANSFER_FAIL=1 capture_unified_logs; then
+    echo "D13_SELF_TEST RED failed-m02-transfer accepted" >&2
+    return 1
+  fi
+  grep -q '^logs_captured=false$' "$run_dir/lab-logs/capture.status"
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED"
 }
 
 if [ "$D13_SELF_TEST" = "1" ]; then
