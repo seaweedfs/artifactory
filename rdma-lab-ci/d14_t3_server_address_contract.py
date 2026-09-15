@@ -3,6 +3,7 @@
 import argparse
 import ast
 import pathlib
+import re
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -45,28 +46,53 @@ def errors(path, after_suite=False):
     result = []
     if values.get("T3_SERVER_IP_REQUIRED") is not True:
         result.append("T3_SERVER_IP_REQUIRED must be true")
-    if "args.t3_server_ip = args.t3_server_ip or args.rdma_ip" in source:
-        result.append("T3 server IP still defaults to the M02 RDMA IP")
-    for token in (
-        "t3_server_ip_error",
-        "wrong-t3-server-ip",
-        "t3-server-ip-ok",
-        'failed_item": "t3_server_ip"',
-        'case_count": 0',
+    for fallback in (
+        "args.t3_server_ip = args.t3_server_ip or args.rdma_ip",
+        "args.t3_server_ssh = args.t3_server_ssh or args.m02",
     ):
-        if token not in source:
-            result.append(f"missing D-14 evidence token {token}")
+        if fallback in source:
+            result.append(f"forbidden T3 server fallback: {fallback}")
+    if not re.search(r'\("t3_server_ip",\s*args\.t3_server_ip\)', source):
+        result.append("t3_server_ip is not in required_inputs")
+    try:
+        tree = ast.parse(source)
+        validator = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "t3_server_ip_error")
+        validator_source = ast.get_source_segment(source, validator) or ""
+    except (SyntaxError, StopIteration):
+        validator_source = ""
+    for token in ("ip -o addr show", "ipaddress.ip_address", "remote_text"):
+        if token not in validator_source:
+            result.append(f"t3_server_ip_error missing real ownership check {token}")
+    if "t3_server_ip_error(args.t3_server_ip, args.t3_server_ssh)" not in source:
+        result.append("input preflight does not call the ownership validator")
+    if '"wrong-t3-server-ip"' not in source or '"t3-server-ip-ok"' not in source:
+        result.append("moving/still controls are missing")
+    if 'failed_item": "t3_server_ip"' not in source or 'case_count": 0' not in source:
+        result.append("wrong-address control is not bound to fail before case 1")
+    if '"TESTOPS_T3_SERVER_IP": args.t3_server_ip' not in source:
+        result.append("validated T3 server IP is not passed to the nested helper")
+    if "os.environ['TESTOPS_T3_SERVER_IP']" not in source and 'os.environ["TESTOPS_T3_SERVER_IP"]' not in source:
+        result.append("nested helper does not consume the validated T3 server IP")
     return result
 
 
 def self_test():
     source = RUNNER.read_text(encoding="utf-8")
-    future = source.replace("args.t3_server_ip = args.t3_server_ip or args.rdma_ip", "")
-    future += (
-        "\nT3_SERVER_IP_REQUIRED = True\n"
-        "# t3_server_ip_error wrong-t3-server-ip t3-server-ip-ok\n"
-        "# preflight_status fail failed_item\": \"t3_server_ip\" case_count\": 0\n"
-    )
+    source = source.replace("args.t3_server_ip = args.t3_server_ip or args.rdma_ip", "")
+    source = source.replace("args.t3_server_ssh = args.t3_server_ssh or args.m02", "")
+    future = source + '''
+T3_SERVER_IP_REQUIRED = True
+required_inputs = (("t3_server_ip", args.t3_server_ip),)
+def t3_server_ip_error(value, host):
+    output = remote_text(host, "ip -o addr show")
+    wanted = ipaddress.ip_address(value)
+    return None if wanted in {ipaddress.ip_address("192.0.2.1")} else "not owned"
+result = t3_server_ip_error(args.t3_server_ip, args.t3_server_ssh)
+controls = ("wrong-t3-server-ip", "t3-server-ip-ok")
+failure = {"failed_item": "t3_server_ip", "case_count": 0}
+t3_env = {"TESTOPS_T3_SERVER_IP": args.t3_server_ip}
+nested = os.environ["TESTOPS_T3_SERVER_IP"]
+'''
     with tempfile.TemporaryDirectory() as td:
         candidate = pathlib.Path(td) / "runner.py"
         candidate.write_text(future, encoding="utf-8")
@@ -74,8 +100,10 @@ def self_test():
         candidate.write_text(future.replace("T3_SERVER_IP_REQUIRED = True", "T3_SERVER_IP_REQUIRED = False"), encoding="utf-8")
         assert any("must be true" in error for error in errors(candidate, True))
         candidate.write_text(future + "\nargs.t3_server_ip = args.t3_server_ip or args.rdma_ip\n", encoding="utf-8")
-        assert any("M02 RDMA IP" in error for error in errors(candidate, True))
-    print("D14-SELF-TEST PASS future=PASS wrong_default=RED optional_input=RED")
+        assert any("forbidden" in error for error in errors(candidate, True))
+        candidate.write_text(future.replace('output = remote_text(host, "ip -o addr show")', 'output = "marker only"'), encoding="utf-8")
+        assert any("real ownership check" in error for error in errors(candidate, True))
+    print("D14-SELF-TEST PASS future=PASS wrong_default=RED optional_input=RED marker_only_validator=RED")
 
 
 def main():
