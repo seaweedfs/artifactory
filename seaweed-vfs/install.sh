@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/seaweedfs/artifactory/main/seaweed-vfs/install.sh | sudo bash
 #   # or, to mount a filer at /mnt/seaweed right after install (MNT overrides the path):
-#   curl -fsSL https://raw.githubusercontent.com/seaweedfs/artifactory/main/seaweed-vfs/install.sh | sudo FILER=10.0.0.1:18888 bash
+#   curl -fsSL https://raw.githubusercontent.com/seaweedfs/artifactory/main/seaweed-vfs/install.sh | sudo FILER=<filer-host>:18888 bash
 #
 # It installs prerequisites, fetches the two packages (the GPL module + the
 # closed-source daemon) from this repo's release, and DKMS builds the module for

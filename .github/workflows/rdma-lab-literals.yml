@@ -1,0 +1,16 @@
+name: RDMA lab literal check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  no-lab-literals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Check committed lab literals
+        run: python3 rdma-lab-ci/check-no-lab-literals.py --self-test

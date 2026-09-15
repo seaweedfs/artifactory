@@ -146,17 +146,19 @@ jobs:
           # private IP on a dummy interface maps only to siw0 and is a real
           # (non-loopback) device context; same-host connects deliver locally.
           sudo modprobe dummy || true
-          sudo ip link add swrdma0 type dummy
-          sudo ip addr add 10.99.0.1/24 dev swrdma0
-          sudo ip link set swrdma0 up
-          sudo rdma link add siw0 type siw netdev swrdma0
+          SOFT_RDMA_NETDEV="${SOFT_RDMA_NETDEV:-rdma-ci-dummy0}"
+          SOFT_RDMA_IP="${SOFT_RDMA_IP:-198.51.100.1}"
+          sudo ip link add "$SOFT_RDMA_NETDEV" type dummy
+          sudo ip addr add "$SOFT_RDMA_IP/24" dev "$SOFT_RDMA_NETDEV"
+          sudo ip link set "$SOFT_RDMA_NETDEV" up
+          sudo rdma link add siw0 type siw netdev "$SOFT_RDMA_NETDEV"
           rdma link
           ibv_devices
           # Fail loudly (not silently skip) if siw didn't come up on this kernel.
           # `rdma link` names the link "<dev>/<port>" (e.g. siw0/1), so match by device.
           rdma link | grep -q 'siw0' || { echo "::error::software RDMA siw0 unavailable on this runner kernel"; exit 1; }
           # The e2e tests read the target IP from RXE_IP (kept as the test's contract).
-          echo "RXE_IP=10.99.0.1" >> "$GITHUB_ENV"
+          echo "RXE_IP=$SOFT_RDMA_IP" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

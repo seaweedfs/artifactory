@@ -5,7 +5,7 @@ MONO_REPO="${MONO_REPO:-https://github.com/seaweedfs/seaweed-mono.git}"
 MONO_REF="${MONO_REF:-main}"
 PROFILE="${RDMA_CI_PROFILE:-unified}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
-M02_HOST="${M02_HOST:-testdev@192.168.1.184}"
+M02_HOST="${M02_HOST:-}"
 M01_WORKDIR="${M01_WORKDIR:-/opt/rdma-lab-ci/work}"
 M02_WORKDIR="${M02_WORKDIR:-/opt/rdma-lab-ci/work}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$PWD/rdma-lab-runs}"
@@ -48,6 +48,11 @@ while [ "$#" -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ -z "$M02_HOST" ]; then
+  echo "run-mono-rdma-lab.sh: M02_HOST is required; source the uncommitted lab env or pass --m02" >&2
+  exit 2
+fi
 
 slug_ref="$(printf '%s' "$MONO_REF" | tr '/:@ ' '----' | tr -cd 'A-Za-z0-9._-')"
 run_id="$(date -u +%Y%m%d-%H%M%S)-${slug_ref}-${PROFILE}"
