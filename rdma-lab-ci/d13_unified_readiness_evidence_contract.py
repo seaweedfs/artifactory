@@ -53,8 +53,8 @@ def errors(path=RUNNER):
     build = function(text, "build_unified_gate")
     required = function(text, "unified_required_binaries")
     verify = function(text, "verify_unified_binaries")
-    if "-p seaweedfs-sw-rdma-kvcache" not in build:
-        found.append("launcher does not build seaweedfs-sw-rdma-kvcache")
+    if "-p seaweedkv-tools" not in build or "--bin seaweedfs-sw-rdma-kvcache" not in build:
+        found.append("launcher does not build the seaweedkv-tools kvcache binary target")
     for name in ("sw-rdma-object-put", "sw-rdma-object-get", "sw-rdma-object-bench", "sw-rdma-s3-loader",
                  "seaweedfs-sw-rdma-kvcache", "sw-rdma-kd", "sw-kd"):
         if name not in required:
@@ -103,7 +103,7 @@ d13_self_test() {
   echo D13_SELF_TEST PASS
 }
 build_unified_gate() {
-  cargo build -p seaweedfs-sw-rdma-kvcache
+  cargo build -p seaweedkv-tools --bin seaweedfs-sw-rdma-kvcache
 }
 unified_required_binaries() {
   echo sw-rdma-object-put sw-rdma-object-get sw-rdma-object-bench sw-rdma-s3-loader
@@ -123,6 +123,8 @@ case "$PROFILE" in unified) true ;; esac
         assert any("before the first PUT" in item for item in errors(path))
         path.write_text(future.replace("  capture_unified_logs\n", ""), encoding="utf-8")
         assert any("before either teardown" in item for item in errors(path))
+        path.write_text(future.replace("--bin seaweedfs-sw-rdma-kvcache", "--lib"), encoding="utf-8")
+        assert any("kvcache binary target" in item for item in errors(path))
         path.write_text(future.replace("  trap cleanup_lab EXIT\n", "").replace(
             "  bash m01-unified.sh", "  bash m01-unified.sh\n  trap cleanup_lab EXIT"), encoding="utf-8")
         assert any("before component startup" in item for item in errors(path))
