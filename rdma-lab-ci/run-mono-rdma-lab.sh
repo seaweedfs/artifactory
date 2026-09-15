@@ -97,8 +97,7 @@ capture_unified_logs() {
   if [ -d "$M01_GATE_RUN/logs" ]; then
     cp -a "$M01_GATE_RUN/logs/." "$evidence/m01/" 2>/dev/null || true
   fi
-  grep -E 'SW-RDMA-S3-LOADER|push_read_response|loader' "$log" \
-    > "$evidence/m01/loader.log" 2>/dev/null || true
+  cp "$log" "$evidence/m01/loader.log" 2>/dev/null || true
   ssh "$M02_HOST" \
     "test -d '$M02_GATE_RUN/logs' && tar -C '$M02_GATE_RUN/logs' -cf - ." \
     | tar -C "$evidence/m02" -xf - 2>/dev/null || true
@@ -107,9 +106,9 @@ capture_unified_logs() {
       echo "missing_evidence=$name" >> "$evidence/capture.status"
     fi
   done
+  echo "logs_captured=true" >> "$evidence/capture.status"
   find "$evidence" -type f ! -name evidence.sha256 -print0 \
     | sort -z | xargs -0 -r sha256sum > "$evidence/evidence.sha256"
-  echo "logs_captured=true" >> "$evidence/capture.status"
 }
 
 wait_for_writable_volume() {
