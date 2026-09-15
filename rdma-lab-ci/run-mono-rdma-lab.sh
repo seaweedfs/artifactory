@@ -224,6 +224,14 @@ d13_self_test() {
   local kvcache="$binary_root/enterprise/rust/target/release/seaweedfs-sw-rdma-kvcache"
   printf '#!/usr/bin/env bash\n' > "$kvcache"
   chmod +x "$kvcache"
+  if verify_unified_binaries "$binary_root" > "$fixture/missing-module.log" 2>&1; then
+    echo "D13_SELF_TEST RED missing-required-module accepted" >&2
+    return 1
+  fi
+  grep -q 'name=seaweedvfs.ko' "$fixture/missing-module.log"
+  local kmod="$binary_root/seaweed-vfs/kernel/seaweedvfs.ko"
+  mkdir -p "$(dirname "$kmod")"
+  printf 'module\n' > "$kmod"
   verify_unified_binaries "$binary_root" >/dev/null
   local cleanup_definition cleanup_script trace rc
   cleanup_definition="$(declare -f cleanup_lab)"
@@ -245,7 +253,7 @@ exit $body_status"
     test "$rc" = "$expected"
     test "$(sort "$trace" | tr '\n' ' ')" = "m01 m02 "
   done
-  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
 }
 
 require_cmd git
@@ -303,6 +311,7 @@ build_unified_gate() {
 
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
+  make -C "$m01_src/seaweed-vfs/kernel"
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
 }
 
@@ -326,7 +335,19 @@ verify_unified_binaries() {
       return 1
     fi
   done < <(unified_required_binaries "$root")
+  local artifact
+  while IFS='=' read -r name artifact; do
+    if [ ! -f "$artifact" ]; then
+      echo "UNIFIED_PREFLIGHT_MISSING_ARTIFACT name=$name path=$artifact" >&2
+      return 1
+    fi
+  done < <(unified_required_files "$root")
   echo "UNIFIED_BINARY_PREFLIGHT_PASS product_sha=$MONO_REF"
+}
+
+unified_required_files() {
+  local root="$1"
+  printf '%s\n' "seaweedvfs.ko=$root/seaweed-vfs/kernel/seaweedvfs.ko"
 }
 
 if [ "$D13_SELF_TEST" = "1" ]; then

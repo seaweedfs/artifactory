@@ -47,7 +47,8 @@ def errors(path=RUNNER):
     for token in ("missing-fid accepted", "master.log", "weed-volume.log", "filer.log", "loader.log",
                   "absent-m01 accepted", "failed-m02-transfer accepted", "success_capture_failure_exit=7",
                   "failed_body_status_preserved=23", "teardowns=both", "required_binaries=PASS",
-                  "missing_binary=seaweedfs-sw-rdma-kvcache:RED", "D13_SELF_TEST PASS"):
+                  "missing_binary=seaweedfs-sw-rdma-kvcache:RED", "missing_module=seaweedvfs.ko:RED",
+                  "D13_SELF_TEST PASS"):
         if token not in self_test:
             found.append(f"runtime self-test missing {token}")
     build = function(text, "build_unified_gate")
@@ -55,12 +56,18 @@ def errors(path=RUNNER):
     verify = function(text, "verify_unified_binaries")
     if "-p seaweedkv-tools" not in build or "--bin seaweedfs-sw-rdma-kvcache" not in build:
         found.append("launcher does not build the seaweedkv-tools kvcache binary target")
+    if 'make -C "$m01_src/seaweed-vfs/kernel"' not in build:
+        found.append("launcher does not build the checked-out seaweedvfs kernel module")
     for name in ("sw-rdma-object-put", "sw-rdma-object-get", "sw-rdma-object-bench", "sw-rdma-s3-loader",
                  "seaweedfs-sw-rdma-kvcache", "sw-rdma-kd", "sw-kd"):
         if name not in required:
             found.append(f"required binary manifest missing {name}")
     if "UNIFIED_PREFLIGHT_MISSING_BINARY" not in verify or "[ ! -x" not in verify:
         found.append("required binary preflight is not fail-closed")
+    if "UNIFIED_PREFLIGHT_MISSING_ARTIFACT" not in verify or "[ ! -f" not in verify:
+        found.append("required file artifact preflight is not fail-closed")
+    if "seaweed-vfs/kernel/seaweedvfs.ko" not in text:
+        found.append("required file artifact manifest is missing seaweedvfs.ko")
     verify_call = text.rfind('verify_unified_binaries "$M01_WORKDIR/seaweed-mono"')
     case_call = text.rfind('case "$PROFILE" in')
     if verify_call < 0 or case_call < 0 or verify_call > case_call:
@@ -99,11 +106,12 @@ d13_self_test() {
   false && echo 'failed-m02-transfer accepted'
   test master.log weed-volume.log filer.log loader.log success_capture_failure_exit=7
   test failed_body_status_preserved=23 teardowns=both required_binaries=PASS
-  test missing_binary=seaweedfs-sw-rdma-kvcache:RED
+  test missing_binary=seaweedfs-sw-rdma-kvcache:RED missing_module=seaweedvfs.ko:RED
   echo D13_SELF_TEST PASS
 }
 build_unified_gate() {
   cargo build -p seaweedkv-tools --bin seaweedfs-sw-rdma-kvcache
+  make -C "$m01_src/seaweed-vfs/kernel"
 }
 unified_required_binaries() {
   echo sw-rdma-object-put sw-rdma-object-get sw-rdma-object-bench sw-rdma-s3-loader
@@ -111,7 +119,9 @@ unified_required_binaries() {
 }
 verify_unified_binaries() {
   [ ! -x missing ] && echo UNIFIED_PREFLIGHT_MISSING_BINARY
+  [ ! -f module ] && echo UNIFIED_PREFLIGHT_MISSING_ARTIFACT
 }
+unified_required_files() { echo seaweed-vfs/kernel/seaweedvfs.ko; }
 verify_unified_binaries "$M01_WORKDIR/seaweed-mono"
 case "$PROFILE" in unified) true ;; esac
 '''
