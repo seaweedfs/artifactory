@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, contextlib, datetime, hashlib, json, os, pathlib, re, shlex, subprocess, sys, time
+import argparse, contextlib, datetime, hashlib, json, os, pathlib, re, shlex, shutil, subprocess, sys, time
 try:
     import fcntl
 except ImportError:  # non-Linux review hosts can still inspect --help/parse
@@ -186,14 +186,20 @@ def preflight_fail(item, reason):
     return {"preflight_status": "fail", "failed_item": item, "reason": reason}
 
 
+def write_preflight(result_dir, row):
+    (result_dir / "preflight.json").write_text(json.dumps(row, indent=2) + "\n"); return row
+
+
+def preflight_summary(result_dir, run_id, args, row):
+    summary = {"run_id": run_id, "tier": args.tier, "status": "infra", "product_sha": args.mono, "runner_sha": args.runner_sha, "case_count": 0, "preflight_status": "fail", "failed_item": row["failed_item"], "reason": row["reason"], "cases": []}
+    (result_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n"); return summary
+
+
 def assert_file(item, path, executable=False):
     p = pathlib.Path(path)
-    if not p.exists():
-        return preflight_fail(item, f"missing {p}")
-    if not p.is_file():
-        return preflight_fail(item, f"not a file {p}")
-    if executable and not os.access(p, os.X_OK):
-        return preflight_fail(item, f"not executable {p}")
+    if not p.exists(): return preflight_fail(item, f"missing {p}")
+    if not p.is_file(): return preflight_fail(item, f"not a file {p}")
+    if executable and not os.access(p, os.X_OK): return preflight_fail(item, f"not executable {p}")
     return None
 
 
@@ -201,42 +207,102 @@ def remote_text(host, cmd, timeout=30):
     return subprocess.check_output(["ssh", "-o", "BatchMode=yes", host, cmd], stderr=subprocess.STDOUT, timeout=timeout, text=True).strip()
 
 
+def input_preflight(args, result_dir):
+    checks, manifest = [], {"inputs": {}, "paths": {}}
+    def ok(item, detail):
+        checks.append({"item": item, "ok": True, "detail": detail})
+    def fail(item, reason):
+        checks.append({"item": item, "ok": False, "reason": reason})
+        return write_preflight(result_dir, {"preflight_status": "fail", "failed_item": item, "reason": reason, "manifest": manifest, "checks": checks})
+    required_inputs = (
+        ("m02", args.m02), ("rdma_ip", args.rdma_ip), ("remote_path_prefix", os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX")),
+        ("t3_client_host", args.t3_client_host), ("t3_client_user", args.t3_client_user), ("t3_client_key", args.t3_client_key),
+        ("t3_rdma_device", args.t3_rdma_device), ("t3_gid_index", args.t3_gid_index), ("t3_result_parent", args.t3_result_parent),
+    )
+    for item, value in required_inputs:
+        manifest["inputs"][item] = bool(value)
+        if not value: return fail(item, "required value is empty")
+        ok(item, str(value))
+    args.t3_server_ip = args.t3_server_ip or args.rdma_ip
+    args.t3_server_ssh = args.t3_server_ssh or args.m02
+    key = pathlib.Path(args.t3_client_key)
+    if not key.is_file(): return fail("t3_client_key", f"missing {key}")
+    if not os.access(key, os.R_OK): return fail("t3_client_key", f"not readable {key}")
+    ok("t3_client_key_readable", str(key))
+    for item, path in (("result_root", pathlib.Path(args.results)), ("lab_lock_parent", pathlib.Path(args.lock).parent), ("activity_parent", pathlib.Path(args.activity).parent)):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / f".rdma-hw-suite-preflight-{os.getpid()}"; probe.write_text("ok\n"); probe.unlink()
+        except Exception as e:
+            return fail(item, str(e))
+        manifest["paths"][item] = str(path)
+        ok(item, str(path))
+    return None
+
+
 def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, t3_volume_path, provenance):
     log = []
+    manifest = {"inputs": {}, "paths": {}, "tools": {}, "artifacts": {}, "t3": {}, "unified": {}, "negative_control": args.preflight_negative_control}
     def ok(item, detail):
         log.append({"item": item, "ok": True, "detail": detail})
     def fail(item, reason):
-        row = preflight_fail(item, reason)
-        log.append({"item": item, "ok": False, "reason": reason})
-        row["checks"] = log
-        (result_dir / "preflight.json").write_text(json.dumps(row, indent=2) + "\n")
-        return row
+        row = preflight_fail(item, reason); log.append({"item": item, "ok": False, "reason": reason})
+        row["manifest"] = manifest; row["checks"] = log; return write_preflight(result_dir, row)
 
     mono_src = pathlib.Path(ctx["mono_src"])
     m02_src = ctx["m02_src"]
-    for item, value in (("m02", args.m02), ("rdma_ip", args.rdma_ip), ("remote_path_prefix", os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX")), ("t3_result_parent", args.t3_result_parent)):
-        if not value:
-            return fail(item, "required value is empty")
+    for item, value in (("m02", args.m02), ("rdma_ip", args.rdma_ip), ("remote_path_prefix", os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX")), ("t3_result_parent", args.t3_result_parent), ("t3_client_root", f"/tmp/seaweed-t3-client-rdma-hw-suite-*")):
+        if not value: return fail(item, "required value is empty")
+        manifest["inputs"][item] = str(value)
         ok(item, str(value))
-    if not pathlib.Path(args.lock).parent.exists():
-        return fail("lab_lock", f"lock parent missing {pathlib.Path(args.lock).parent}")
+    local_prefix = os.environ.get("RDMA_HW_SUITE_PATH_PREFIX", "")
+    manifest["inputs"]["local_path_prefix"] = local_prefix
+    ok("local_path_prefix", local_prefix or "<system PATH>")
+    if not pathlib.Path(args.lock).parent.exists(): return fail("lab_lock", f"lock parent missing {pathlib.Path(args.lock).parent}")
     ok("lab_lock", args.lock)
-    if not pathlib.Path(args.activity).parent.exists():
-        return fail("activity_log", f"activity parent missing {pathlib.Path(args.activity).parent}")
+    if not pathlib.Path(args.activity).parent.exists(): return fail("activity_log", f"activity parent missing {pathlib.Path(args.activity).parent}")
     ok("activity_log", args.activity)
+    try:
+        probe = result_dir / f".writable-{os.getpid()}"; probe.write_text("ok\n"); probe.unlink()
+    except Exception as e:
+        return fail("result_root_writable", str(e))
+    manifest["paths"]["result_root"] = str(result_dir)
+    ok("result_root_writable", str(result_dir))
+    for item in ("t3_client_host", "t3_client_user", "t3_client_key", "t3_rdma_device", "t3_gid_index", "t3_server_ip", "t3_server_ssh"):
+        manifest["inputs"][item] = str(getattr(args, item))
+    for name in ("git", "ssh", "rsync", "bash", "python3", "go", "cargo"):
+        found = shutil.which(name)
+        if not found: return fail(f"tool_{name}", "not found on local PATH")
+        manifest["tools"][f"local_{name}"] = found
+        ok(f"tool_{name}", found)
+    try:
+        remote_tools = remote_text(args.m02, "for t in git bash python3 cargo rustc rdma sha256sum; do command -v $t >/dev/null || { echo missing:$t; exit 9; }; done; echo ok")
+    except Exception as e:
+        return fail("m02_tools", str(e))
+    if remote_tools != "ok": return fail("m02_tools", remote_tools)
+    manifest["tools"]["m02"] = "git,bash,python3,cargo,rustc,rdma,sha256sum"
+    ok("m02_tools", "ok")
+    for item, path in (("unified_script", pathlib.Path(ctx["suite_dir"]) / "run-mono-rdma-lab.sh"), ("object_bench_manifest", mono_src / "enterprise/rust/seaweedkv-tools/Cargo.toml")):
+        err = assert_file(item, path)
+        if err: return fail(err["failed_item"], err["reason"])
+        manifest["unified"][item] = str(path)
+        ok(item, str(path))
+    manifest["unified"]["dc_env"] = {"ENABLE_DC": "1", "RDMA_PIPES": "4"}
+    manifest["unified"]["evidence_export_root"] = str(result_dir)
 
     marker = (mono_src / "RDMA_HW_SUITE_SOURCE_SHA").read_text().strip() if (mono_src / "RDMA_HW_SUITE_SOURCE_SHA").exists() else ""
     if marker != args.mono:
         return fail("m01_source_marker", f"got {marker!r}, want {args.mono}")
     ok("m01_source_marker", marker)
     try:
-        subprocess.check_call(["git", "-C", str(mono_src), "cat-file", "-e", f"{args.mono}^{{commit}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        want = "0" * 40 if args.preflight_negative_control == "missing-git-object" else args.mono
+        subprocess.check_call(["git", "-C", str(mono_src), "cat-file", "-e", f"{want}^{{commit}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
-        return fail("m01_git_object", f"missing commit {args.mono}")
+        return fail("m01_git_object", f"missing commit {want}")
     ok("m01_git_object", args.mono)
     try:
         remote_marker = remote_text(args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA")
-        remote_text(args.m02, f"git -C {shlex.quote(m02_src)} cat-file -e {shlex.quote(args.mono)}^{{commit}}")
+        remote_text(args.m02, f"git -C {shlex.quote(m02_src)} cat-file -e {shlex.quote(want)}^{{commit}}")
     except Exception as e:
         return fail("m02_staged_source", str(e))
     if remote_marker != args.mono:
@@ -245,18 +311,15 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
 
     for name in ("sw-test-runner", "weed", "weed-volume"):
         err = assert_file(f"bin_{name}", bindir / name, executable=True)
-        if err:
-            return fail(err["failed_item"], err["reason"])
+        if err: return fail(err["failed_item"], err["reason"])
         digest = sha256(bindir / name)
-        if digest != provenance["binary_sha256"].get(name):
-            return fail(f"bin_{name}", "sha256 does not match build provenance")
+        if digest != provenance["binary_sha256"].get(name): return fail(f"bin_{name}", "sha256 does not match build provenance")
         ok(f"bin_{name}", digest)
     for item, path, digest in (("m01_weed_uds", weed_uds_path, provenance.get("unified_weed_sha256")), ("t3_volume", t3_volume_path, provenance.get("t3_volume_sha256"))):
         err = assert_file(item, path, executable=True)
-        if err:
-            return fail(err["failed_item"], err["reason"])
-        if sha256(path) != digest:
-            return fail(item, "sha256 does not match provenance")
+        if err: return fail(err["failed_item"], err["reason"])
+        if sha256(path) != digest: return fail(item, "sha256 does not match provenance")
+        manifest["artifacts"][item] = {"path": str(path), "sha256": digest}
         ok(item, str(path))
     try:
         m02_weed_sha = remote_text(args.m02, f"sha256sum {shlex.quote(str(weed_uds_path))} | awk '{{print $1}}'")
@@ -269,22 +332,30 @@ def run_preflight(args, ctx, result_dir, bindir, t3_step05_root, weed_uds_path, 
     t3_cache = pathlib.Path(t3_step05_root) / "tcp-client"
     for name in ("t3-wire-client", "provenance.json"):
         err = assert_file(f"t3_cache_{name}", t3_cache / name, executable=(name == "t3-wire-client"))
-        if err:
-            return fail(err["failed_item"], err["reason"])
-    if sha256(t3_cache / "t3-wire-client") != provenance["binary_sha256"].get("t3-wire-client"):
-        return fail("t3_cache_t3-wire-client", "sha256 does not match build provenance")
+        if err: return fail(err["failed_item"], err["reason"])
+    if sha256(t3_cache / "t3-wire-client") != provenance["binary_sha256"].get("t3-wire-client"): return fail("t3_cache_t3-wire-client", "sha256 does not match build provenance")
+    if args.preflight_negative_control == "missing-result-parent": return fail("t3_result_parent", "negative control removed result parent")
     pathlib.Path(args.t3_result_parent).mkdir(parents=True, exist_ok=True)
+    try:
+        t3_prov = json.loads((t3_cache / "provenance.json").read_text())
+    except Exception as e:
+        return fail("t3_cache_provenance", str(e))
+    manifest["t3"] = {"step05_root": str(t3_step05_root), "cache": str(t3_cache), "result_parent": args.t3_result_parent, "client_key": args.t3_client_key, "client_key_readable": os.access(args.t3_client_key, os.R_OK), "client_root": f"/tmp/seaweed-t3-client-rdma-hw-suite-*", "provenance_keys": sorted(t3_prov.keys())}
     ok("t3_cache", str(t3_cache))
     ok("t3_result_parent", args.t3_result_parent)
 
+    if args.preflight_negative_control == "missing-weed-uds": return fail("m01_weed_uds", "negative control removed weed-uds")
+    if args.preflight_negative_control == "dirty-lab": return fail("clean_rdma_resources", "negative control injected dirty lab")
     before = {host: resource_snapshot(host, result_dir / "preflight-resources" / host, args.m02) for host in ("m01", "m02")}
     dirty = lab_dirty_reasons(before)
-    if dirty:
-        return fail("clean_rdma_resources", "; ".join(dirty))
+    if dirty: return fail("clean_rdma_resources", "; ".join(dirty))
     ok("clean_rdma_resources", "m01/m02")
-    row = {"preflight_status": "pass", "failed_item": None, "reason": None, "checks": log}
-    (result_dir / "preflight.json").write_text(json.dumps(row, indent=2) + "\n")
-    return row
+    required_manifest = ("inputs", "paths", "tools", "artifacts", "t3", "unified", "negative_control")
+    if args.preflight_negative_control == "manifest-incomplete": manifest.pop("unified", None)
+    missing = [key for key in required_manifest if key not in manifest]
+    if missing: return fail("manifest_completeness", "missing manifest keys: " + ",".join(missing))
+    row = {"preflight_status": "pass", "failed_item": None, "reason": None, "manifest": manifest, "checks": log}
+    return write_preflight(result_dir, row)
 
 def snapshot_hosts(cid, host, cdir, args, when):
     hosts = ("m01", "m02") if cid == "unified.short_rc_dc" else (host,)
@@ -409,25 +480,20 @@ def main():
     ap.add_argument("--lock", default=DEFAULT_LOCK)
     ap.add_argument("--activity", default=DEFAULT_ACTIVITY)
     ap.add_argument("--t3-step05-root", default=os.environ.get("HW_SUITE_T3_STEP05_ROOT", DEFAULT_T3_STEP05_ROOT))
-    ap.add_argument("--preflight-negative-control", choices=["missing-t3-client"], default=None, help="review control: remove one staged prerequisite before preflight")
+    ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
     args = ap.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.mono):
         raise SystemExit("--mono must be a 40-char sha")
-    args.m02 = required("RDMA_HW_SUITE_M02/--m02", args.m02)
-    args.rdma_ip = required("RDMA_HW_SUITE_RDMA_IP/--rdma-ip", args.rdma_ip)
-    args.t3_client_host = required("RDMA_HW_SUITE_T3_CLIENT_HOST/--t3-client-host", args.t3_client_host)
-    args.t3_client_user = required("RDMA_HW_SUITE_T3_CLIENT_USER/--t3-client-user", args.t3_client_user)
-    args.t3_client_key = required("RDMA_HW_SUITE_T3_CLIENT_KEY/--t3-client-key", args.t3_client_key)
-    args.t3_rdma_device = required("RDMA_HW_SUITE_T3_RDMA_DEVICE/--t3-rdma-device", args.t3_rdma_device)
-    args.t3_gid_index = required("RDMA_HW_SUITE_T3_GID_INDEX/--t3-gid-index", args.t3_gid_index)
-    args.t3_result_parent = required("RDMA_HW_SUITE_T3_RESULT_PARENT/--t3-result-parent", args.t3_result_parent)
-    args.t3_server_ip = args.t3_server_ip or args.rdma_ip
-    args.t3_server_ssh = args.t3_server_ssh or args.m02
     suite_dir = pathlib.Path(__file__).resolve().parent
     args.runner_sha = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
     run_id = f"hw-suite-S-{args.mono[:8]}-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     result_dir = pathlib.Path(args.results) / run_id
     result_dir.mkdir(parents=True, exist_ok=False)
+    preflight = input_preflight(args, result_dir)
+    if preflight:
+        preflight_summary(result_dir, run_id, args, preflight)
+        print(json.dumps({"run_id": run_id, "status": "infra", "preflight_status": "fail", "failed_item": preflight["failed_item"], "reason": preflight["reason"], "result_dir": str(result_dir)}, indent=2))
+        return 1
     with lab_lock(args):
         with open(args.activity, "a") as a:
             a.write(f"START codex02 rdma-hw-suite tier=S mono={args.mono} run={run_id} {now()}\n")
