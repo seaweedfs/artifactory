@@ -158,7 +158,7 @@ def stage_mono(args, result_dir):
     return str(src), m02_src
 
 
-def build_suite_bins(mono_src, result_dir):
+def build_suite_bins(mono_src, result_dir, args):
     bindir = result_dir / "bin"
     bindir.mkdir(exist_ok=True)
     env = lab_env()
@@ -166,11 +166,19 @@ def build_suite_bins(mono_src, result_dir):
         checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / name))} ./testops/cmd/{name}"], result_dir / f"{name}-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env)
     checked(["bash", "-lc", f"go build -o {shlex.quote(str(bindir / 'weed'))} ./weed"], result_dir / "weed-build.log", 900, cwd=str(pathlib.Path(mono_src) / "enterprise"), env=env)
     checked(["bash", "-lc", f"RUSTUP_AUTO_INSTALL=0 cargo build --release --manifest-path enterprise/seaweed-volume/Cargo.toml --features rdma,rdma-dc --bin weed-volume && cp enterprise/seaweed-volume/target/release/weed-volume {shlex.quote(str(bindir / 'weed-volume'))}"], result_dir / "weed-volume-build.log", 1800, cwd=mono_src, env=env)
+    t3_root = result_dir / "t3-step05"
+    t3_cache = t3_root / "tcp-client"
+    t3_env = env.copy()
+    t3_env["TESTOPS_T3_BUILD_ROOT"] = str(pathlib.Path(args.workdir) / "t3-build-root")
+    t3_env["CARGO_TARGET_DIR"] = str(pathlib.Path(args.workdir) / "t3-cargo-target")
+    checked(["bash", str(pathlib.Path(mono_src) / "enterprise/testops/packs/kv/scripts/build_t3_wire_client.sh"), mono_src, args.mono, str(t3_cache)], result_dir / "t3-wire-client-build.log", 1800, cwd=mono_src, env=t3_env)
     provenance = {"product_sha": None, "binary_sha256": {}}
     for name in ("sw-test-runner", "weed", "weed-volume"):
         provenance["binary_sha256"][name] = sha256(bindir / name)
+    provenance["t3_step05_root"] = str(t3_root)
+    provenance["binary_sha256"]["t3-wire-client"] = sha256(t3_cache / "t3-wire-client")
     (result_dir / "build-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    return bindir
+    return bindir, t3_root
 
 
 def snapshot_hosts(cid, host, cdir, args, when):
@@ -318,7 +326,7 @@ def main():
         with open(args.activity, "a") as a:
             a.write(f"START codex02 rdma-hw-suite tier=S mono={args.mono} run={run_id} {now()}\n")
         mono_src, m02_src = stage_mono(args, result_dir)
-        bindir = build_suite_bins(mono_src, result_dir)
+        bindir, t3_step05_root = build_suite_bins(mono_src, result_dir, args)
 
     provenance = json.loads((result_dir / "build-provenance.json").read_text())
     provenance["product_sha"] = args.mono
@@ -345,7 +353,7 @@ def main():
         "SWEEP_PRODUCT_TREE": mono_src,
         "SWEEP_HARNESS_TREE": mono_src,
         "SWEEP_ROOT": str(result_dir),
-        "SWEEP_STEP05_ROOT": args.t3_step05_root,
+        "SWEEP_STEP05_ROOT": str(t3_step05_root),
         "T3_TAG": f"rdma-hw-suite-{run_id}-t3",
         "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
         "T3_RESULT_PARENT": args.t3_result_parent,
