@@ -25,6 +25,7 @@ scripts=source/'testops/packs/kv/scripts'
 client='testdev@192.168.1.181'
 client_root='/opt/work/'+tag
 cache=Path(os.environ['SWEEP_STEP05_ROOT'])/'tcp-client'
+t3_server_ip=os.environ['TESTOPS_T3_SERVER_IP']
 if HARNESS != BASE: cache=Path(os.environ['SWEEP_ROOT'])/'t3-client'
 if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-t3');raise SystemExit
 def call(args,**kwargs):return subprocess.run(args,check=True,**kwargs)
@@ -43,7 +44,7 @@ server_env=results/'server.env'
 server_env.write_text('export PATH=/usr/local/go/bin:/home/testdev/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\n'
     +f'TESTOPS_T3_RUN_ROOT={results}\nTESTOPS_ACTIVITY_LOG=/mnt/smb/work/share/testops/WHO-IS-RUNNING\n'
     +'TESTOPS_LOCK_FILE=/mnt/smb/work/share/testops/locks/rdma-lab.lock\n'
-    +'TESTOPS_T3_SERVER_IP=10.0.0.3\nTESTOPS_T3_DEVICE=rocep1s0\nTESTOPS_T3_GID_INDEX=3\nCI_PORT_BASE=27000\n')
+    +f'TESTOPS_T3_SERVER_IP={t3_server_ip}\nTESTOPS_T3_DEVICE=rocep1s0\nTESTOPS_T3_GID_INDEX=3\nCI_PORT_BASE=27000\n')
 client_env=results/'client.env'
 client_env.write_text('export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\n'
     +'TESTOPS_ACTIVITY_LOG=/mnt/smb/work/share/testops/WHO-IS-RUNNING\nTESTOPS_T3_DEVICE=rocep1s0\nTESTOPS_T3_GID_INDEX=3\n')

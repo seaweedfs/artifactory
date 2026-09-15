@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, contextlib, datetime, hashlib, json, os, pathlib, re, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, contextlib, datetime, hashlib, ipaddress, json, os, pathlib, re, shlex, shutil, subprocess, sys, tempfile, time
 try:
     import fcntl
 except ImportError:  # non-Linux review hosts can still inspect --help/parse
@@ -13,6 +13,7 @@ MIN_PREFLIGHT_FREE_BYTES = 21474836480
 PREFLIGHT_FILESYSTEMS = {"root": "/", "workdir": "workdir"}
 MAIN_PLAN_OBJECT = "42dd1bb40de5ee8affebf799cbf86da64f54e2f5"
 T3_DONOR_OBJECT = "4c896d6c48628df35d1b4b0e18980b9c2d17cd74"
+T3_SERVER_IP_REQUIRED = True
 
 
 SELF_LOCKING_CASES = {"t3.stale_key"}
@@ -322,6 +323,31 @@ def preflight_self_test(mode):
         print("PREFLIGHT_SELF_TEST PASS git-objects-ok real_lookup=true missing_lookup=RED cases=12")
 
 
+def t3_server_ip_error(value, host):
+    output = remote_text(host, "ip -o addr show")
+    wanted = ipaddress.ip_address(value)
+    owned = set()
+    for line in output.splitlines():
+        fields = line.split()
+        for kind in ("inet", "inet6"):
+            if kind in fields and fields.index(kind) + 1 < len(fields):
+                owned.add(ipaddress.ip_address(fields[fields.index(kind) + 1].split("/", 1)[0]))
+    return None if wanted in owned else f"address {wanted} is not owned by {host}"
+
+
+def t3_server_ip_self_test():
+    original = globals()["remote_text"]
+    globals()["remote_text"] = lambda host, cmd: "2: rdma0 inet 192.0.2.10/24 scope global rdma0"
+    try:
+        assert t3_server_ip_error("192.0.2.10", "fixture") is None
+        assert t3_server_ip_error("192.0.2.11", "fixture") is not None
+        failure = {"failed_item": "t3_server_ip", "case_count": 0}
+        assert failure["failed_item"] == "t3_server_ip" and failure["case_count"] == 0
+    finally:
+        globals()["remote_text"] = original
+    print("PREFLIGHT_SELF_TEST PASS t3-server-ip-ok real_validator=true wrong_address=RED")
+
+
 def input_preflight(args, result_dir):
     checks, manifest = [], {"inputs": {}, "paths": {}}
     def ok(item, detail):
@@ -333,11 +359,18 @@ def input_preflight(args, result_dir):
         ("m02", args.m02), ("rdma_ip", args.rdma_ip), ("remote_path_prefix", os.environ.get("RDMA_HW_SUITE_REMOTE_PATH_PREFIX")),
         ("t3_client_host", args.t3_client_host), ("t3_client_user", args.t3_client_user), ("t3_client_key", args.t3_client_key),
         ("t3_rdma_device", args.t3_rdma_device), ("t3_gid_index", args.t3_gid_index), ("t3_result_parent", args.t3_result_parent),
+        ("t3_server_ip", args.t3_server_ip), ("t3_server_ssh", args.t3_server_ssh),
     )
     for item, value in required_inputs:
         manifest["inputs"][item] = bool(value)
         if not value: return fail(item, "required value is empty")
         ok(item, str(value))
+    if args.preflight_negative_control == "wrong-t3-server-ip":
+        args.t3_server_ip = "192.0.2.255"
+    server_ip_error = t3_server_ip_error(args.t3_server_ip, args.t3_server_ssh)
+    if server_ip_error:
+        return fail("t3_server_ip", server_ip_error)
+    ok("t3_server_ip_owned", args.t3_server_ip)
     for item, local_path, remote_path, control in (
         ("root_free_space", "/", "/", "low-root-space"),
         ("workdir_free_space", args.workdir, args.m02_workdir, "low-workdir-space"),
@@ -368,8 +401,6 @@ def input_preflight(args, result_dir):
     result_parent_error = t3_result_parent_error(args.t3_result_parent, result_parent_fs, share_mount)
     if result_parent_error:
         return fail("t3_result_parent", result_parent_error)
-    args.t3_server_ip = args.t3_server_ip or args.rdma_ip
-    args.t3_server_ssh = args.t3_server_ssh or args.m02
     key = pathlib.Path(args.t3_client_key)
     if not key.is_file(): return fail("t3_client_key", f"missing {key}")
     if not os.access(key, os.R_OK): return fail("t3_client_key", f"not readable {key}")
@@ -715,8 +746,9 @@ def main():
     if sys.argv[1:] == ["--t3-result-self-test"]:
         t3_result_self_test()
         return 0
-    if len(sys.argv) == 3 and sys.argv[1] == "--preflight-self-test" and sys.argv[2] in ("root-space-ok", "workdir-space-ok", "git-objects-ok"):
-        preflight_self_test(sys.argv[2])
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight-self-test" and sys.argv[2] in ("root-space-ok", "workdir-space-ok", "git-objects-ok", "t3-server-ip-ok"):
+        if sys.argv[2] == "t3-server-ip-ok": t3_server_ip_self_test()
+        else: preflight_self_test(sys.argv[2])
         return 0
     ap = argparse.ArgumentParser(prog="rdma-hw-suite")
     ap.add_argument("--tier", required=True, choices=["S"])
@@ -738,7 +770,7 @@ def main():
     ap.add_argument("--lock", default=DEFAULT_LOCK)
     ap.add_argument("--activity", default=DEFAULT_ACTIVITY)
     ap.add_argument("--t3-step05-root", default=os.environ.get("HW_SUITE_T3_STEP05_ROOT", DEFAULT_T3_STEP05_ROOT))
-    ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-case-git-object", "low-root-space", "low-workdir-space", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
+    ap.add_argument("--preflight-negative-control", choices=["missing-t3-client", "missing-git-object", "missing-case-git-object", "low-root-space", "low-workdir-space", "wrong-t3-server-ip", "missing-weed-uds", "missing-result-parent", "dirty-lab", "manifest-incomplete"], default=None, help="review control: remove one staged prerequisite before preflight")
     args = ap.parse_args()
     args.t3_result_parent = args.t3_result_parent or str(pathlib.Path(args.workdir) / "t3-results")
     if not re.fullmatch(r"[0-9a-f]{40}", args.mono):
@@ -793,6 +825,7 @@ def main():
             "T3_TAG": f"rdma-hw-suite-{run_id}-t3",
             "T3_RESULT_TAG": f"rdma-hw-suite-{run_id}-t3",
             "T3_RESULT_PARENT": args.t3_result_parent,
+            "TESTOPS_T3_SERVER_IP": args.t3_server_ip,
         }
         ctx = {"mono_src": mono_src, "m02_src": m02_src, "suite_dir": str(suite_dir), "repo": args.repo, "mono": args.mono, "rdma_ip": shlex.quote(args.rdma_ip), "t3_env": t3_env}
     except SuiteStepError as e:
