@@ -23,6 +23,8 @@ ROWS = (
     ("D12.2-workdir-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test workdir-space-ok", "free_bytes>=21474836480 and no failure"),
     ("D12.3-missing-object", "A/L6", "after-suite", "rdma-hw-suite --preflight-negative-control missing-case-git-object", "preflight_status=fail names case and object before case 1"),
     ("D12.3-objects-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test git-objects-ok", "all per-case objects resolve on M01 and M02"),
+    ("D12.4-banner-moving", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test root-space-ok", "banner without numeric last non-empty line is RED"),
+    ("D12.4-banner-still", "A/L6", "after-suite", "rdma-hw-suite --preflight-self-test root-space-ok", "clean number and banner-prefixed number parse the last non-empty line"),
 )
 
 
@@ -69,6 +71,9 @@ def errors(path, after_suite=False):
     for token in ("root_free_space", "workdir_free_space", "missing-case-git-object", "case_count\": 0"):
         if token not in text:
             result.append(f"missing fail-closed evidence token {token}")
+    for token in ("parse_remote_free_bytes", "banner_before_number=PASS", "banner_without_number=RED"):
+        if token not in text:
+            result.append(f"missing remote probe parsing control {token}")
     return result
 
 

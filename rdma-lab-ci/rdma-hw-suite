@@ -256,6 +256,13 @@ def filesystem_probe(path):
     return probe, shutil.disk_usage(probe).free
 
 
+def parse_remote_free_bytes(output):
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("remote filesystem probe returned no value")
+    return int(lines[-1])
+
+
 def remote_filesystem_free(host, path):
     if host is None:
         probe, free_bytes = filesystem_probe(path)
@@ -263,11 +270,10 @@ def remote_filesystem_free(host, path):
     quoted = shlex.quote(str(path))
     command = (
         f"probe={quoted}; while [ ! -e \"$probe\" ] && [ \"$probe\" != / ]; do probe=$(dirname \"$probe\"); done; "
-        "printf '%s ' \"$probe\"; df -PB1 --output=avail \"$probe\" | tail -n 1 | tr -d ' '"
+        "df -PB1 --output=avail \"$probe\" | tail -n 1 | tr -d ' '"
     )
     output = remote_text(host, remote_env_cmd(command))
-    probe, free_text = output.rsplit(" ", 1)
-    return probe, int(free_text)
+    return str(path), parse_remote_free_bytes(output)
 
 
 def required_git_objects(product_sha):
@@ -304,7 +310,15 @@ def preflight_self_test(mode):
             assert local_free > 0 and remote_free > 0
             assert local_free >= 1 and remote_free >= 1
             assert local_free < local_free + 1 and remote_free < remote_free + 1
-            print(f"PREFLIGHT_SELF_TEST PASS {mode} real_probe=true still_threshold=1 moving_threshold=free_plus_one")
+            assert parse_remote_free_bytes("12345\n") == 12345
+            assert parse_remote_free_bytes("System information.\n\n12345\n") == 12345
+            try:
+                parse_remote_free_bytes("System information.\n")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("banner without numeric tail passed")
+            print(f"PREFLIGHT_SELF_TEST PASS {mode} real_probe=true still_threshold=1 moving_threshold=free_plus_one clean_number=PASS banner_before_number=PASS banner_without_number=RED")
             return
         subprocess.check_call(["git", "init", "-q", str(fixture)])
         subprocess.check_call(["git", "-C", str(fixture), "config", "user.email", "preflight@example.invalid"])
