@@ -17,7 +17,7 @@ if HARNESS != BASE: cache=Path(os.environ['SWEEP_ROOT'])/'t3-client'
 if os.environ.get('SWEEP_DRY_RUN')=='1':print('DRY sweep2-t3');raise SystemExit
 def call(args,**kwargs):return subprocess.run(args,check=True,**kwargs)
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-results.mkdir();share.mkdir()
+results.mkdir(parents=True, exist_ok=True);share.mkdir(parents=True, exist_ok=True)
 if HARNESS == BASE:
     provenance=json.loads((cache/'provenance.json').read_text())
 else:

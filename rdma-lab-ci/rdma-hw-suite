@@ -151,7 +151,7 @@ def stage_mono(args, result_dir):
     (src / "RDMA_HW_SUITE_SOURCE_SHA").write_text(args.mono + "\n")
     m02_src = f"{args.m02_workdir.rstrip('/')}/seaweed-mono-{args.mono[:8]}"
     checked(["ssh", "-o", "BatchMode=yes", args.m02, f"rm -rf {shlex.quote(m02_src)} && mkdir -p {shlex.quote(m02_src)}"], result_dir / "m02-mkdir.log", 120)
-    checked(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "target", f"{src}/", f"{args.m02}:{m02_src}/"], result_dir / "m02-rsync.log", 900)
+    checked(["rsync", "-a", "--delete", "--exclude", "target", f"{src}/", f"{args.m02}:{m02_src}/"], result_dir / "m02-rsync.log", 900)
     marker = subprocess.check_output(["ssh", "-o", "BatchMode=yes", args.m02, f"cat {shlex.quote(m02_src)}/RDMA_HW_SUITE_SOURCE_SHA"], text=True).strip()
     if marker != args.mono:
         raise SystemExit(f"M02 staged source mismatch: got {marker}, want {args.mono}")
@@ -322,6 +322,13 @@ def main():
 
     provenance = json.loads((result_dir / "build-provenance.json").read_text())
     provenance["product_sha"] = args.mono
+    weed_uds_path = pathlib.Path("/opt/work/weed-uds")
+    weed_uds_path.parent.mkdir(parents=True, exist_ok=True)
+    weed_bytes = (bindir / "weed").read_bytes()
+    weed_uds_path.write_bytes(weed_bytes)
+    weed_uds_path.chmod(0o755)
+    provenance["unified_weed_path"] = str(weed_uds_path)
+    provenance["unified_weed_sha256"] = hashlib.sha256(weed_bytes).hexdigest()
     t3_volume_path = pathlib.Path("/opt/work/bin") / f"weed-volume-{args.mono}-rdma"
     t3_volume_path.parent.mkdir(parents=True, exist_ok=True)
     volume_bytes = (bindir / "weed-volume").read_bytes()
