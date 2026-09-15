@@ -46,9 +46,25 @@ def errors(path=RUNNER):
     self_test = function(text, "d13_self_test")
     for token in ("missing-fid accepted", "master.log", "weed-volume.log", "filer.log", "loader.log",
                   "absent-m01 accepted", "failed-m02-transfer accepted", "success_capture_failure_exit=7",
-                  "failed_body_status_preserved=23", "teardowns=both", "D13_SELF_TEST PASS"):
+                  "failed_body_status_preserved=23", "teardowns=both", "required_binaries=PASS",
+                  "missing_binary=seaweedfs-sw-rdma-kvcache:RED", "D13_SELF_TEST PASS"):
         if token not in self_test:
             found.append(f"runtime self-test missing {token}")
+    build = function(text, "build_unified_gate")
+    required = function(text, "unified_required_binaries")
+    verify = function(text, "verify_unified_binaries")
+    if "-p seaweedfs-sw-rdma-kvcache" not in build:
+        found.append("launcher does not build seaweedfs-sw-rdma-kvcache")
+    for name in ("sw-rdma-object-put", "sw-rdma-object-get", "sw-rdma-object-bench", "sw-rdma-s3-loader",
+                 "seaweedfs-sw-rdma-kvcache", "sw-rdma-kd", "sw-kd"):
+        if name not in required:
+            found.append(f"required binary manifest missing {name}")
+    if "UNIFIED_PREFLIGHT_MISSING_BINARY" not in verify or "[ ! -x" not in verify:
+        found.append("required binary preflight is not fail-closed")
+    verify_call = text.rfind('verify_unified_binaries "$M01_WORKDIR/seaweed-mono"')
+    case_call = text.rfind('case "$PROFILE" in')
+    if verify_call < 0 or case_call < 0 or verify_call > case_call:
+        found.append("required binary preflight must run before unified readiness")
     return found
 
 
@@ -82,9 +98,22 @@ d13_self_test() {
   false && echo 'absent-m01 accepted'
   false && echo 'failed-m02-transfer accepted'
   test master.log weed-volume.log filer.log loader.log success_capture_failure_exit=7
-  test failed_body_status_preserved=23 teardowns=both
+  test failed_body_status_preserved=23 teardowns=both required_binaries=PASS
+  test missing_binary=seaweedfs-sw-rdma-kvcache:RED
   echo D13_SELF_TEST PASS
 }
+build_unified_gate() {
+  cargo build -p seaweedfs-sw-rdma-kvcache
+}
+unified_required_binaries() {
+  echo sw-rdma-object-put sw-rdma-object-get sw-rdma-object-bench sw-rdma-s3-loader
+  echo seaweedfs-sw-rdma-kvcache sw-rdma-kd sw-kd
+}
+verify_unified_binaries() {
+  [ ! -x missing ] && echo UNIFIED_PREFLIGHT_MISSING_BINARY
+}
+verify_unified_binaries "$M01_WORKDIR/seaweed-mono"
+case "$PROFILE" in unified) true ;; esac
 '''
     with tempfile.TemporaryDirectory() as td:
         path = pathlib.Path(td) / "runner.sh"

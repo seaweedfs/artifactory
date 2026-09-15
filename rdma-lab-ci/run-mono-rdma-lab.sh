@@ -208,6 +208,23 @@ d13_self_test() {
     return 1
   fi
   grep -q '^logs_captured=false$' "$run_dir/lab-logs/capture.status"
+  local binary_root="$fixture/binaries"
+  while IFS='=' read -r name path; do
+    if [ "$name" != "seaweedfs-sw-rdma-kvcache" ]; then
+      mkdir -p "$(dirname "$path")"
+      printf '#!/usr/bin/env bash\n' > "$path"
+      chmod +x "$path"
+    fi
+  done < <(unified_required_binaries "$binary_root")
+  if verify_unified_binaries "$binary_root" > "$fixture/missing-binary.log" 2>&1; then
+    echo "D13_SELF_TEST RED missing-required-binary accepted" >&2
+    return 1
+  fi
+  grep -q 'name=seaweedfs-sw-rdma-kvcache' "$fixture/missing-binary.log"
+  local kvcache="$binary_root/enterprise/rust/target/release/seaweedfs-sw-rdma-kvcache"
+  printf '#!/usr/bin/env bash\n' > "$kvcache"
+  chmod +x "$kvcache"
+  verify_unified_binaries "$binary_root" >/dev/null
   local cleanup_definition cleanup_script trace rc
   cleanup_definition="$(declare -f cleanup_lab)"
   cleanup_script="$fixture/teardown-m01.sh"
@@ -228,13 +245,8 @@ exit $body_status"
     test "$rc" = "$expected"
     test "$(sort "$trace" | tr '\n' ' ')" = "m01 m02 "
   done
-  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED required_binaries=PASS missing_binary=seaweedfs-sw-rdma-kvcache:RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
 }
-
-if [ "$D13_SELF_TEST" = "1" ]; then
-  d13_self_test
-  exit 0
-fi
 
 require_cmd git
 require_cmd ssh
@@ -289,10 +301,38 @@ build_unified_gate() {
     volume_features="rdma,rdma-dc"
   fi
 
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
+  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd && cargo build --release -p seaweedfs-sw-rdma-kvcache --features '$object_features'"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
   ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
 }
+
+unified_required_binaries() {
+  local root="$1"
+  printf '%s\n' \
+    "sw-rdma-object-put=$root/enterprise/rust/target/release/sw-rdma-object-put" \
+    "sw-rdma-object-get=$root/enterprise/rust/target/release/sw-rdma-object-get" \
+    "sw-rdma-object-bench=$root/enterprise/rust/target/release/sw-rdma-object-bench" \
+    "sw-rdma-s3-loader=$root/enterprise/rust/target/release/sw-rdma-s3-loader" \
+    "seaweedfs-sw-rdma-kvcache=$root/enterprise/rust/target/release/seaweedfs-sw-rdma-kvcache" \
+    "sw-rdma-kd=$root/enterprise/rust/target/release/sw-rdma-kd" \
+    "sw-kd=$root/seaweed-vfs/target/release/sw-kd"
+}
+
+verify_unified_binaries() {
+  local root="$1" name path
+  while IFS='=' read -r name path; do
+    if [ ! -x "$path" ]; then
+      echo "UNIFIED_PREFLIGHT_MISSING_BINARY name=$name path=$path" >&2
+      return 1
+    fi
+  done < <(unified_required_binaries "$root")
+  echo "UNIFIED_BINARY_PREFLIGHT_PASS product_sha=$MONO_REF"
+}
+
+if [ "$D13_SELF_TEST" = "1" ]; then
+  d13_self_test
+  exit 0
+fi
 
 run_unified_gate() {
   echo "== unified RDMA gate =="
@@ -387,6 +427,7 @@ if [ "$SKIP_BUILD" = "1" ]; then
 else
   build_unified_gate
 fi
+verify_unified_binaries "$M01_WORKDIR/seaweed-mono"
 
 case "$PROFILE" in
   unified) run_unified_gate ;;
