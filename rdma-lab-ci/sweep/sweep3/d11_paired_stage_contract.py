@@ -108,8 +108,8 @@ def errors(path=STAGER, run_self_test=True):
     self_test = function(tree, "self_test")
     self_text = ast.get_source_segment(source, self_test) if self_test else ""
     self_calls = {dotted(call.func) for call in calls(self_test)}
-    if not {"validate_layout", "emit_commands"}.issubset(self_calls):
-        found.append("self-test does not execute layout and emitted-command checks")
+    if not {"main", "validate_layout", "emit_commands"}.issubset(self_calls):
+        found.append("self-test does not execute main plus layout and emitted-command checks")
     for token in ("TemporaryDirectory", "outside-workdir", "missing-executable", "D11_STAGE_SELF_TEST PASS"):
         if token not in self_text:
             found.append(f"self-test missing {token}")
@@ -122,7 +122,7 @@ def errors(path=STAGER, run_self_test=True):
 
 def self_test():
     fixture = '''
-import os, pathlib, tempfile
+import os, pathlib, shutil, subprocess, sys, tempfile
 D11_PARENT_SHA="%s"
 D11_HEAD_SHA="%s"
 D11_COMMAND_VARS=%r
@@ -130,36 +130,51 @@ D11_MIN_FREE_BYTES=21474836480
 def validate_layout(workdir, paths):
     root=pathlib.Path(workdir).resolve(); device=os.stat(root).st_dev
     return all(pathlib.Path(p).resolve().is_relative_to(root) and os.stat(p).st_dev == device for p in paths)
-def run(args, **kwargs): pass
+def run(args, **kwargs):
+    exe=shutil.which(args[0]); command=["cmd","/c",exe]+args[1:] if os.name=="nt" else [exe]+args[1:]
+    subprocess.run(command,check=True,**kwargs)
 def stage_build(workdir):
     workdir=pathlib.Path(workdir); target=workdir/"target"; built={}
     for label,sha in {"A":D11_PARENT_SHA,"B":D11_HEAD_SHA}.items():
         source=workdir/"source"/label
         run(["git","worktree","add","--detach",str(source),sha])
-        run(["cargo","build","--locked","object_read","ec_read"],env={"CARGO_TARGET_DIR":str(target/label)})
+        run(["cargo","build","--locked","object_read","ec_read"],env=dict(os.environ,CARGO_TARGET_DIR=str(target/label)))
     return {"SWEEP_D11_OBJECT_READ_A_CMD":target/"A"/"object_read", "SWEEP_D11_OBJECT_READ_B_CMD":target/"B"/"object_read",
             "SWEEP_D11_EC_READ_A_CMD":target/"A"/"ec_read", "SWEEP_D11_EC_READ_B_CMD":target/"B"/"ec_read"}
 def emit_commands(paths):
     values={name:str(paths[name]) for name in D11_COMMAND_VARS}
     assert all(os.access(value, os.X_OK) for value in values.values())
     return values
+def install_shims(root):
+    shim=root/"shim.py"
+    shim.write_text("""import os,pathlib,sys\nkind=sys.argv[1]; args=sys.argv[2:]\nif kind==\"git\": pathlib.Path(args[-2]).mkdir(parents=True)\nelse:\n root=pathlib.Path(os.environ[\"CARGO_TARGET_DIR\"]); root.mkdir(parents=True,exist_ok=True)\n for name in (\"object_read\",\"ec_read\"):\n  p=root/name; p.write_text(\"shim-built\"); p.chmod(0o700)\n""")
+    bindir=root/"bin"; bindir.mkdir()
+    for name in ("git","cargo"):
+        if os.name=="nt":
+            (bindir/(name+".cmd")).write_text('@"%%s" "%%s" %%s %%%%*\\n' %% (sys.executable,shim,name))
+        else:
+            path=bindir/name; path.write_text('#!/bin/sh\\nexec "%%s" "%%s" %%s "$@"\\n' %% (sys.executable,shim,name)); path.chmod(0o700)
+    return bindir
 def self_test():
     with tempfile.TemporaryDirectory() as td:
-        root=pathlib.Path(td); commands={}
-        for name in D11_COMMAND_VARS:
-            path=root/name; path.write_text("x"); path.chmod(0o700); commands[name]=path
-        assert validate_layout(root, commands.values()); emit_commands(commands)
+        root=pathlib.Path(td); work=root/"work"; work.mkdir(); old=os.environ.get("PATH","")
+        os.environ["PATH"]=str(install_shims(root))+os.pathsep+old
+        try: commands=main(work)
+        finally: os.environ["PATH"]=old
+        assert set(commands)==set(D11_COMMAND_VARS)
+        assert all(pathlib.Path(value).resolve().is_relative_to(work.resolve()) and pathlib.Path(value).read_text()=="shim-built" for value in commands.values())
+        assert validate_layout(work, commands.values()); emit_commands(commands)
         outside=root.parent/(root.name+"-outside-workdir"); outside.write_text("x"); outside.chmod(0o700)
-        assert not validate_layout(root, [outside]), "outside-workdir"
-        missing=root/"missing-executable"
+        assert not validate_layout(work, [outside]), "outside-workdir"
+        missing=work/"missing-executable"
         bad=dict(commands); bad[next(iter(D11_COMMAND_VARS))]=missing
         try: emit_commands(bad)
         except AssertionError: pass
         else: raise AssertionError("missing-executable")
         outside.unlink()
     print("D11_STAGE_SELF_TEST PASS")
-def main():
-    built=stage_build(pathlib.Path("/opt/work/d11")); return emit_commands(built)
+def main(workdir):
+    built=stage_build(pathlib.Path(workdir)); return emit_commands(built)
 if __name__ == "__main__": self_test()
 ''' % (PARENT, HEAD, tuple(sorted(COMMANDS)))
     with tempfile.TemporaryDirectory() as td:
@@ -168,7 +183,7 @@ if __name__ == "__main__": self_test()
         assert not errors(candidate), errors(candidate)
         candidate.write_text(fixture.replace("D11_MIN_FREE_BYTES=21474836480", "D11_MIN_FREE_BYTES=1"), encoding="utf-8")
         assert any("20 GiB" in item for item in errors(candidate, False))
-        candidate.write_text(fixture.replace("built=stage_build(pathlib.Path(\"/opt/work/d11\")); ", "built={}; "), encoding="utf-8")
+        candidate.write_text(fixture.replace("built=stage_build(pathlib.Path(workdir)); ", "built={}; "), encoding="utf-8")
         assert any("main does not stage" in item for item in errors(candidate, False))
         candidate.write_text(fixture.replace('target=workdir/"target"', 'target=pathlib.Path("/target")'), encoding="utf-8")
         assert any("derived from workdir" in item for item in errors(candidate, False))
