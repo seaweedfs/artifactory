@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, contextlib, datetime, hashlib, json, os, pathlib, re, shlex, shutil, subprocess, sys, time
+import argparse, contextlib, datetime, hashlib, json, os, pathlib, re, shlex, shutil, subprocess, sys, tempfile, time
 try:
     import fcntl
 except ImportError:  # non-Linux review hosts can still inspect --help/parse
@@ -245,6 +245,9 @@ def input_preflight(args, result_dir):
         manifest["inputs"][item] = bool(value)
         if not value: return fail(item, "required value is empty")
         ok(item, str(value))
+    result_parent_error = t3_result_parent_error(args.t3_result_parent)
+    if result_parent_error:
+        return fail("t3_result_parent", result_parent_error)
     args.t3_server_ip = args.t3_server_ip or args.rdma_ip
     args.t3_server_ssh = args.t3_server_ssh or args.m02
     key = pathlib.Path(args.t3_client_key)
@@ -423,15 +426,40 @@ def lab_dirty_reasons(snapshot):
     return reasons
 
 
-def nested_t3_result(path):
+def nested_t3_result(path, case_dir):
     try:
         nested = json.loads(path.read_text())
         status = nested.get("manifest", {}).get("status")
         runner_exit = nested.get("runner_exit")
-        result = {"result": str(path), "runner_exit": runner_exit, "status": status}
+        evidence_dir = case_dir / "nested-testops"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        bundled = evidence_dir / "complete.json"
+        bundled.write_bytes(path.read_bytes())
+        result = {"live_result": str(path), "bundle_result": str(bundled), "bundle_sha256": sha256(bundled), "runner_exit": runner_exit, "status": status}
         return result, runner_exit == 0 and str(status).upper() == "PASS"
     except (OSError, ValueError, TypeError) as e:
         return {"result": str(path), "error": str(e)}, False
+
+
+def t3_result_parent_error(value):
+    parent = pathlib.PurePosixPath(value)
+    if not parent.is_absolute() or parent.parts[:3] != ("/", "data", "nvme"):
+        return "must be an M01-local path under /data/nvme, never the result share"
+    return None
+
+
+def t3_result_self_test():
+    assert t3_result_parent_error("/data/nvme/testops/t3") is None
+    assert t3_result_parent_error("/mnt/smb/work/share/testops/results")
+    root = pathlib.Path(tempfile.mkdtemp())
+    live = root / "live" / "complete.json"
+    live.parent.mkdir(parents=True)
+    live.write_text(json.dumps({"runner_exit": 0, "manifest": {"status": "PASS"}}) + "\n")
+    result, passed = nested_t3_result(live, root / "bundle")
+    assert passed and pathlib.Path(result["bundle_result"]).is_file()
+    assert result["bundle_sha256"] == sha256(result["bundle_result"])
+    shutil.rmtree(root)
+    print("HW_SUITE_T3_LOCAL_RESULT_SELF_TEST PASS")
 
 
 def run_case(case, args, ctx, result_dir):
@@ -496,7 +524,7 @@ def run_case(case, args, ctx, result_dir):
     }
     if cid == "t3.stale_key":
         nested_path = pathlib.Path(ctx["t3_env"]["T3_RESULT_PARENT"]) / ctx["t3_env"]["T3_RESULT_TAG"] / "complete.json"
-        row["nested_testops"], nested_ok = nested_t3_result(nested_path)
+        row["nested_testops"], nested_ok = nested_t3_result(nested_path, cdir)
         if not nested_ok and row["verdict"] != "infra":
             row["verdict"] = "fail"
             if row["rc"] == 0:
@@ -526,6 +554,9 @@ def required(name, value):
 
 
 def main():
+    if sys.argv[1:] == ["--t3-result-self-test"]:
+        t3_result_self_test()
+        return 0
     ap = argparse.ArgumentParser(prog="rdma-hw-suite")
     ap.add_argument("--tier", required=True, choices=["S"])
     ap.add_argument("--mono", required=True, help="40-char product sha")
