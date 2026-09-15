@@ -45,7 +45,8 @@ def errors(path=RUNNER):
             found.append(f"fail-closed capture missing {token}")
     self_test = function(text, "d13_self_test")
     for token in ("missing-fid accepted", "master.log", "weed-volume.log", "filer.log", "loader.log",
-                  "absent-m01 accepted", "failed-m02-transfer accepted", "D13_SELF_TEST PASS"):
+                  "absent-m01 accepted", "failed-m02-transfer accepted", "success_capture_failure_exit=7",
+                  "failed_body_status_preserved=23", "teardowns=both", "D13_SELF_TEST PASS"):
         if token not in self_test:
             found.append(f"runtime self-test missing {token}")
     return found
@@ -80,7 +81,8 @@ d13_self_test() {
   false && echo 'missing-fid accepted'
   false && echo 'absent-m01 accepted'
   false && echo 'failed-m02-transfer accepted'
-  test master.log weed-volume.log filer.log loader.log
+  test master.log weed-volume.log filer.log loader.log success_capture_failure_exit=7
+  test failed_body_status_preserved=23 teardowns=both
   echo D13_SELF_TEST PASS
 }
 '''

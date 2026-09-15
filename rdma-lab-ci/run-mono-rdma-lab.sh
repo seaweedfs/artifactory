@@ -94,7 +94,8 @@ cleanup_lab() {
   if [ "$run_status" = "0" ] && [ "$capture_status" != "0" ]; then
     run_status="$capture_status"
   fi
-  return "$run_status"
+  trap - EXIT
+  exit "$run_status"
 }
 
 capture_unified_logs() {
@@ -203,7 +204,27 @@ d13_self_test() {
     return 1
   fi
   grep -q '^logs_captured=false$' "$run_dir/lab-logs/capture.status"
-  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED"
+  local cleanup_definition cleanup_script trace rc
+  cleanup_definition="$(declare -f cleanup_lab)"
+  cleanup_script="$fixture/teardown-m01.sh"
+  printf '#!/usr/bin/env bash\nprintf "m01\\n" >> "$D13_SUB_TRACE"\n' > "$cleanup_script"
+  for spec in "0 7 7 success_capture_failure_exit" "23 7 23 failed_body_status_preserved"; do
+    read -r body_status forced_capture expected label <<<"$spec"
+    trace="$fixture/$label.trace"
+    set +e
+    D13_SUB_TRACE="$trace" bash -c "$cleanup_definition
+capture_unified_logs() { return $forced_capture; }
+ssh() { printf 'm02\\n' >> \"\$D13_SUB_TRACE\"; }
+CLEANUP_M01_SCRIPT='$cleanup_script'
+CLEANUP_M02_SCRIPT='remote-teardown'
+trap cleanup_lab EXIT
+exit $body_status"
+    rc=$?
+    set -e
+    test "$rc" = "$expected"
+    test "$(sort "$trace" | tr '\n' ' ')" = "m01 m02 "
+  done
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED logs_captured=PASS absent_m01=RED failed_m02_transfer=RED success_capture_failure_exit=7 failed_body_status_preserved=23 teardowns=both"
 }
 
 if [ "$D13_SELF_TEST" = "1" ]; then
