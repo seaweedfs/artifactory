@@ -270,7 +270,7 @@ def remote_filesystem_free(host, path):
     quoted = shlex.quote(str(path))
     command = (
         f"probe={quoted}; while [ ! -e \"$probe\" ] && [ \"$probe\" != / ]; do probe=$(dirname \"$probe\"); done; "
-        "df -PB1 --output=avail \"$probe\" | tail -n 1 | tr -d ' '"
+        "df -B1 --output=avail \"$probe\" | tail -n 1 | tr -d ' '"
     )
     output = remote_text(host, remote_env_cmd(command))
     return str(path), parse_remote_free_bytes(output)
