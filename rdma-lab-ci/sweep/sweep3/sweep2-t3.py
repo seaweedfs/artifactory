@@ -1,5 +1,17 @@
-import hashlib, json, os, subprocess
+import hashlib, json, os, subprocess, sys
 from pathlib import Path
+
+def nested_exit_code(runner_exit, status):
+    if runner_exit != 0:
+        return runner_exit
+    return 0 if str(status).upper() == 'PASS' else 1
+
+if sys.argv[1:] == ['--propagation-self-test']:
+    assert nested_exit_code(0, 'PASS') == 0
+    assert nested_exit_code(7, 'PASS') == 7
+    assert nested_exit_code(0, 'FAIL') == 1
+    print('T3_NESTED_PROPAGATION_SELF_TEST PASS')
+    raise SystemExit(0)
 
 BASE=os.environ.get('T3_BASE',os.environ['SWEEP_PRODUCT'])
 PIN=os.environ.get('T3_PRODUCT',BASE)
@@ -69,3 +81,4 @@ report=dict(product_sha=PIN,harness_sha=HARNESS,run_id=run,runner_exit=proc.retu
 (results/'complete.json').write_text(json.dumps(report,indent=2))
 print(json.dumps(report,indent=2),flush=True)
 print('RESULT_DIR='+str(results),flush=True)
+raise SystemExit(nested_exit_code(proc.returncode, manifest.get('status')))

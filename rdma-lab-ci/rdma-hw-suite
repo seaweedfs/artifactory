@@ -423,6 +423,17 @@ def lab_dirty_reasons(snapshot):
     return reasons
 
 
+def nested_t3_result(path):
+    try:
+        nested = json.loads(path.read_text())
+        status = nested.get("manifest", {}).get("status")
+        runner_exit = nested.get("runner_exit")
+        result = {"result": str(path), "runner_exit": runner_exit, "status": status}
+        return result, runner_exit == 0 and str(status).upper() == "PASS"
+    except (OSError, ValueError, TypeError) as e:
+        return {"result": str(path), "error": str(e)}, False
+
+
 def run_case(case, args, ctx, result_dir):
     cid, host, timeout, tmpl = case
     cdir = result_dir / "cases" / cid.replace(".", "_")
@@ -483,6 +494,13 @@ def run_case(case, args, ctx, result_dir):
         "resources_after": after,
         "command": cmd,
     }
+    if cid == "t3.stale_key":
+        nested_path = pathlib.Path(ctx["t3_env"]["T3_RESULT_PARENT"]) / ctx["t3_env"]["T3_RESULT_TAG"] / "complete.json"
+        row["nested_testops"], nested_ok = nested_t3_result(nested_path)
+        if not nested_ok and row["verdict"] != "infra":
+            row["verdict"] = "fail"
+            if row["rc"] == 0:
+                row["rc"] = 1
     if stop_reason:
         row["infra_error"] = stop_reason
     (cdir / "verdict.json").write_text(json.dumps(row, indent=2) + "\n")
