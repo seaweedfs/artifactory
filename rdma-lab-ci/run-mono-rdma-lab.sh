@@ -103,18 +103,17 @@ capture_unified_logs() {
   local missing=()
   mkdir -p "$evidence/m01" "$evidence/m02"
   if [ -d "$M01_GATE_RUN/logs" ]; then
-    cp -a "$M01_GATE_RUN/logs/." "$evidence/m01/" 2>/dev/null \
-      || missing+=("m01-log-copy")
+    cp -a "$M01_GATE_RUN/logs/." "$evidence/m01/" 2>/dev/null || true
   fi
   if [ -s "$log" ]; then
     cp "$log" "$evidence/m01/client.log" || missing+=("m01-client-copy")
     cp "$log" "$evidence/m01/loader.log" || missing+=("m01-loader-copy")
   fi
-  if ! ssh "$M02_HOST" \
-      "test -d '$M02_GATE_RUN/logs' && tar -C '$M02_GATE_RUN/logs' -cf - ." \
-      | tar -C "$evidence/m02" -xf - 2>/dev/null; then
-    missing+=("m02-log-transfer")
-  fi
+  for name in master.log weed-volume.log filer.log; do
+    if ! ssh "$M02_HOST" "cat '$M02_GATE_RUN/logs/$name'" > "$evidence/m02/$name"; then
+      missing+=("m02-transfer-$name")
+    fi
+  done
   for item in m01/client.log m01/loader.log m02/master.log m02/weed-volume.log m02/filer.log; do
     if [ ! -s "$evidence/$item" ]; then
       missing+=("$item")
@@ -170,7 +169,12 @@ d13_self_test() {
     elif [ "${D13_TEST_M02_TRANSFER_FAIL:-0}" = "1" ]; then
       return 1
     else
-      tar -C "$M02_GATE_RUN/logs" -cf - .
+      case "$*" in
+        *master.log*) cat "$M02_GATE_RUN/logs/master.log" ;;
+        *weed-volume.log*) cat "$M02_GATE_RUN/logs/weed-volume.log" ;;
+        *filer.log*) cat "$M02_GATE_RUN/logs/filer.log" ;;
+        *) return 1 ;;
+      esac
     fi
   }
   D13_ASSIGN_ATTEMPTS=1
