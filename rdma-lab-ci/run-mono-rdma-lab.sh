@@ -14,6 +14,9 @@ ENABLE_DC="${ENABLE_DC:-0}"
 DC_INITIATORS="${DC_INITIATORS:-4}"
 CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
+D13_SELF_TEST=0
+M01_GATE_RUN="${M01_GATE_RUN:-/tmp/unified-rdma-gate-m01-run}"
+M02_GATE_RUN="${M02_GATE_RUN:-/tmp/unified-rdma-gate-m02-run}"
 
 usage() {
   cat <<'USAGE'
@@ -29,6 +32,7 @@ Options:
   --artifacts PATH    local artifact directory
   --enable-dc         enable DC rows in the unified gate
   --skip-build        reuse existing build artifacts
+  --d13-self-test     exercise readiness and evidence capture with fake hosts
   -h, --help          show this help
 USAGE
 }
@@ -44,10 +48,15 @@ while [ "$#" -gt 0 ]; do
     --artifacts) ARTIFACT_DIR="$2"; shift 2 ;;
     --enable-dc) ENABLE_DC=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --d13-self-test) D13_SELF_TEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ "$D13_SELF_TEST" = "1" ]; then
+  ARTIFACT_DIR="$(mktemp -d)"
+fi
 
 slug_ref="$(printf '%s' "$MONO_REF" | tr '/:@ ' '----' | tr -cd 'A-Za-z0-9._-')"
 run_id="$(date -u +%Y%m%d-%H%M%S)-${slug_ref}-${PROFILE}"
@@ -73,6 +82,7 @@ require_cmd() {
 
 cleanup_lab() {
   set +e
+  capture_unified_logs
   if [ -n "$CLEANUP_M01_SCRIPT" ] && [ -f "$CLEANUP_M01_SCRIPT" ]; then
     bash "$CLEANUP_M01_SCRIPT" m01
   fi
@@ -80,6 +90,89 @@ cleanup_lab() {
     ssh "$M02_HOST" "bash '$CLEANUP_M02_SCRIPT' m02"
   fi
 }
+
+capture_unified_logs() {
+  local evidence="$run_dir/lab-logs"
+  mkdir -p "$evidence/m01" "$evidence/m02"
+  if [ -d "$M01_GATE_RUN/logs" ]; then
+    cp -a "$M01_GATE_RUN/logs/." "$evidence/m01/" 2>/dev/null || true
+  fi
+  grep -E 'SW-RDMA-S3-LOADER|push_read_response|loader' "$log" \
+    > "$evidence/m01/loader.log" 2>/dev/null || true
+  ssh "$M02_HOST" \
+    "test -d '$M02_GATE_RUN/logs' && tar -C '$M02_GATE_RUN/logs' -cf - ." \
+    | tar -C "$evidence/m02" -xf - 2>/dev/null || true
+  for name in master.log weed-volume.log filer.log; do
+    if [ ! -s "$evidence/m02/$name" ]; then
+      echo "missing_evidence=$name" >> "$evidence/capture.status"
+    fi
+  done
+  find "$evidence" -type f ! -name evidence.sha256 -print0 \
+    | sort -z | xargs -0 -r sha256sum > "$evidence/evidence.sha256"
+  echo "logs_captured=true" >> "$evidence/capture.status"
+}
+
+wait_for_writable_volume() {
+  local payload=""
+  for _ in $(seq 1 "${D13_ASSIGN_ATTEMPTS:-30}"); do
+    payload="$(ssh "$M02_HOST" "curl -sf 'http://127.0.0.1:9755/dir/assign?replication=000'" 2>/dev/null || true)"
+    if python3 -c 'import json,sys; value=json.load(sys.stdin).get("fid"); raise SystemExit(0 if isinstance(value,str) and value else 1)' \
+        <<<"$payload"; then
+      printf '%s\n' "$payload" > "$run_dir/writable-volume.json"
+      echo UNIFIED_WRITABLE_VOLUME_READY
+      return 0
+    fi
+    sleep 1
+  done
+  echo UNIFIED_WRITABLE_VOLUME_NOT_READY >&2
+  return 1
+}
+
+d13_self_test() {
+  local fixture
+  fixture="$(mktemp -d)"
+  run_dir="$fixture/result"
+  log="$run_dir/run.log"
+  M01_GATE_RUN="$fixture/m01"
+  M02_GATE_RUN="$fixture/m02"
+  mkdir -p "$run_dir" "$M01_GATE_RUN/logs" "$M02_GATE_RUN/logs"
+  printf 'loader witness\n' > "$log"
+  printf 'm01\n' > "$M01_GATE_RUN/logs/client.log"
+  for name in master.log weed-volume.log filer.log; do
+    printf '%s\n' "$name" > "$M02_GATE_RUN/logs/$name"
+  done
+  ssh() {
+    if [[ "$*" == *dir/assign* ]]; then
+      if [ -n "${D13_TEST_ASSIGN_PAYLOAD+x}" ]; then
+        printf '%s\n' "$D13_TEST_ASSIGN_PAYLOAD"
+      else
+        printf '%s\n' '{"fid":"1,abc"}'
+      fi
+    else
+      tar -C "$M02_GATE_RUN/logs" -cf - .
+    fi
+  }
+  D13_ASSIGN_ATTEMPTS=1
+  D13_TEST_ASSIGN_PAYLOAD='{"fid":"1,abc"}' wait_for_writable_volume
+  if D13_TEST_ASSIGN_PAYLOAD='{}' wait_for_writable_volume >/dev/null 2>&1; then
+    echo "D13_SELF_TEST RED missing-fid accepted" >&2
+    return 1
+  fi
+  capture_unified_logs
+  test -s "$run_dir/writable-volume.json"
+  test -s "$run_dir/lab-logs/m02/master.log"
+  test -s "$run_dir/lab-logs/m02/weed-volume.log"
+  test -s "$run_dir/lab-logs/m02/filer.log"
+  test -s "$run_dir/lab-logs/m01/loader.log"
+  test -s "$run_dir/lab-logs/evidence.sha256"
+  grep -q '^logs_captured=true$' "$run_dir/lab-logs/capture.status"
+  echo "D13_SELF_TEST PASS assign_ready=PASS missing_fid=RED logs_captured=PASS"
+}
+
+if [ "$D13_SELF_TEST" = "1" ]; then
+  d13_self_test
+  exit 0
+fi
 
 require_cmd git
 require_cmd ssh
@@ -161,11 +254,12 @@ run_unified_gate() {
     dc_env="ENABLE_DC=1 SWFS_RDMA_DC_INITIATORS=$DC_INITIATORS"
   fi
 
-  ssh "$M02_HOST" "$dc_env MONO='$m02_src' bash '$m02_src/$gate/m02-up.sh'"
-
   CLEANUP_M01_SCRIPT="$m01_src/$gate/teardown.sh"
   CLEANUP_M02_SCRIPT="$m02_src/$gate/teardown.sh"
   trap cleanup_lab EXIT
+
+  ssh "$M02_HOST" "$dc_env MONO='$m02_src' bash '$m02_src/$gate/m02-up.sh'"
+  wait_for_writable_volume
 
   local dc_m01=""
   if [ "$ENABLE_DC" = "1" ]; then

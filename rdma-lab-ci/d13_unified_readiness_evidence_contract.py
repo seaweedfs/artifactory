@@ -2,21 +2,19 @@
 """Tests-first contract for D-13 unified readiness and failure evidence."""
 import argparse
 import pathlib
+import re
 import tempfile
 
 RUNNER = pathlib.Path(__file__).with_name("run-mono-rdma-lab.sh")
 
 
 def function(text, name):
-    marker = f"{name}() {{"
-    start = text.find(marker)
-    if start < 0:
+    match = re.search(rf"(?m)^{re.escape(name)}\(\) \{{\s*$", text)
+    if match is None:
         return ""
-    pos, depth = start + len(marker), 1
-    while pos < len(text) and depth:
-        depth += (text[pos] == "{") - (text[pos] == "}")
-        pos += 1
-    return text[start:pos]
+    following = re.search(r"(?m)^[a-z][a-z0-9_]*\(\) \{\s*$", text[match.end():])
+    end = match.end() + following.start() if following else len(text)
+    return text[match.start():end]
 
 
 def errors(path=RUNNER):
@@ -28,7 +26,7 @@ def errors(path=RUNNER):
     found = []
     if not wait or "/dir/assign?replication=000" not in wait or "UNIFIED_WRITABLE_VOLUME_READY" not in wait:
         found.append("readiness must require a successful /dir/assign probe")
-    positions = [run.find(token) for token in ("m02-up.sh", "wait_for_writable_volume", "m01-unified.sh")]
+    positions = [run.rfind("m02-up.sh"), run.find("wait_for_writable_volume"), run.rfind("m01-unified.sh")]
     if not run or any(pos < 0 for pos in positions) or positions != sorted(positions):
         found.append("assign readiness must run after m02-up and before the first PUT")
     required_logs = ("master.log", "weed-volume.log", "filer.log", "m01", "m02")
@@ -38,11 +36,16 @@ def errors(path=RUNNER):
     if not cleanup or any(pos < 0 for pos in cleanup_order) or cleanup_order != sorted(cleanup_order):
         found.append("cleanup must capture evidence before either teardown")
     trap = run.find("trap cleanup_lab EXIT")
-    launch = run.find("m02-up.sh")
+    launch = run.rfind("m02-up.sh")
     if trap < 0 or launch < 0 or trap > launch:
         found.append("failure capture trap must be armed before component startup")
     if "evidence.sha256" not in capture or "logs_captured=true" not in capture:
         found.append("captured logs need a checksum manifest and completion witness")
+    self_test = function(text, "d13_self_test")
+    for token in ("missing-fid accepted", "master.log", "weed-volume.log", "filer.log", "loader.log",
+                  "D13_SELF_TEST PASS"):
+        if token not in self_test:
+            found.append(f"runtime self-test missing {token}")
     return found
 
 
@@ -68,6 +71,11 @@ run_unified_gate() {
   ssh host m02-up.sh
   wait_for_writable_volume
   bash m01-unified.sh
+}
+d13_self_test() {
+  false && echo 'missing-fid accepted'
+  test master.log weed-volume.log filer.log loader.log
+  echo D13_SELF_TEST PASS
 }
 '''
     with tempfile.TemporaryDirectory() as td:
