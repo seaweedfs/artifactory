@@ -207,9 +207,16 @@ jobs:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
+    # -timeout 20m: the weed/storage suite (TestMemIndexCompaction +
+    # TestLDBIndexCompaction alone write 20k needles through LevelDB) can
+    # exceed go test's 10m default on the self-hosted tp01 runner —
+    # TestMemIndexCompaction alone took ~295s and TestLDBIndexCompaction was
+    # still running at 4m21s when the 10m default fired, killing the whole
+    # job with a "test timed out after 10m0s" panic. Give it headroom
+    # instead of chasing the moving boundary (same rationale as test-32bit).
     - name: Test
       working-directory: seaweedfs-source/enterprise/weed
-      run: go test -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v ./...
+      run: go test -tags "elastic gocdk sqlite ydb tarantool tikv rclone" -v -timeout 20m ./...
 
   test-32bit:
     name: Test 32-bit
