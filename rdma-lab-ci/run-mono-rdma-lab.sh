@@ -14,6 +14,29 @@ ENABLE_DC="${ENABLE_DC:-0}"
 DC_INITIATORS="${DC_INITIATORS:-4}"
 CLEANUP_M01_SCRIPT=""
 CLEANUP_M02_SCRIPT=""
+GO_WEED_BIN=""
+GO_WEED_SHA256=""
+KMOD_BIN=""
+KMOD_SHA256=""
+KMOD_UNAME_R=""
+KMOD_VERMAGIC=""
+VFS_KERNEL_EXCLUDED="0"
+VFS_KERNEL_EXCLUSION_REASON=""
+GO_VERSION=""
+GO_MOD_SHA256_BEFORE=""
+GO_MOD_SHA256_AFTER=""
+GO_SUM_SHA256_BEFORE=""
+GO_SUM_SHA256_AFTER=""
+RUST_CARGO_LOCK_SHA256_BEFORE=""
+RUST_CARGO_LOCK_SHA256_AFTER=""
+RUST_CARGO_LOCK_STATUS_BEFORE=""
+RUST_CARGO_LOCK_STATUS_AFTER=""
+RUST_CARGO_LOCK_DIFF_SHA256=""
+M02_RUN_DIR="/tmp/unified-rdma-gate-m02-run"
+M02_EVIDENCE_COLLECTED="0"
+M02_VOLBIN=""
+M02_SSH_TIMEOUT_SECS="${M02_SSH_TIMEOUT_SECS:-30}"
+M02_GDB_TIMEOUT_SECS="${M02_GDB_TIMEOUT_SECS:-20}"
 
 usage() {
   cat <<'USAGE'
@@ -76,8 +99,147 @@ require_cmd() {
   }
 }
 
+dc_ack_timeout_seen() {
+  grep -q "rdma tcp read dc registration ack failed" "$log" 2>/dev/null
+}
+
+m02_ssh() {
+  timeout "${M02_SSH_TIMEOUT_SECS}s" ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=2 \
+    "$M02_HOST" "$@"
+}
+
+record_m02_volume_identity() {
+  [ -n "$M02_VOLBIN" ] || return 0
+  if ! m02_ssh "RUN='$M02_RUN_DIR' VOLBIN='$M02_VOLBIN' bash -s" <<'REMOTE'
+set +e
+pid=$(cat "$RUN/volume.pid" 2>/dev/null) || exit 0
+case "$pid" in ''|*[!0-9]*) exit 0 ;; esac
+actual_exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+expected_exe=$(readlink -f "$VOLBIN" 2>/dev/null)
+uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+stat=$(cat "/proc/$pid/stat" 2>/dev/null)
+rest=${stat#*) }
+set -- $rest
+starttime=${20:-}
+{
+  echo "pid=$pid"
+  echo "exe=$actual_exe"
+  echo "expected_exe=$expected_exe"
+  echo "uid=$uid"
+  echo "starttime=$starttime"
+  date -u '+recorded_at=%Y-%m-%dT%H:%M:%SZ'
+} > "$RUN/volume.identity"
+REMOTE
+  then
+    echo "M02 volume identity capture failed"
+    return 0
+  fi
+}
+
+collect_m02_evidence() {
+  [ "$M02_EVIDENCE_COLLECTED" = "0" ] || return 0
+  M02_EVIDENCE_COLLECTED=1
+  local out="$run_dir/m02-evidence"
+  mkdir -p "$out"
+  echo "== collect M02 evidence =="
+  if m02_ssh "test -d '$M02_RUN_DIR/logs'"; then
+    mkdir -p "$out/run"
+    if m02_ssh "tar -C '$M02_RUN_DIR' -cf - logs" > "$out/run-logs.tar"; then
+      tar -C "$out/run" -xf "$out/run-logs.tar" 2>/dev/null || true
+      find "$out/run/logs" -type f -maxdepth 1 -print0 | xargs -0r sha256sum > "$out/run-logs.sha256"
+    else
+      echo "failed to capture $M02_RUN_DIR/logs" > "$out/run-logs.capture_failed"
+    fi
+  else
+    echo "missing $M02_RUN_DIR/logs" > "$out/run-logs.missing"
+  fi
+  if dc_ack_timeout_seen; then
+    if ! m02_ssh "RUN='$M02_RUN_DIR' VOLBIN='$M02_VOLBIN' GDB_TIMEOUT='$M02_GDB_TIMEOUT_SECS' bash -s" > "$out/weed-volume-thread-state.tar" <<'REMOTE'
+set +e
+out=$(mktemp -d /tmp/rdma-dc-thread-state.XXXXXX) || exit 0
+pidfile="$RUN/volume.pid"
+echo "run=$RUN" > "$out/meta.txt"
+echo "volbin=$VOLBIN" >> "$out/meta.txt"
+ref="$RUN/volume.identity"
+ref_starttime=$(awk -F= '$1=="starttime"{print $2}' "$ref" 2>/dev/null)
+ref_uid=$(awk -F= '$1=="uid"{print $2}' "$ref" 2>/dev/null)
+ref_exe=$(awk -F= '$1=="exe"{print $2}' "$ref" 2>/dev/null)
+expected_exe=$(readlink -f "$VOLBIN" 2>>"$out/identity.err")
+current_uid=$(id -u)
+refuse() {
+  echo "$1" > "$out/capture_refused"
+  tar -C "$out" -cf - .
+  rm -rf "$out"
+  exit 0
+}
+if [ -f "$pidfile" ]; then
+  pid=$(cat "$pidfile")
+  echo "pid=$pid" >> "$out/meta.txt"
+  case "$pid" in ''|*[!0-9]*) refuse "invalid pidfile pid=$pid" ;; esac
+  ps -o pid=,ppid=,user=,lstart=,args= -p "$pid" > "$out/ps.txt" 2>&1
+  if kill -0 "$pid" 2>/dev/null; then
+    actual_exe=$(readlink -f "/proc/$pid/exe" 2>>"$out/identity.err")
+    uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>>"$out/identity.err")
+    stat=$(cat "/proc/$pid/stat" 2>>"$out/identity.err")
+    rest=${stat#*) }
+    set -- $rest
+    starttime=${20:-}
+    {
+      echo "expected_exe=$expected_exe"
+      echo "actual_exe=$actual_exe"
+      echo "uid=$uid"
+      echo "current_uid=$current_uid"
+      echo "starttime=$starttime"
+      echo "ref_exe=$ref_exe"
+      echo "ref_uid=$ref_uid"
+      echo "ref_starttime=$ref_starttime"
+    } > "$out/identity.txt"
+    [ -n "$expected_exe" ] && [ "$actual_exe" = "$expected_exe" ] || refuse "executable mismatch"
+    [ -n "$ref_exe" ] && [ "$actual_exe" = "$ref_exe" ] || refuse "recorded executable mismatch"
+    [ -n "$uid" ] && [ "$uid" = "$current_uid" ] || refuse "uid mismatch"
+    [ -n "$ref_uid" ] && [ "$uid" = "$ref_uid" ] || refuse "recorded uid mismatch"
+    [ -n "$ref_starttime" ] && [ "$starttime" = "$ref_starttime" ] || refuse "starttime mismatch"
+    mkdir -p "$out/tasks"
+    for task in /proc/$pid/task/*; do
+      tid=${task##*/}
+      mkdir -p "$out/tasks/$tid"
+      for f in comm wchan stat; do cat "$task/$f" > "$out/tasks/$tid/$f" 2>&1; done
+    done
+    if command -v gdb >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+      timeout "${GDB_TIMEOUT:-20}s" gdb -batch -p "$pid" -ex "thread apply all bt" > "$out/gdb-thread-bt.txt" 2>&1
+      echo $? > "$out/gdb.exit"
+    elif ! command -v gdb >/dev/null 2>&1; then
+      echo gdb_not_found > "$out/gdb.unavailable"
+    else
+      echo timeout_not_found > "$out/gdb.unavailable"
+    fi
+  else
+    echo volume_pid_not_running > "$out/not-running.txt"
+  fi
+else
+  echo volume_pidfile_missing > "$out/pidfile.missing"
+fi
+tar -C "$out" -cf - .
+rm -rf "$out"
+REMOTE
+    then
+      echo "thread-state capture ssh timeout/failure" > "$out/weed-volume-thread-state.capture_failed"
+    fi
+    mkdir -p "$out/weed-volume-thread-state"
+    tar -C "$out/weed-volume-thread-state" -xf "$out/weed-volume-thread-state.tar" 2>/dev/null || true
+    find "$out/weed-volume-thread-state" -type f -print0 | xargs -0r sha256sum > "$out/weed-volume-thread-state.sha256"
+  else
+    echo "dc_ack_timeout_not_seen" > "$out/weed-volume-thread-state.skipped"
+  fi
+}
+
 cleanup_lab() {
   set +e
+  collect_m02_evidence
   if [ -n "$CLEANUP_M01_SCRIPT" ] && [ -f "$CLEANUP_M01_SCRIPT" ]; then
     bash "$CLEANUP_M01_SCRIPT" m01
   fi
@@ -117,6 +279,92 @@ checkout_source() {
   echo "mono_sha=$(cat "$run_dir/mono.sha")"
 }
 
+apply_rc_not_found_diagnostics() {
+  echo "== prepare RC NOT_FOUND runner-only diagnostic =="
+  cat > "$run_dir/object-bench-diagnostic-wrapper.sh" <<'DIAG'
+#!/bin/bash
+set -euo pipefail
+out="${DIAG_DIR:?}/object-bench-first.log"
+status_file="${DIAG_DIR:?}/object-bench-status"
+args=("$@")
+path=""; object_mib=""; chunk_mib="4"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --path) path=$2; shift 2 ;;
+    --object-mib) object_mib=$2; shift 2 ;;
+    --chunk-mib) chunk_mib=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$DIAG_DIR"
+rm -f "$out" "$status_file"
+run_diagnostics() {
+  set +e
+  local first_line="$1" fail_ms fid vid fail_off fail_len read_mib now_ms elapsed_ms
+  fail_ms=$(printf '%s\n' "$first_line" | sed -n 's/^diag_epoch_ms=\([0-9]*\).*/\1/p')
+  fid=$(printf '%s\n' "$first_line" | sed -n 's/.* fid=\([^ ]*\) .*/\1/p')
+  fail_off=$(printf '%s\n' "$first_line" | sed -n 's/.* offset=\([0-9]*\) .*/\1/p')
+  fail_len=$(printf '%s\n' "$first_line" | sed -n 's/.* length=\([0-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p')
+  vid=${fid%%,*}
+  echo "UNIFIED_OBJECT_BENCH_FIRST_NOT_FOUND path=$path fid=$fid offset=${fail_off:-unknown} length=${fail_len:-unknown} line=$first_line"
+  if [ -z "$fid" ] || [ -z "$vid" ] || [ "$vid" = "$fid" ]; then
+    echo "UNIFIED_OBJECT_BENCH_DIAGNOSTIC_NO_FID line=$first_line"
+    return 0
+  fi
+  local http_out="$DIAG_DIR/object-bench-diagnostic-http-body.bin" http_err="$DIAG_DIR/object-bench-diagnostic-http.err"
+  : > "$http_out"
+  local http_code
+  http_code=$(timeout 10 curl -sS -o "$http_out" -w '%{http_code}' "http://$MASTER_IP:${VOL_HTTP:-8105}/$fid" 2>"$http_err")
+  local http_rc=$? http_len http_sha
+  http_len=$(wc -c < "$http_out" 2>/dev/null | tr -d ' '); http_len=${http_len:-0}
+  http_sha=$(sha256sum "$http_out" 2>/dev/null | awk '{print $1}'); http_sha=${http_sha:-missing}
+  now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+  echo "UNIFIED_OBJECT_BENCH_DIAG_HTTP fid=$fid status=${http_code:-NA} curl_exit=$http_rc bytes=$http_len sha256=$http_sha seed_compare=UNBOUND:no_proven_seed_chunk_range elapsed_ms=$elapsed_ms"
+  local lookup_out="$DIAG_DIR/object-bench-diagnostic-volume-lookup.json" lookup_err="$DIAG_DIR/object-bench-diagnostic-volume-lookup.err"
+  : > "$lookup_out"
+  timeout 10 curl -sS "http://$MASTER_IP:9755/dir/lookup?volumeId=$vid" -o "$lookup_out" 2>"$lookup_err"
+  local lookup_rc=$? lookup_sha
+  lookup_sha=$(sha256sum "$lookup_out" 2>/dev/null | awk '{print $1}'); lookup_sha=${lookup_sha:-missing}
+  now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+  echo "UNIFIED_OBJECT_BENCH_DIAG_LOOKUP fid=$fid volume_id=$vid curl_exit=$lookup_rc elapsed_ms=$elapsed_ms log=$lookup_out sha256=$lookup_sha"
+  local reread_out="$DIAG_DIR/object-bench-diagnostic-rdma-reread.log"
+  if [ "${fail_off:-}" = "0" ] && [ -n "${fail_len:-}" ] && [ $((fail_len % 1048576)) -eq 0 ]; then
+    read_mib=$((fail_len / 1048576))
+    timeout 30 "$PUSHBENCH" "$RDMA" "$CTRL" "$fid" "$read_mib" "$read_mib" 1 1 "$RDMA_PIPES" 1 2>&1 | tee "$reread_out"
+    local reread_rc=${PIPESTATUS[0]}
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_RDMA_REREAD fid=$fid bytes=$fail_len exit=$reread_rc elapsed_ms=$elapsed_ms log=$reread_out"
+  else
+    now_ms=$(date +%s%3N); elapsed_ms=$((now_ms - fail_ms))
+    echo "UNIFIED_OBJECT_BENCH_DIAG_RDMA_REREAD_SKIPPED fid=$fid offset=${fail_off:-unknown} length=${fail_len:-unknown} reason=unsupported_failed_range elapsed_ms=$elapsed_ms"
+  fi
+  return 0
+}
+diag_pid=""
+{
+  set +e
+  "$REAL_BENCHBIN" "${args[@]}"
+  echo "$?" > "$status_file"
+} 2>&1 | {
+  while IFS= read -r line; do
+    ms=$(date +%s%3N); ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+    tagged="diag_epoch_ms=$ms diag_ts=$ts $line"
+    printf '%s\n' "$tagged" | tee -a "$out"
+    if [ -z "$diag_pid" ] && printf '%s\n' "$line" | grep -q 'push-read response status 1'; then
+      run_diagnostics "$tagged" & diag_pid=$!
+    fi
+  done
+  [ -n "$diag_pid" ] && wait "$diag_pid" || true
+}
+rc=$(cat "$status_file" 2>/dev/null || echo 1)
+exit "$rc"
+
+DIAG
+  mkdir -p "$run_dir/object-bench-diagnostics"
+  chmod +x "$run_dir/object-bench-diagnostic-wrapper.sh"
+  sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh"
+}
+
 sync_source_to_m02() {
   echo "== sync source to M02 =="
   local src="$M01_WORKDIR/seaweed-mono"
@@ -139,9 +387,53 @@ build_unified_gate() {
     volume_features="rdma,rdma-dc"
   fi
 
-  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-object-bench --bin sw-rdma-s3-loader && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
+  RUST_CARGO_LOCK_SHA256_BEFORE="$(sha256sum "$m01_src/enterprise/rust/Cargo.lock" | awk '{print $1}')"
+  RUST_CARGO_LOCK_STATUS_BEFORE="$(git -C "$m01_src" status --short -- enterprise/rust/Cargo.lock | paste -sd ';' -)"
+  GO_VERSION="$(ssh "$M02_HOST" "go version")"
+  GO_MOD_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.mod'" | awk '{print $1}')"
+  GO_SUM_SHA256_BEFORE="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.sum'" | awk '{print $1}')"
+
+  bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/enterprise/rust' && cargo build --release -p seaweedfs-sw-rdma-object --features '$object_features' --bin sw-rdma-object-put --bin sw-rdma-object-get --bin sw-rdma-s3-loader && cargo build --release -p seaweedkv-tools --features '$object_features' --bin sw-rdma-object-bench --bin sw-rdma-push-client-bench --bin seaweedfs-sw-rdma-kvcache && cargo build --release -p seaweedfs-sw-rdma-vfs --features daemon --bin sw-rdma-kd"
   bash -lc "source ~/.cargo/env 2>/dev/null || true; cd '$m01_src/seaweed-vfs' && cargo build --release -p sw-kd --bin sw-kd"
-  ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
+  KMOD_UNAME_R="$(uname -r)"
+  if bash -lc "cd '$m01_src/seaweed-vfs/kernel' && make"; then
+    KMOD_BIN="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
+    test -f "$KMOD_BIN" || { echo "kernel module build did not produce $KMOD_BIN" >&2; exit 1; }
+    KMOD_SHA256="$(sha256sum "$KMOD_BIN" | awk '{print $1}')"
+    KMOD_VERMAGIC="$(modinfo -F vermagic "$KMOD_BIN")"
+  else
+    VFS_KERNEL_EXCLUDED="1"
+    VFS_KERNEL_EXCLUSION_REASON="seaweedvfs.ko_build_failed_for_${KMOD_UNAME_R}"
+  fi
+  ssh "$M02_HOST" "bash -lc 'source ~/.cargo/env 2>/dev/null || true; cd \"$m02_src/enterprise\" && go build -o weed-rdma ./weed && cd \"$m02_src/enterprise/seaweed-volume\" && cargo build --release --features \"$volume_features\"'"
+  GO_WEED_BIN="$m02_src/enterprise/weed-rdma"
+  GO_WEED_SHA256="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/weed-rdma'" | awk '{print $1}')"
+  GO_MOD_SHA256_AFTER="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.mod'" | awk '{print $1}')"
+  GO_SUM_SHA256_AFTER="$(ssh "$M02_HOST" "sha256sum '$m02_src/enterprise/go.sum'" | awk '{print $1}')"
+  RUST_CARGO_LOCK_SHA256_AFTER="$(sha256sum "$m01_src/enterprise/rust/Cargo.lock" | awk '{print $1}')"
+  RUST_CARGO_LOCK_STATUS_AFTER="$(git -C "$m01_src" status --short -- enterprise/rust/Cargo.lock | paste -sd ';' -)"
+  git -C "$m01_src" diff -- enterprise/rust/Cargo.lock > "$run_dir/enterprise-rust-Cargo.lock.diff" || true
+  RUST_CARGO_LOCK_DIFF_SHA256="$(sha256sum "$run_dir/enterprise-rust-Cargo.lock.diff" | awk '{print $1}')"
+  test -n "$GO_WEED_SHA256" || { echo "missing Go weed hash" >&2; exit 1; }
+  if [ "$VFS_KERNEL_EXCLUDED" != "1" ]; then
+    test -n "$KMOD_SHA256" || { echo "missing kernel module hash" >&2; exit 1; }
+  fi
+  echo "GO_WEED_BIN=$GO_WEED_BIN"
+  echo "GO_WEED_SHA256=$GO_WEED_SHA256"
+  echo "KMOD_BIN=$KMOD_BIN"
+  echo "KMOD_SHA256=$KMOD_SHA256"
+  echo "KMOD_UNAME_R=$KMOD_UNAME_R"
+  echo "KMOD_VERMAGIC=$KMOD_VERMAGIC"
+  echo "VFS_KERNEL_EXCLUDED=$VFS_KERNEL_EXCLUDED"
+  echo "VFS_KERNEL_EXCLUSION_REASON=$VFS_KERNEL_EXCLUSION_REASON"
+  echo "GO_VERSION=$GO_VERSION"
+  echo "GO_MOD_SHA256_BEFORE=$GO_MOD_SHA256_BEFORE"
+  echo "GO_MOD_SHA256_AFTER=$GO_MOD_SHA256_AFTER"
+  echo "GO_SUM_SHA256_BEFORE=$GO_SUM_SHA256_BEFORE"
+  echo "GO_SUM_SHA256_AFTER=$GO_SUM_SHA256_AFTER"
+  echo "RUST_CARGO_LOCK_SHA256_BEFORE=$RUST_CARGO_LOCK_SHA256_BEFORE"
+  echo "RUST_CARGO_LOCK_SHA256_AFTER=$RUST_CARGO_LOCK_SHA256_AFTER"
+  echo "RUST_CARGO_LOCK_DIFF_SHA256=$RUST_CARGO_LOCK_DIFF_SHA256"
 }
 
 run_unified_gate() {
@@ -161,23 +453,28 @@ run_unified_gate() {
   ssh "$M02_HOST" "bash '$m02_src/$gate/teardown.sh' m02"
   set -e
 
+  CLEANUP_M01_SCRIPT="$m01_src/$gate/teardown.sh"
+  CLEANUP_M02_SCRIPT="$m02_src/$gate/teardown.sh"
+  trap cleanup_lab EXIT
+
   local dc_env=""
   if [ "$ENABLE_DC" = "1" ]; then
     dc_env="ENABLE_DC=1 SWFS_RDMA_DC_INITIATORS=$DC_INITIATORS"
   fi
 
-  ssh "$M02_HOST" "$dc_env MONO='$m02_src' bash '$m02_src/$gate/m02-up.sh'"
-
-  CLEANUP_M01_SCRIPT="$m01_src/$gate/teardown.sh"
-  CLEANUP_M02_SCRIPT="$m02_src/$gate/teardown.sh"
-  trap cleanup_lab EXIT
+  test -n "$GO_WEED_BIN" || { echo "GO_WEED_BIN missing; build_unified_gate must run before startup" >&2; exit 1; }
+  M02_VOLBIN="$m02_src/enterprise/seaweed-volume/target/release/weed-volume"
+  ssh "$M02_HOST" "$dc_env RUN='$M02_RUN_DIR' MONO='$m02_src' WEED='$GO_WEED_BIN' VOLBIN='$M02_VOLBIN' bash '$m02_src/$gate/m02-up.sh'"
+  record_m02_volume_identity
 
   local dc_m01=""
   if [ "$ENABLE_DC" = "1" ]; then
     dc_m01="ENABLE_DC=1"
   fi
+  local vfs_m01="SKIP_VFS=1 KMOD=$m01_src/seaweed-vfs/kernel/seaweedvfs.ko"
+  echo "UNIFIED_RC_DIAGNOSTIC_SKIP_VFS=1"
 
-  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" bash -c "$dc_m01 bash '$m01_src/$gate/m01-unified.sh'"
+  RDMA_PIPES="$RDMA_PIPES" MONO="$m01_src" WORK="/tmp/unified-rdma-gate-m01-run" MASTER_IP="192.168.1.184" RDMA="10.0.0.3:7534" CTRL="10.0.0.3:7535" ENABLE_DC="$ENABLE_DC" SKIP_VFS=1 KMOD="$m01_src/seaweed-vfs/kernel/seaweedvfs.ko" REAL_BENCHBIN="$m01_src/enterprise/rust/target/release/sw-rdma-object-bench" BENCHBIN="$run_dir/object-bench-diagnostic-wrapper.sh" DIAG_DIR="$run_dir/object-bench-diagnostics" PUSHBENCH="$m01_src/enterprise/rust/target/release/sw-rdma-push-client-bench" bash "$m01_src/$gate/m01-unified.sh"
   ssh "$M02_HOST" "MIN_COMMITTED_BYTES=155189248 bash '$m02_src/$gate/m02-check.sh'"
   echo "UNIFIED_RDMA_GATE_PASS"
 }
@@ -192,6 +489,28 @@ write_provenance() {
     echo "m02=$M02_HOST"
     echo "rdma_pipes=$RDMA_PIPES"
     echo "enable_dc=$ENABLE_DC"
+    echo "rc_not_found_diagnostic=1"
+    echo "rc_not_found_diagnostic_wrapper=object-bench-diagnostic-wrapper.sh"
+    echo "rc_not_found_diagnostic_wrapper_sha256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
+    echo "go_weed_bin=$GO_WEED_BIN"
+    echo "go_weed_sha256=$GO_WEED_SHA256"
+    echo "go_version=$GO_VERSION"
+    echo "kmod_bin=$KMOD_BIN"
+    echo "kmod_sha256=$KMOD_SHA256"
+    echo "kmod_uname_r=$KMOD_UNAME_R"
+    echo "kmod_vermagic=$KMOD_VERMAGIC"
+    echo "vfs_kernel_excluded=$VFS_KERNEL_EXCLUDED"
+    echo "vfs_kernel_exclusion_reason=$VFS_KERNEL_EXCLUSION_REASON"
+    echo "go_mod_sha256_before=$GO_MOD_SHA256_BEFORE"
+    echo "go_mod_sha256_after=$GO_MOD_SHA256_AFTER"
+    echo "go_sum_sha256_before=$GO_SUM_SHA256_BEFORE"
+    echo "go_sum_sha256_after=$GO_SUM_SHA256_AFTER"
+    echo "rust_cargo_lock_sha256_before=$RUST_CARGO_LOCK_SHA256_BEFORE"
+    echo "rust_cargo_lock_sha256_after=$RUST_CARGO_LOCK_SHA256_AFTER"
+    echo "rust_cargo_lock_status_before=$RUST_CARGO_LOCK_STATUS_BEFORE"
+    echo "rust_cargo_lock_status_after=$RUST_CARGO_LOCK_STATUS_AFTER"
+    echo "rust_cargo_lock_diff=enterprise-rust-Cargo.lock.diff"
+    echo "rust_cargo_lock_diff_sha256=$RUST_CARGO_LOCK_DIFF_SHA256"
   } | tee "$run_dir/provenance.txt"
 }
 
@@ -209,6 +528,23 @@ write_summary() {
     echo "RDMA_CI_MONO_SHA=$(cat "$run_dir/mono.sha")"
     echo "RDMA_CI_PASS=$pass"
     echo "RDMA_CI_LOADER_ROWS=$loader_rows"
+    echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC=1"
+    echo "RDMA_CI_RC_NOT_FOUND_DIAGNOSTIC_WRAPPER_SHA256=$(sha256sum "$run_dir/object-bench-diagnostic-wrapper.sh" | awk '{print $1}')"
+    echo "RDMA_CI_GO_WEED_SHA256=$GO_WEED_SHA256"
+    echo "RDMA_CI_GO_VERSION=$GO_VERSION"
+    echo "RDMA_CI_KMOD_SHA256=$KMOD_SHA256"
+    echo "RDMA_CI_KMOD_UNAME_R=$KMOD_UNAME_R"
+    echo "RDMA_CI_KMOD_VERMAGIC=$KMOD_VERMAGIC"
+    echo "RDMA_CI_VFS_KERNEL_EXCLUDED=$VFS_KERNEL_EXCLUDED"
+    echo "RDMA_CI_VFS_KERNEL_EXCLUSION_REASON=$VFS_KERNEL_EXCLUSION_REASON"
+    echo "RDMA_CI_GO_MOD_SHA256_BEFORE=$GO_MOD_SHA256_BEFORE"
+    echo "RDMA_CI_GO_MOD_SHA256_AFTER=$GO_MOD_SHA256_AFTER"
+    echo "RDMA_CI_GO_SUM_SHA256_BEFORE=$GO_SUM_SHA256_BEFORE"
+    echo "RDMA_CI_GO_SUM_SHA256_AFTER=$GO_SUM_SHA256_AFTER"
+    echo "RDMA_CI_RUST_CARGO_LOCK_SHA256_BEFORE=$RUST_CARGO_LOCK_SHA256_BEFORE"
+    echo "RDMA_CI_RUST_CARGO_LOCK_SHA256_AFTER=$RUST_CARGO_LOCK_SHA256_AFTER"
+    echo "RDMA_CI_RUST_CARGO_LOCK_DIFF_SHA256=$RUST_CARGO_LOCK_DIFF_SHA256"
+    echo "RDMA_CI_M02_EVIDENCE_DIR=m02-evidence"
   } | tee "$run_dir/summary.env"
   {
     echo "<!doctype html><meta charset=\"utf-8\"><title>RDMA lab $run_id</title>"
@@ -230,6 +566,7 @@ write_summary() {
 
 preflight
 checkout_source
+apply_rc_not_found_diagnostics
 sync_source_to_m02
 if [ "$SKIP_BUILD" = "1" ]; then
   echo "== skip build =="
