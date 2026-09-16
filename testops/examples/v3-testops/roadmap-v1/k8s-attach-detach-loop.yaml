@@ -1,0 +1,96 @@
+apiVersion: testrunner.io/v1
+kind: Scenario
+metadata:
+  name: v3-k8s-attach-detach-loop
+  testrunner.minVersion: "0.3.0"
+  product: seaweed-block
+  tier: TierK8s
+  tags: [k8s, p3, alpha, attach-detach]
+  qa_assignment: internal/docs/qa-assignments/iscsi-p2-p3-lab-validation.md#test-4
+
+env:
+  product_root: "{{required \"product_root\"}}"
+  artifact_dir: "{{required \"artifact_dir\"}}"
+  iterations:   3
+  node_name:    "{{default \"m02\" .env.node_name}}"
+  namespace:    default
+
+phases:
+  - id: images
+    template: ../templates/k8s-alpha-images.yaml
+    vars:
+      product_root: "{{.env.product_root}}"
+
+  - id: stack
+    template: ../templates/k8s-alpha-stack.yaml
+    vars:
+      product_root: "{{.env.product_root}}"
+      block_image:  "{{.phases.images.outputs.block_image}}"
+      csi_image:    "{{.phases.images.outputs.csi_image}}"
+
+  - id: attach_detach_loop
+    action: loop
+    count: "{{.env.iterations}}"
+    body:
+      # writer pod: writes /data/demo.bin and verifies
+      - id: writer
+        template: ../templates/dynamic-pvc-cycle.yaml
+        vars:
+          product_root: "{{.env.product_root}}"
+          pvc_manifest: "{{.env.product_root}}/deploy/k8s/alpha/demo-dynamic-pvc-writer-pod.yaml"
+          namespace:    "{{.env.namespace}}"
+          pvc_name:     sw-block-demo-pvc
+          pod_name:     sw-block-demo-writer
+      - id: assert_writer_ok
+        action: assert_grep
+        file:    "{{.phases.writer.outputs.pod_log}}"
+        pattern: "wrote and verified /data/demo.bin"
+        min_count: 1
+      # reader pod: reads /data/demo.bin and verifies
+      # reuses the same PVC, so manifest only adds the reader pod
+      - id: reader
+        action: kubectl_apply
+        file: "{{.env.product_root}}/deploy/k8s/alpha/demo-dynamic-pvc-reader-pod.yaml"
+      - id: wait_reader
+        action: kubectl_wait
+        kind: pod
+        name: sw-block-demo-reader
+        namespace: "{{.env.namespace}}"
+        condition: succeeded
+        timeout: 120s
+      - id: collect_reader_log
+        action: kubectl_logs
+        kind: pod
+        name: sw-block-demo-reader
+        namespace: "{{.env.namespace}}"
+        out: reader.log
+      - id: assert_reader_ok
+        action: assert_grep
+        file:    "{{.phases.collect_reader_log.outputs.path}}"
+        pattern: "verified persisted /data/demo.bin"
+        min_count: 1
+      - id: cleanup_iter
+        action: kubectl_delete_set
+        items:
+          - { kind: pod, name: sw-block-demo-reader, namespace: "{{.env.namespace}}" }
+          - { kind: pvc, name: sw-block-demo-pvc,    namespace: "{{.env.namespace}}" }
+      - id: assert_iter_no_iscsi
+        action: assert_no_active_iscsi_sessions
+        node: "{{.env.node_name}}"
+
+  - id: assert_no_k8s_residue
+    action: kubectl_get_json
+    kind: pvc
+    namespace: "{{.env.namespace}}"
+    json_path: ".items | length"
+    expect: 0
+
+cleanup:
+  - action: kubectl_delete
+    file: "{{.phases.stack.outputs.rendered_dir}}/csi-node.yaml"
+  - action: kubectl_delete
+    file: "{{.phases.stack.outputs.rendered_dir}}/csi-controller.yaml"
+  - action: kubectl_delete
+    file: "{{.phases.stack.outputs.rendered_dir}}/block-stack.yaml"
+  - action: iscsi_logout_all
+    node: "{{.env.node_name}}"

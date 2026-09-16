@@ -1,0 +1,44 @@
+apiVersion: testrunner.io/v1
+kind: Template
+metadata:
+  name: blockvolume-spawn
+  parameters:
+    bin:           { type: string, required: true }
+    master:        { type: string, required: true }
+    artifact_dir:  { type: string, required: true }
+    volume_id:     { type: string, default: "vol-1" }
+    replica_id:    { type: string, default: "r1" }
+    durable_root:  { type: string, required: true }
+    durable_blocks:    { type: int, default: 65536 }    # 256 MiB at 4 KiB
+    durable_blocksize: { type: int, default: 4096 }
+    iscsi_listen:  { type: string, default: "127.0.0.1:3267" }
+    iscsi_iqn:     { type: string, default: "iqn.2026-05.io.seaweedfs:os-smoke-v1" }
+    data_addr:     { type: string, default: "127.0.0.1:19101" }
+    ctrl_addr:     { type: string, default: "127.0.0.1:19102" }
+spec:
+  action: spawn
+  command: "{{.bin}}"
+  args:
+    - "--master={{.master}}"
+    - "--volume-id={{.volume_id}}"
+    - "--replica-id={{.replica_id}}"
+    - "--durable-root={{.durable_root}}"
+    - "--durable-impl=walstore"
+    - "--durable-blocks={{.durable_blocks}}"
+    - "--durable-blocksize={{.durable_blocksize}}"
+    - "--data-addr={{.data_addr}}"
+    - "--ctrl-addr={{.ctrl_addr}}"
+    - "--iscsi-listen={{.iscsi_listen}}"
+    - "--iscsi-iqn={{.iscsi_iqn}}"
+    - "--recovery-mode=dual-lane"
+    - "--t1-readiness"
+  log_path: "{{.artifact_dir}}/blockvolume.log"
+  ready:
+    type: tcp_port
+    port: "{{splitHost .iscsi_listen | last}}"
+    timeout: 30s
+  outputs:
+    - { name: pid,           from: pid }
+    - { name: log,           from: log_path }
+    - { name: iscsi_listen,  value: "{{.iscsi_listen}}" }
+    - { name: iscsi_iqn,     value: "{{.iscsi_iqn}}" }
