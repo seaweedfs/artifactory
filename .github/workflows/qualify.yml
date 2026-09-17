@@ -284,6 +284,25 @@ jobs:
         fi
         aws --version
 
+    - name: S4 and LEF product contract self-tests
+      if: inputs.pack == 'general' || inputs.pack == 'all'
+      shell: bash
+      env:
+        PRODUCT_SHA: ${{ steps.resolve_product.outputs.sha }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/contract-self-tests"
+        bash rdma-lab-ci/contract-self-tests.sh seaweedfs-source "$PRODUCT_SHA" \
+          2>&1 | tee "$RUNNER_TEMP/contract-self-tests/output.log"
+
+    - name: Upload product contract evidence
+      if: always() && (inputs.pack == 'general' || inputs.pack == 'all')
+      uses: actions/upload-artifact@v4
+      with:
+        name: contract-self-tests-${{ steps.resolve_product.outputs.sha }}
+        path: ${{ runner.temp }}/contract-self-tests
+        if-no-files-found: error
+
     # Built from the HARNESS checkout, not the product one -- see
     # kvcache-qualify.yml's history for why (run 34272566294,
     # 34260061227). Built to $RUNNER_TEMP, not `enterprise/testops`, since
