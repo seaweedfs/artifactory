@@ -15,12 +15,16 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      runner:
+        description: "Runner label: ubuntu-22.04 (hosted, default) or tp01 (self-hosted; siw link and device access are pre-provisioned, no sudo)"
+        required: false
+        default: 'ubuntu-22.04'
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
-  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/rdma-softroce-tests
-  cancel-in-progress: true
+  group: ${{ (inputs.runner != '' && inputs.runner != 'ubuntu-22.04') && format('siw-{0}', inputs.runner) || format('{0}/rdma-softroce-tests', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main') }}
+  cancel-in-progress: ${{ inputs.runner == '' || inputs.runner == 'ubuntu-22.04' }}
 
 permissions:
   contents: read
@@ -30,7 +34,7 @@ jobs:
   # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
   rdma-off-build:
     name: RDMA-off build + unit tests
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 20
 
     steps:
@@ -84,7 +88,7 @@ jobs:
   # module and root for verbs/rdma_cm.
   rdma-softroce-e2e:
     name: software RDMA e2e (read + staged write)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 40
 
     steps:
@@ -94,6 +98,7 @@ jobs:
       # ("No space left on device"). Reclaim the tens of GB of preinstalled
       # toolchains this job never touches before building.
       - name: Free up disk space
+        if: runner.environment == 'github-hosted'
         run: |
           set -x
           df -h /
@@ -120,6 +125,7 @@ jobs:
       # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`), ibverbs-utils
       # (`ibv_devices`) and the userspace siw provider, libsiw (ibverbs-providers).
       - name: Install build + RDMA userspace deps
+        if: runner.environment == 'github-hosted'
         run: |
           $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
           $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y \
@@ -127,6 +133,7 @@ jobs:
             libibverbs-dev librdmacm-dev rdma-core ibverbs-providers ibverbs-utils
 
       - name: Bring up software RDMA (siw / Soft-iWARP)
+        if: runner.environment == 'github-hosted'
         run: |
           set -euxo pipefail
           # GitHub's ubuntu-22.04 runners boot the linux-azure kernel, which ships
@@ -159,6 +166,18 @@ jobs:
           rdma link | grep -q 'siw0' || { echo "::error::software RDMA siw0 unavailable on this runner kernel"; exit 1; }
           # The e2e tests read the target IP from RXE_IP (kept as the test's contract).
           echo "RXE_IP=$SOFT_RDMA_IP" >> "$GITHUB_ENV"
+
+      # Self-hosted runners carry a persistent siw link (systemd siw-ci.service:
+      # siw0 on dummy netdev siwci, 198.51.100.1/24) and the runner user is in
+      # the rdma group with LimitMEMLOCK=infinity, so no sudo is needed. Fail
+      # loudly if the link is not there rather than silently testing nothing.
+      - name: Verify pre-provisioned software RDMA (self-hosted)
+        if: runner.environment != 'github-hosted'
+        run: |
+          set -euo pipefail
+          rdma link | grep -q '^link siw0/' || { echo "::error::siw0 not provisioned on $(hostname); see siw-ci.service"; exit 1; }
+          ibv_devices | grep -q siw0 || { echo "::error::siw0 not visible to $(id -un); check the rdma group / udev rules"; exit 1; }
+          echo "RXE_IP=${SOFT_RDMA_IP:-198.51.100.1}" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -258,6 +277,9 @@ jobs:
           RUST_BACKTRACE: 1
         run: |
           set -uxo pipefail
+          # Verbs/rdma_cm need root only on hosted runners; self-hosted runners
+          # pre-provision device access and memlock for the runner user.
+          SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           cd seaweedfs-source/enterprise/rust
           rc=0
           for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do
@@ -267,7 +289,7 @@ jobs:
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
-            if ! sudo -E env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+            if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
               bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
               echo "::error::$t failed"; rc=1
             fi
@@ -296,6 +318,9 @@ jobs:
           RUST_BACKTRACE: 1
         run: |
           set -uxo pipefail
+          # Verbs/rdma_cm need root only on hosted runners; self-hosted runners
+          # pre-provision device access and memlock for the runner user.
+          SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           cd seaweedfs-source/enterprise/rust
           rc=0
           for root in sw-rdma-loader sw-rdma-object; do
@@ -305,7 +330,7 @@ jobs:
               BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
               if [ -z "$BIN" ]; then echo "::error::test binary for $root/$t not found"; exit 1; fi
               echo "== running $root/$t :: $BIN =="
-              if ! sudo -E env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+              if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
                 bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
                 echo "::error::$root/$t failed"; rc=1
               fi
@@ -334,6 +359,9 @@ jobs:
           RUST_BACKTRACE: 1
         run: |
           set -uxo pipefail
+          # Verbs/rdma_cm need root only on hosted runners; self-hosted runners
+          # pre-provision device access and memlock for the runner user.
+          SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           cd seaweedfs-source/enterprise/seaweed-volume
           rc=0
           for f in tests/rdma_*_e2e.rs; do
@@ -343,7 +371,7 @@ jobs:
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
-            if ! sudo -E env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+            if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
               bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
               echo "::error::$t failed"; rc=1
             fi
