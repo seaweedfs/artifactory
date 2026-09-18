@@ -26,7 +26,11 @@ concurrency:
   # branch's pending tp01 run because cancel-in-progress evaluated true).
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
-  group: ${{ (github.event.inputs.runner != '' && github.event.inputs.runner != 'ubuntu-22.04') && format('siw-{0}', github.event.inputs.runner) || format('{0}/rdma-softroce-tests', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main') }}
+  # One group per dispatched ref on every runner: GitHub keeps only ONE pending run per
+  # group and cancels the older pending one, so a shared self-hosted group cancelled
+  # other branches' queued tp01 runs (2026-09-18). Parallel tp01 runs share siw0; the
+  # two tp01 runners bound the parallelism.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}/rdma-softroce-tests/${{ github.event.inputs.runner || 'hosted' }}
   # Never cancel: with a self-hosted runner the group is shared across branches and an
   # expression here still cancelled the previous run (2026-09-18, runs 35308538083 and
   # 35308730850). Superseded hosted runs of one branch now queue instead of cancelling.
