@@ -30,10 +30,13 @@ concurrency:
   # group and cancels the older pending one, so a shared self-hosted group cancelled
   # other branches' queued tp01 runs (2026-09-18). Parallel tp01 runs share siw0; the
   # two tp01 runners bound the parallelism.
-  # D-38 (2026-09-18): two concurrent siw runs on tp01 correlate with a wrong-bytes
-  # failure in the restart-fence e2e row. Serialise self-hosted runs on one group per
-  # runner until that is understood; hosted runs stay grouped per dispatched ref.
-  group: ${{ (github.event.inputs.runner != '' && github.event.inputs.runner != 'ubuntu-22.04') && format('siw-serial-{0}', github.event.inputs.runner) || format('{0}/rdma-softroce-tests/hosted', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main') }}
+  # D-38 (2026-09-18): the serialisation added here rested on a wrong reading and is
+  # withdrawn. All three restart-fence failures ran on the M-5.4d D2 line, never on the
+  # tip; the cause is a client feature offer that puts the same-build server into
+  # registration-only mode, so an ordinary read returns zero bytes. Control on one
+  # runner, strictly sequential: candidate 3/3 red, tip 3/3 byte-exact. Concurrency was
+  # never involved, so self-hosted runs group per dispatched ref like hosted ones.
+  group: ${{ format('{0}/rdma-softroce-tests/{1}', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main', github.event.inputs.runner || 'hosted') }}
   # Never cancel: with a self-hosted runner the group is shared across branches and an
   # expression here still cancelled the previous run (2026-09-18, runs 35308538083 and
   # 35308730850). Superseded hosted runs of one branch now queue instead of cancelling.
