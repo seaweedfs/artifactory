@@ -27,7 +27,10 @@ concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
   group: ${{ (github.event.inputs.runner != '' && github.event.inputs.runner != 'ubuntu-22.04') && format('siw-{0}', github.event.inputs.runner) || format('{0}/rdma-softroce-tests', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main') }}
-  cancel-in-progress: ${{ github.event.inputs.runner == '' || github.event.inputs.runner == 'ubuntu-22.04' }}
+  # Never cancel: with a self-hosted runner the group is shared across branches and an
+  # expression here still cancelled the previous run (2026-09-18, runs 35308538083 and
+  # 35308730850). Superseded hosted runs of one branch now queue instead of cancelling.
+  cancel-in-progress: false
 
 permissions:
   contents: read
