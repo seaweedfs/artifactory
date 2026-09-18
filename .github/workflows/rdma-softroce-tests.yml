@@ -52,6 +52,7 @@ jobs:
           branch: ${{ github.event.inputs.gitlab_branch }}
 
       - name: Install protobuf compiler
+        if: runner.environment == 'github-hosted'
         run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y protobuf-compiler
 
       - name: Install Rust toolchain
