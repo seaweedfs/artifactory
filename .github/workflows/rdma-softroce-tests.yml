@@ -21,10 +21,13 @@ on:
         default: 'ubuntu-22.04'
 
 concurrency:
+  # `inputs.*` is empty in the workflow-level concurrency context; read the dispatch
+  # input through github.event (2026-09-18: a tp01 dispatch cancelled another
+  # branch's pending tp01 run because cancel-in-progress evaluated true).
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
-  group: ${{ (inputs.runner != '' && inputs.runner != 'ubuntu-22.04') && format('siw-{0}', inputs.runner) || format('{0}/rdma-softroce-tests', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main') }}
-  cancel-in-progress: ${{ inputs.runner == '' || inputs.runner == 'ubuntu-22.04' }}
+  group: ${{ (github.event.inputs.runner != '' && github.event.inputs.runner != 'ubuntu-22.04') && format('siw-{0}', github.event.inputs.runner) || format('{0}/rdma-softroce-tests', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main') }}
+  cancel-in-progress: ${{ github.event.inputs.runner == '' || github.event.inputs.runner == 'ubuntu-22.04' }}
 
 permissions:
   contents: read
@@ -34,7 +37,7 @@ jobs:
   # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
   rdma-off-build:
     name: RDMA-off build + unit tests
-    runs-on: ${{ inputs.runner || 'ubuntu-22.04' }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 20
 
     steps:
@@ -89,7 +92,7 @@ jobs:
   # module and root for verbs/rdma_cm.
   rdma-softroce-e2e:
     name: software RDMA e2e (read + staged write)
-    runs-on: ${{ inputs.runner || 'ubuntu-22.04' }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 40
 
     steps:
