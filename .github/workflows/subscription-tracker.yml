@@ -2,7 +2,7 @@ name: "Subscription Tracker"
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       email:
