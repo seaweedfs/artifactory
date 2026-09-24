@@ -1,0 +1,236 @@
+name: "S3 Tables / Iceberg Tests (seaweed-mono)"
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
+
+# First wave of coverage for enterprise/test/s3tables, which no workflow in this
+# repo referenced before. Two of these four suites run nowhere today; the other
+# two run only in seaweedfs/seaweedfs, so an enterprise-side change to the
+# catalog or the maintenance worker has no gate.
+#
+# Why these four first, out of twenty directories:
+#
+#   maintenance         Compaction, snapshot expiry, orphan removal. Runs in
+#                       NEITHER repo today — upstream's s3-tables-tests.yml has
+#                       no job for it. Cheapest suite here and the one guarding
+#                       the worker that rewrites customer data.
+#   lifecycle           The data-corruption gate. It exists because compaction
+#                       once rewrote every dictionary-encoded column onto a
+#                       single value while every maintenance test passed, since
+#                       none of them opened the parquet the worker had written.
+#                       It now checks row count, per-column dictionary
+#                       cardinality, and an md5 over whole rows.
+#   catalog_clickhouse  The manifest-repair gate from the positive side:
+#                       ClickHouse's experimental Iceberg writer commits
+#                       non-compliant manifests that the catalog repairs.
+#   catalog_olake       The same gate from the negative side, plus two paths
+#                       nothing else covers: a strict Java Iceberg client (OLake
+#                       writes through a Java sidecar) and equality deletes
+#                       (OLake is a CDC tool, so its upsert path emits them).
+#
+# Deliberately deferred, not forgotten — each needs an engine image and a
+# topology this wave does not set up: catalog_spark, catalog_spark_lance,
+# catalog_trino, catalog_dremio, catalog_doris, catalog_risingwave,
+# catalog_lancedb, catalog_duckdb_lance, lakekeeper, polaris, unity_catalog,
+# admin, catalog, sts_integration, table-buckets. Add them in a second wave
+# rather than enabling a matrix that mostly skips.
+#
+# THE SKIP GUARD IS THE POINT, not decoration. Every suite under
+# enterprise/test/ begins with a t.Skip() conditional on its environment being
+# present, so a job that wires the suite without provisioning it reports green
+# having tested nothing. That is worse than the status quo, because it replaces
+# a known hole with an invisible one. Each run therefore asserts the suite
+# actually executed: at least one --- PASS and no --- SKIP at the top level.
+
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
+  # dispatched mono ref (or the manual branch input) to actually dedupe runs.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/s3tables
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s3tables-tests:
+    name: S3 Tables (${{ matrix.suite }})
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    timeout-minutes: 40
+    strategy:
+      # Report each suite independently; one failing must not hide the others.
+      fail-fast: false
+      matrix:
+        include:
+          - suite: maintenance
+            dir: maintenance
+            images: ''
+          - suite: lifecycle
+            dir: lifecycle
+            images: 'python:3.11-slim'
+          - suite: catalog_clickhouse
+            dir: catalog_clickhouse
+            images: 'clickhouse/clickhouse-server:25.8 python:3.11-slim'
+          - suite: catalog_olake
+            dir: catalog_olake
+            images: 'olakego/source-postgres:latest postgres:16 python:3.11-slim'
+
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
+    - name: Link to seaweed-mono source
+      if: github.event_name == 'repository_dispatch'
+      uses: ./.github/actions/mono-source-link
+
+    - name: Clone seaweed-mono (enterprise) source
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
+
+    # Branches predating a suite have no directory. Skip that matrix leg rather
+    # than failing, so the workflow stays usable on older refs.
+    - name: Check for the suite
+      id: check
+      run: |
+        present=false
+        dir=seaweedfs-source/enterprise/test/s3tables/${{ matrix.dir }}
+        if [ -d "$dir" ]; then
+          present=true
+        else
+          echo "::notice::Branch has no enterprise/test/s3tables/${{ matrix.dir }}; skipping."
+        fi
+        echo "present=$present" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Go
+      if: steps.check.outputs.present == 'true'
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    # Mirror the registry only on hosted: this writes /etc/docker/daemon.json and
+    # restarts the daemon under sudo, and tp01's runner account has no sudo at
+    # all. On tp01 the images come from whatever the host already holds plus a
+    # direct pull.
+    - name: Configure Docker Hub mirror (hosted only)
+      if: steps.check.outputs.present == 'true' && runner.environment == 'github-hosted'
+      run: |
+        echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl restart docker
+
+    - name: Pre-pull images
+      if: steps.check.outputs.present == 'true' && matrix.images != ''
+      run: |
+        pull() { for i in 1 2 3; do docker pull "$1" && return 0; sleep 15; done; return 1; }
+        for image in ${{ matrix.images }}; do
+          pull "$image"
+        done
+
+    # The suites locate the binary as weed/weed under the repo root or on PATH;
+    # go install puts it on PATH via GOPATH/bin.
+    - name: Install SeaweedFS
+      if: steps.check.outputs.present == 'true'
+      working-directory: seaweedfs-source/enterprise
+      run: go install -buildvcs=false ./weed
+
+    - name: Run the suite
+      if: steps.check.outputs.present == 'true'
+      timeout-minutes: 35
+      working-directory: seaweedfs-source/enterprise/test/s3tables/${{ matrix.dir }}
+      run: |
+        set -o pipefail
+        echo "=== System information ==="
+        uname -a
+        free -h
+        df -h
+        go test -v -timeout 30m . 2>&1 | tee test-output.log || {
+          echo "::error::enterprise/test/s3tables/${{ matrix.dir }} failed"
+          exit 1
+        }
+
+    # A green job is not evidence the suite ran. These suites self-skip when
+    # their environment is absent, so assert execution explicitly: at least one
+    # top-level PASS, and no top-level SKIP. Without this the workflow would
+    # report coverage it does not have, which is the failure this file exists to
+    # prevent.
+    - name: Assert the suite actually ran
+      if: steps.check.outputs.present == 'true'
+      working-directory: seaweedfs-source/enterprise/test/s3tables/${{ matrix.dir }}
+      run: |
+        log=test-output.log
+        if [ ! -f "$log" ]; then
+          echo "::error::no test-output.log; the suite did not run"
+          exit 1
+        fi
+        passes=$(grep -c '^--- PASS' "$log" || true)
+        skips=$(grep -c '^--- SKIP' "$log" || true)
+        echo "top-level PASS=$passes SKIP=$skips"
+        if [ "$skips" -gt 0 ]; then
+          echo "::error::${{ matrix.suite }} skipped $skips top-level test(s) — the environment it needs was not provisioned, so this job proves nothing. Fix the environment rather than accepting the green."
+          grep '^--- SKIP' "$log" | head -20
+          exit 1
+        fi
+        if [ "$passes" -lt 1 ]; then
+          echo "::error::${{ matrix.suite }} recorded no passing top-level test"
+          exit 1
+        fi
+
+    - name: Show test output on failure
+      if: failure() && steps.check.outputs.present == 'true'
+      working-directory: seaweedfs-source/enterprise/test/s3tables/${{ matrix.dir }}
+      run: |
+        echo "=== Test output (tail) ==="
+        if [ -f test-output.log ]; then
+          tail -200 test-output.log
+        fi
+        echo "=== Processes ==="
+        ps aux | grep -E "(weed|docker)" | head -30 || true
+        echo "=== Containers ==="
+        docker ps -a | head -30 || true
+
+    - name: Upload test logs on failure
+      if: failure() && steps.check.outputs.present == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: s3tables-${{ matrix.suite }}-logs
+        path: seaweedfs-source/enterprise/test/s3tables/${{ matrix.dir }}/test-output.log
+        retention-days: 3
