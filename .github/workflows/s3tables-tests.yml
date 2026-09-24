@@ -45,11 +45,27 @@ run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.m
 # actually executed: at least one --- PASS and no --- SKIP at the top level.
 
 on:
-  # Triggered by seaweed-mono push (repository_dispatch)
-  repository_dispatch:
-    types:
-      - mono-push
-      - mono-merge-request
+  # DELIBERATELY MANUAL-ONLY ON FIRST MERGE. The repository_dispatch types that
+  # every other enterprise suite listens on are commented out below, and a
+  # follow-up PR restores them once this workflow has been proven by a manual
+  # run.
+  #
+  # The reason is a GitHub constraint, not caution for its own sake:
+  # workflow_dispatch only works for a workflow file that is already on the
+  # default branch, so this file cannot be dispatched before it merges — the
+  # API answers "workflow not found on the default branch". That leaves two
+  # orders, and only one of them is safe. Merging with the dispatch triggers
+  # live would put four never-executed jobs on the very next production mono
+  # push, and a broken one would show as four red legs on every dispatch until
+  # someone noticed. Merging manual-only registers the workflow so it can be
+  # run deliberately, against a branch of our choosing, with no production
+  # traffic touching it.
+  #
+  # Restore these two lines in the follow-up:
+  # repository_dispatch:
+  #   types:
+  #     - mono-push
+  #     - mono-merge-request
 
   # Allow manual triggering
   workflow_dispatch:
