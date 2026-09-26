@@ -1,0 +1,18 @@
+{
+  "vid": 0,
+  "ssvid": 0,
+  "sn": "3bfc269594ef6492",
+  "mn": "SeaweedFS V3 BlockVol",
+  "fr": "0001",
+  "cmic": 10,
+  "mdts": 3,
+  "cntlid": 2,
+  "ver": 66304,
+  "oacs": 0,
+  "anatt": 0,
+  "anacap": 0,
+  "anagrpmax": 1,
+  "nanagrpid": 1,
+  "nn": 1,
+  "subnqn": "nqn.2026-05.io.seaweedfs:idcap-v1"
+}

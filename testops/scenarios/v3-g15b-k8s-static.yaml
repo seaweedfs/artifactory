@@ -1,0 +1,226 @@
+name: v3-g15b-k8s-static
+# P-D-3 — re-implements G15b K8s static PV scenario via V2 testrunner platform
+# using V3 manifests + reused V2 kubectl_* actions + v3pack assert action.
+#
+# Differs from P-D-2:
+#   - daemons run as K8s pods (sw-blockmaster, sw-blockvolume-r1/r2, sw-block-csi-controller, sw-block-csi-node DS)
+#   - so v3_start_* spawn actions do NOT apply; the V3 contribution here is
+#     v3_assert_no_authority_leak on captured pod logs
+#   - everything else is V2 kubectl_* orchestration of V3 manifests
+#
+# Pre-conditions on K8s lab (M02 / k3s):
+#   - k3s running, kubectl reachable via KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+#   - images sw-block:local + sw-block-csi:local pre-loaded into containerd
+#     (use scripts/build-g15b-images.sh + docker save | sudo k3s ctr images import -)
+#   - V3 manifest tree at {{ manifest_root }} (e.g. /tmp/g15b/src/deploy/k8s/g15b/)
+#   - sudo NOPW for kubectl --kubeconfig if KUBECONFIG isn't world-readable
+#
+# Acceptance proven:
+#   - external-attacher → ControllerPublishVolume → kubelet NodeStage →
+#     iSCSI attach → mount → pod writes & verifies SHA-256 checksum → pod Succeeded
+#   - cleanup: no dangling iSCSI session, all manifests deleted
+#   - V3 daemon logs (master + r1 + r2 + csi-controller) free of V2 authority field leak
+
+timeout: 5m
+
+env:
+  manifest_root: "/tmp/g15b/src/deploy/k8s/g15b"
+  artifact_dir: "/tmp/v3-g15b-k8s/artifacts"
+  test_iqn_substring: "iqn.2026-05.io.seaweedfs:g15b-v1"
+
+topology:
+  nodes:
+    target_node:
+      host: "127.0.0.1"
+      is_local: true
+
+phases:
+  - name: pre_cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          # Best-effort cleanup of any prior run's resources.
+          kubectl delete -f {{ manifest_root }}/static-pv-pvc-pod.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/csi-node.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/csi-controller.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/csi-driver.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/rbac.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/block-stack.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          # Logout any host-level iscsi session for the test IQN.
+          sudo iscsiadm -m node -T {{ test_iqn_substring }} --logout 2>/dev/null || true
+          sudo iscsiadm -m node -T {{ test_iqn_substring }} -o delete 2>/dev/null || true
+          mkdir -p {{ artifact_dir }}
+          rm -f {{ artifact_dir }}/*.log {{ artifact_dir }}/*.txt 2>/dev/null || true
+
+  - name: capture_iscsi_baseline
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sudo iscsiadm -m session 2>&1 > {{ artifact_dir }}/iscsi-session-pre.txt || true; cat {{ artifact_dir }}/iscsi-session-pre.txt"
+
+  - name: apply_block_stack
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; kubectl apply -f {{ manifest_root }}/block-stack.yaml"
+
+  - name: wait_blockmaster_ready
+    actions:
+      - action: kubectl_wait_condition
+        resource: "deploy/sw-blockmaster"
+        namespace: "kube-system"
+        condition: "Available=True"
+        timeout: "120s"
+
+  - name: wait_blockvolume_r1_ready
+    actions:
+      - action: kubectl_wait_condition
+        resource: "deploy/sw-blockvolume-r1"
+        namespace: "kube-system"
+        condition: "Available=True"
+        timeout: "120s"
+
+  - name: wait_blockvolume_r2_ready
+    actions:
+      - action: kubectl_wait_condition
+        resource: "deploy/sw-blockvolume-r2"
+        namespace: "kube-system"
+        condition: "Available=True"
+        timeout: "120s"
+
+  - name: apply_csi_manifests
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl apply -f {{ manifest_root }}/rbac.yaml
+          kubectl apply -f {{ manifest_root }}/csi-driver.yaml
+          kubectl apply -f {{ manifest_root }}/csi-controller.yaml
+          kubectl apply -f {{ manifest_root }}/csi-node.yaml
+
+  - name: wait_csi_controller_ready
+    actions:
+      - action: kubectl_wait_condition
+        resource: "deploy/sw-block-csi-controller"
+        namespace: "kube-system"
+        condition: "Available=True"
+        timeout: "120s"
+
+  - name: wait_csi_node_rolled_out
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; kubectl -n kube-system rollout status ds/sw-block-csi-node --timeout=120s"
+
+  - name: apply_static_pv_pvc_pod
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; kubectl apply -f {{ manifest_root }}/static-pv-pvc-pod.yaml"
+
+  - name: wait_pvc_bound
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; kubectl -n default wait --for=jsonpath='{.status.phase}'=Bound pvc/sw-block-static-v1 --timeout=120s"
+
+  - name: wait_pod_succeeded
+    # The pod runs:
+    #   dd if=/dev/urandom of=/data/payload.bin bs=4K count=1 conv=fsync
+    #   sha256sum /data/payload.bin > /data/payload.sha256
+    #   sync
+    #   sha256sum -c /data/payload.sha256
+    # Reaching Succeeded means the checksum read-back matched.
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; kubectl -n default wait --for=jsonpath='{.status.phase}'=Succeeded pod/sw-block-static-smoke --timeout=180s"
+
+  - name: collect_pod_evidence
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl -n default logs sw-block-static-smoke > {{ artifact_dir }}/pod.log 2>&1 || true
+          kubectl -n default describe pod sw-block-static-smoke > {{ artifact_dir }}/pod.describe.txt 2>&1 || true
+          kubectl -n default get pv,pvc,pod -o wide > {{ artifact_dir }}/app-pv-pvc-pod.txt 2>&1 || true
+          echo "=== pod.log ==="
+          cat {{ artifact_dir }}/pod.log
+
+  - name: assert_pod_checksum_ok
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          if ! grep -F 'OK' {{ artifact_dir }}/pod.log >/dev/null 2>&1; then
+            echo "FAIL: pod.log missing checksum 'OK' marker"
+            cat {{ artifact_dir }}/pod.log
+            exit 1
+          fi
+          echo "OK: pod.log shows sha256sum -c success"
+
+  - name: collect_daemon_logs
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl -n kube-system logs deploy/sw-blockmaster -c blockmaster > {{ artifact_dir }}/blockmaster.log 2>&1 || true
+          kubectl -n kube-system logs deploy/sw-blockvolume-r1 -c blockvolume > {{ artifact_dir }}/blockvolume-r1.log 2>&1 || true
+          kubectl -n kube-system logs deploy/sw-blockvolume-r2 -c blockvolume > {{ artifact_dir }}/blockvolume-r2.log 2>&1 || true
+          kubectl -n kube-system logs deploy/sw-block-csi-controller -c block-csi > {{ artifact_dir }}/blockcsi-controller.log 2>&1 || true
+          kubectl -n kube-system get pods -o wide > {{ artifact_dir }}/kube-system-pods.txt 2>&1 || true
+          ls -la {{ artifact_dir }}
+
+  - name: assert_no_authority_leak
+    actions:
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ artifact_dir }}/blockmaster.log"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ artifact_dir }}/blockvolume-r1.log"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ artifact_dir }}/blockvolume-r2.log"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ artifact_dir }}/blockcsi-controller.log"
+
+  - name: teardown_manifests
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl delete -f {{ manifest_root }}/static-pv-pvc-pod.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/csi-node.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/csi-controller.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/csi-driver.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/rbac.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          kubectl delete -f {{ manifest_root }}/block-stack.yaml --ignore-not-found=true >/dev/null 2>&1 || true
+          # The kubelet/CSI usually unmounts and logs out as part of pod teardown,
+          # but sleep briefly to let async cleanup finish.
+          sleep 5
+
+  - name: capture_iscsi_post_cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sudo iscsiadm -m session 2>&1 > {{ artifact_dir }}/iscsi-session-post.txt || true; cat {{ artifact_dir }}/iscsi-session-post.txt"
+
+  - name: assert_no_dangling_session
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          if sudo iscsiadm -m session 2>/dev/null | grep -q -F {{ test_iqn_substring }}; then
+            echo "FAIL: dangling iSCSI session for {{ test_iqn_substring }}"
+            sudo iscsiadm -m session 2>&1
+            exit 1
+          fi
+          echo "OK: no dangling iSCSI session for {{ test_iqn_substring }}"

@@ -1,0 +1,17 @@
+{
+  "subsystems": [
+    {
+      "name": "nvme-subsys0",
+      "nqn": "nqn.1994-11.com.samsung:nvme:PM9B1:M.2:S6B5NF5WA55643",
+      "io_policy": "numa",
+      "paths": [
+        {
+          "name": "nvme0",
+          "transport": "pcie",
+          "address": "0000:04:00.0",
+          "state": "live"
+        }
+      ]
+    }
+  ]
+}
