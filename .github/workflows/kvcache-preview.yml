@@ -1,0 +1,318 @@
+name: "KVCache: Publish LMCache preview"
+# The inputs ride in the run name so the runner watchdog (main: runner-watchdog.yml)
+# can cancel a run stuck on an offline tp01 and re-dispatch it on hosted with the
+# same mono_sha / release_tag. Keep the three fields parseable: mono:<sha> tag:<tag> runner:<x>.
+run-name: "${{ github.workflow }} · mono:${{ inputs.mono_sha || '0d5ea8a702ceb85659d562b08457b94a81f894b1' }} · tag:${{ inputs.release_tag || 'kvcache-filer-native-v0.1.0-preview.1' }} · runner:${{ inputs.runner || 'tp01' }}"
+
+# Runs on the tp01 self-hosted runner by default; dispatch with runner=hosted to
+# fall back. Anything this workflow does outside the `apt-get install` step must
+# already exist on a self-hosted host, because GitHub-hosted images preinstall a
+# great deal that is invisible until you leave them. What this workflow assumes:
+#
+#   docker (daemon reachable by the runner account), git, jq, sha256sum,
+#   rustup + cargo, and gh - the GitHub CLI, needed by the final upload step.
+#
+# gh is the one that bit us: a run reached step 17 of 18 and failed with
+# `gh: command not found`. libssl-dev is the same class of problem and is now
+# named explicitly in the apt list rather than inherited from the image.
+#
+# When adding a step, assume nothing is preinstalled. When standing up another
+# runner, install the list above before pointing anything at it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mono_sha:
+        description: "Full seaweed-mono source SHA"
+        required: true
+        default: "0d5ea8a702ceb85659d562b08457b94a81f894b1"
+      release_tag:
+        description: "Existing artifactory prerelease tag"
+        required: true
+        default: "kvcache-filer-native-v0.1.0-preview.1"
+      runner:
+        description: "Where to build: tp01 (fast, no queue) or hosted (fallback when tp01 is down)"
+        required: false
+        type: choice
+        default: tp01
+        options: [tp01, hosted]
+  push:
+    branches:
+      - release/kvcache-preview-artifactory
+    paths:
+      - .github/workflows/kvcache-preview.yml
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: kvcache-preview-${{ inputs.release_tag || 'kvcache-filer-native-v0.1.0-preview.1' }}
+  cancel-in-progress: false
+
+env:
+  MONO_SHA: ${{ inputs.mono_sha || '0d5ea8a702ceb85659d562b08457b94a81f894b1' }}
+  LMCACHE_SHA: f2b65521c55f55d6c146277f004153e185e5d73a
+  RELEASE_TAG: ${{ inputs.release_tag || 'kvcache-filer-native-v0.1.0-preview.1' }}
+  SERVER_IMAGE: ghcr.io/seaweedfs/seaweedfs-enterprise:kvcache-v0.1.0-preview.1-rdma
+  RUNTIME_IMAGE: ghcr.io/seaweedfs/lmcache-seaweed:v0.1.0-preview.1
+  EXPECTED_WHEEL_SHA256: 4349943eb5198c22fa094e9db55d3206846d96427da94e6d700e4f712868fe37
+
+# One job, not three. Every job is a separate runner acquisition, and this
+# organization queues a median of ~30 minutes per job regardless of label, so
+# three jobs cost three queue waits for 19 minutes of work. See issue #77.
+jobs:
+  publish-preview:
+    name: Build and publish KVCache preview images
+    # tp01 by default; dispatch with runner=hosted when tp01 is down. There is no
+    # automatic failover on purpose: `runs-on` cannot express "self-hosted or else
+    # hosted", and a silent fallback would rebuild everything cold with nobody
+    # noticing. A job waiting on an offline tp01 queues and fails after 24h, so the
+    # switch is explicit and one dispatch away. The label is specific rather than a
+    # bare `self-hosted` so no other runner can claim this job.
+    runs-on: ${{ inputs.runner == 'hosted' && fromJSON('["ubuntu-24.04"]') || fromJSON('["self-hosted","tp01"]') }}
+    timeout-minutes: 120
+    steps:
+      # Hosted runners start with ~14 GB free and are discarded after the job, so
+      # clearing them costs nothing. A self-hosted runner keeps its layer cache
+      # between jobs - that cache is the entire reason for using one - and the
+      # paths below only exist on the hosted images, so this step is hosted-only.
+      - name: Reclaim runner disk
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af --volumes || true
+          df -h /
+
+      # Self-hosted housekeeping: keep the cache, but do not let it grow without
+      # bound. Only reclaim when the volume is genuinely tight, and only build
+      # cache - never the pulled images this workflow is trying to reuse.
+      - name: Housekeeping when disk is tight
+        if: runner.environment != 'github-hosted'
+        run: |
+          set -euo pipefail
+          free_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          echo "free: ${free_gb} GB"
+          if [ "$free_gb" -lt 150 ]; then
+            echo "below 150 GB, pruning build cache older than 14 days"
+            docker builder prune -f --filter 'until=336h' || true
+            docker image prune -f --filter 'until=336h' || true
+            df -h /
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reuse verified server image when present
+        id: server
+        run: |
+          set -euo pipefail
+          if docker pull "$SERVER_IMAGE"; then
+            repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$SERVER_IMAGE")
+            if test -n "$repo_digest" && \
+               docker run --rm "$repo_digest" version | grep -Fq "$MONO_SHA"; then
+              printf '%s\n' "$repo_digest" > server-image.txt
+              echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            else
+              echo "published server image does not match MONO_SHA=$MONO_SHA; rebuilding"
+              echo 'reuse=false' >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo 'reuse=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Mirrors the server check above. Without it the runtime image was rebuilt
+      # from scratch (~17 min) on every run, even when the published image
+      # already carried the expected source SHAs and wheel checksum.
+      - name: Reuse verified runtime image when present
+        id: runtime
+        run: |
+          set -euo pipefail
+          if docker pull "$RUNTIME_IMAGE"; then
+            repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE")
+            if test -n "$repo_digest" && \
+               test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo_digest")" = "$MONO_SHA" && \
+               test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.source-revision"}}' "$repo_digest")" = "$LMCACHE_SHA" && \
+               test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.wheel.sha256"}}' "$repo_digest")" = "$EXPECTED_WHEEL_SHA256" && \
+               docker run --rm "$repo_digest" \
+                 python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'; then
+              printf '%s\n' "$repo_digest" > runtime-image.txt
+              echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            else
+              echo "published runtime image does not match the requested provenance; rebuilding"
+              echo 'reuse=false' >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo 'reuse=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout frozen seaweed-mono source
+        if: steps.server.outputs.reuse != 'true' || steps.runtime.outputs.reuse != 'true'
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${#MONO_SHA}" -eq 40
+          git init mono
+          git -C mono remote add origin "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git"
+          git -C mono fetch --depth 1 origin "$MONO_SHA"
+          git -C mono checkout --detach FETCH_HEAD
+          test "$(git -C mono rev-parse HEAD)" = "$MONO_SHA"
+
+      - name: Install Rust and RDMA build dependencies
+        if: steps.server.outputs.reuse != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake libclang-dev libibverbs-dev \
+            librdmacm-dev libssl-dev pkg-config protobuf-compiler
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+
+      - name: Build RDMA Volume server
+        if: steps.server.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          cd mono/enterprise/seaweed-volume
+          cargo build --locked --release --features kvcache,rdma,rdma-dc
+          install -D -m 0755 target/release/weed-volume \
+            ../docker/weed-volume-prebuilt/weed-volume-amd64
+
+      - name: Build and publish server image
+        if: steps.server.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          docker build \
+            --file mono/enterprise/docker/Dockerfile.rdma \
+            --build-arg SOURCE_SHA="$MONO_SHA" \
+            --tag "$SERVER_IMAGE" \
+            mono/enterprise
+          docker push "$SERVER_IMAGE"
+          repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$SERVER_IMAGE")
+          test -n "$repo_digest"
+          printf '%s\n' "$repo_digest" > server-image.txt
+          docker run --rm "$repo_digest" version | grep -F "$MONO_SHA"
+
+      # The two images used to build on separate runners, each with its own free
+      # disk. In one job those peaks would add up, so release the server build's
+      # footprint before the LMCache/CUDA base build starts. The server image is
+      # already pushed and its digest is recorded in server-image.txt.
+      - name: Reclaim disk before the runtime build
+        if: steps.runtime.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          # Per-run scratch: the mono checkout is recreated by `git init mono`
+          # every run, so dropping its target directory is free on any runner.
+          rm -rf mono/enterprise/seaweed-volume/target || true
+          if [ "${{ runner.environment }}" = 'github-hosted' ]; then
+            # Only a hosted runner needs the two builds' peaks not to overlap.
+            rm -rf "$HOME/.cargo/registry" "$HOME/.rustup" || true
+            if [ "${{ steps.server.outputs.reuse }}" != 'true' ]; then
+              docker image rm "$SERVER_IMAGE" || true
+            fi
+            docker builder prune -af || true
+          fi
+          df -h /
+
+      - name: Verify pinned LMCache source
+        if: steps.runtime.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          test "${#LMCACHE_SHA}" -eq 40
+          git clone --filter=blob:none https://github.com/LMCache/LMCache.git lmcache
+          git -C lmcache checkout --detach "$LMCACHE_SHA"
+          test "$(git -C lmcache rev-parse HEAD)" = "$LMCACHE_SHA"
+
+      - name: Download and verify released connector wheel
+        if: steps.runtime.outputs.reuse != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dist=mono/enterprise/python/seaweedkv-native/dist
+          mkdir -p "$dist"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'seaweedkv_native-*.whl' \
+            --dir "$dist"
+          mapfile -t wheels < <(find "$dist" -maxdepth 1 -name 'seaweedkv_native-*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel=${wheels[0]}
+          actual=$(sha256sum "$wheel" | awk '{print $1}')
+          echo "wheel_sha256=$actual"
+          echo "expected_wheel_sha256=$EXPECTED_WHEEL_SHA256"
+          test "$actual" = "$EXPECTED_WHEEL_SHA256"
+
+      - name: Build pinned LMCache base image
+        if: steps.runtime.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 \
+            --file docker/Dockerfile.standalone \
+            --tag "lmcache-preview-base:${LMCACHE_SHA}" \
+            "https://github.com/LMCache/LMCache.git#${LMCACHE_SHA}"
+          docker run --rm "lmcache-preview-base:${LMCACHE_SHA}" \
+            python -c 'import lmcache; print(lmcache)'
+
+      - name: Build and publish runtime image
+        if: steps.runtime.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          docker build \
+            --file mono/enterprise/python/seaweedkv-native/docker/Dockerfile.runtime \
+            --build-arg "LMCACHE_BASE_IMAGE=lmcache-preview-base:${LMCACHE_SHA}" \
+            --build-arg "SEAWEEDFS_SOURCE_SHA=${MONO_SHA}" \
+            --build-arg "LMCACHE_SOURCE_SHA=${LMCACHE_SHA}" \
+            --build-arg "SEAWEEDKV_WHEEL_SHA256=${EXPECTED_WHEEL_SHA256}" \
+            --tag "$RUNTIME_IMAGE" \
+            mono/enterprise/python/seaweedkv-native
+          docker push "$RUNTIME_IMAGE"
+          repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE")
+          test -n "$repo_digest"
+          test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo_digest")" = "$MONO_SHA"
+          test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.source-revision"}}' "$repo_digest")" = "$LMCACHE_SHA"
+          test "$(docker inspect --format '{{index .Config.Labels "ai.lmcache.wheel.sha256"}}' "$repo_digest")" = "$EXPECTED_WHEEL_SHA256"
+          printf '%s\n' "$repo_digest" > runtime-image.txt
+          docker run --rm "$repo_digest" \
+            python -c 'from seaweedkv_native import SeaweedKVNativeConnector; print(SeaweedKVNativeConnector)'
+
+      - name: Create registry attestation
+        run: |
+          set -euo pipefail
+          server=$(cat server-image.txt)
+          runtime=$(cat runtime-image.txt)
+          jq -n \
+            --arg release "$RELEASE_TAG" \
+            --arg mono "$MONO_SHA" \
+            --arg lmcache "$LMCACHE_SHA" \
+            --arg wheel "$EXPECTED_WHEEL_SHA256" \
+            --arg server "$server" \
+            --arg runtime "$runtime" \
+            '{schema_version:1, release:$release, seaweedfs_source_sha:$mono,
+              lmcache_source_sha:$lmcache, wheel_sha256:$wheel,
+              images:{seaweedfs:$server,lmcache_connector:$runtime}}' \
+            > REGISTRY-IMAGES.json
+          sha256sum REGISTRY-IMAGES.json > REGISTRY-SHA256SUMS
+
+      - name: Upload attestation to existing prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            REGISTRY-IMAGES.json REGISTRY-SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Upload image identities
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvcache-image-identities
+          path: |
+            server-image.txt
+            runtime-image.txt
+          if-no-files-found: error
