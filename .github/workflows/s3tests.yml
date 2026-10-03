@@ -898,6 +898,17 @@ jobs:
           pip install tox
           pip install -e .
 
+      - name: Fix S3 tests bucket creation conflicts
+        run: |
+          # Check if fix script exists in seaweed-mono source
+          if [ -f seaweedfs-source/enterprise/test/s3/compatibility/fix_s3_tests_bucket_conflicts.py ]; then
+            python3 seaweedfs-source/enterprise/test/s3/compatibility/fix_s3_tests_bucket_conflicts.py
+          else
+            echo "⚠️ S3 tests fix script not found, proceeding without fix"
+          fi
+        env:
+          S3_TESTS_PATH: s3-tests
+
       - name: Run Ceph S3 tests with SQL store
         timeout-minutes: 15
         shell: bash
