@@ -159,6 +159,7 @@ jobs:
           # The suite expects RGW's 400 InvalidPart for a partNumber past the last
           # part; AWS answers 416 InvalidPartNumber, which is what we return.
           sed -i "/# request PartNumber out of range/,+4{s/assert status == 400/assert status == 416/; s/assert error_code == 'InvalidPart'/assert error_code == 'InvalidPartNumber'/}" s3tests/functional/test_s3.py
+          grep -q "assert error_code == 'InvalidPartNumber'" s3tests/functional/test_s3.py || { echo "partNumber expectation rewrite did not apply"; exit 1; }
 
           # Debug: Show the config file contents
           echo "=== S3 Config File Contents ==="
@@ -508,6 +509,7 @@ jobs:
           # The suite expects RGW's 400 InvalidPart for a partNumber past the last
           # part; AWS answers 416 InvalidPartNumber, which is what we return.
           sed -i "/# request PartNumber out of range/,+4{s/assert status == 400/assert status == 416/; s/assert error_code == 'InvalidPart'/assert error_code == 'InvalidPartNumber'/}" s3tests/functional/test_s3.py
+          grep -q "assert error_code == 'InvalidPartNumber'" s3tests/functional/test_s3.py || { echo "partNumber expectation rewrite did not apply"; exit 1; }
           # Create and update s3tests.conf to use port 8001
           cp "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests.conf" "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-versioning.conf"
           sed -i 's/port = 8000/port = 8001/g' "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-versioning.conf"
@@ -695,6 +697,7 @@ jobs:
           # The suite expects RGW's 400 InvalidPart for a partNumber past the last
           # part; AWS answers 416 InvalidPartNumber, which is what we return.
           sed -i "/# request PartNumber out of range/,+4{s/assert status == 400/assert status == 416/; s/assert error_code == 'InvalidPart'/assert error_code == 'InvalidPartNumber'/}" s3tests/functional/test_s3.py
+          grep -q "assert error_code == 'InvalidPartNumber'" s3tests/functional/test_s3.py || { echo "partNumber expectation rewrite did not apply"; exit 1; }
           # Create and update s3tests.conf to use port 8002
           cp "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests.conf" "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-cors.conf"
           sed -i 's/port = 8000/port = 8002/g' "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-cors.conf"
@@ -1077,6 +1080,7 @@ jobs:
           # The suite expects RGW's 400 InvalidPart for a partNumber past the last
           # part; AWS answers 416 InvalidPartNumber, which is what we return.
           sed -i "/# request PartNumber out of range/,+4{s/assert status == 400/assert status == 416/; s/assert error_code == 'InvalidPart'/assert error_code == 'InvalidPartNumber'/}" s3tests/functional/test_s3.py
+          grep -q "assert error_code == 'InvalidPartNumber'" s3tests/functional/test_s3.py || { echo "partNumber expectation rewrite did not apply"; exit 1; }
           # Create and update s3tests.conf to use port 8004
           cp "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests.conf" "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-sql.conf"
           sed -i 's/port = 8000/port = 8004/g' "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3tests-sql.conf"
