@@ -270,24 +270,24 @@ jobs:
           test -c /dev/fuse
       - name: Repair the fusermount3 setuid bit
         uses: ./.github/actions/fix-fusermount-setuid
-      - name: Install weed
+
+      - name: Set up Go 1.x
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+
+      - name: Build weed
         run: |
-          # A freshly-published release uploads its ~50 assets one at a time, so
-          # releases/latest/download/linux_amd64.tar.gz can 404 for a few minutes
-          # after the tag goes live. Retry until the asset is available, and
-          # download to a file first so a 404 body never gets piped into tar.
-          for i in $(seq 1 20); do
-            curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
-              -o "$RUNNER_TEMP/weed.tar.gz" && break
-            echo "weed download attempt $i failed (release asset not ready?); retrying in 15s..."
-            sleep 15
-          done
-          # A per-job bin directory rather than /usr/local/bin: that is
-          # root-owned and tp01's runner account has no sudo. It also keeps
-          # one run's binary from leaking into the next on a persistent host.
+          # Build the enterprise weed from the checked-out source rather than
+          # downloading an open-source release: sw-fuse refuses to mount
+          # against a filer that does not report the seaweed-vfs conditional-
+          # mutation contract (UpdateEntry.expected_inode + ObjectTransaction
+          # PATCH_EXTENDED), which only the enterprise filer implements. An
+          # unlicensed enterprise build runs in community mode and still
+          # reports the contract; SEAWEED_DISABLE_ENTERPRISE_MODE covers the
+          # client-side license gate for the test mount.
           mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C "$RUNNER_TEMP/bin" weed
-          chmod 0755 "$RUNNER_TEMP/bin/weed"
+          (cd seaweedfs-source/enterprise/weed && go build -buildvcs=false -o "$RUNNER_TEMP/bin/weed" .)
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/weed" version
       - name: Start SeaweedFS (master+volume+filer)
@@ -383,24 +383,23 @@ jobs:
       - name: Repair the fusermount3 setuid bit
         uses: ./.github/actions/fix-fusermount-setuid
 
-      - name: Install weed
+      - name: Set up Go 1.x
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+
+      - name: Build weed
         run: |
-          # A freshly-published release uploads its ~50 assets one at a time, so
-          # releases/latest/download/linux_amd64.tar.gz can 404 for a few minutes
-          # after the tag goes live. Retry until the asset is available, and
-          # download to a file first so a 404 body never gets piped into tar.
-          for i in $(seq 1 20); do
-            curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/latest/download/linux_amd64.tar.gz \
-              -o "$RUNNER_TEMP/weed.tar.gz" && break
-            echo "weed download attempt $i failed (release asset not ready?); retrying in 15s..."
-            sleep 15
-          done
-          # A per-job bin directory rather than /usr/local/bin: that is
-          # root-owned and tp01's runner account has no sudo. It also keeps
-          # one run's binary from leaking into the next on a persistent host.
+          # Build the enterprise weed from the checked-out source rather than
+          # downloading an open-source release: sw-fuse refuses to mount
+          # against a filer that does not report the seaweed-vfs conditional-
+          # mutation contract (UpdateEntry.expected_inode + ObjectTransaction
+          # PATCH_EXTENDED), which only the enterprise filer implements. An
+          # unlicensed enterprise build runs in community mode and still
+          # reports the contract; SEAWEED_DISABLE_ENTERPRISE_MODE covers the
+          # client-side license gate for the test mount.
           mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$RUNNER_TEMP/weed.tar.gz" -C "$RUNNER_TEMP/bin" weed
-          chmod 0755 "$RUNNER_TEMP/bin/weed"
+          (cd seaweedfs-source/enterprise/weed && go build -buildvcs=false -o "$RUNNER_TEMP/bin/weed" .)
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/weed" version
 
