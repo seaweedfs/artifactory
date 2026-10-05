@@ -264,15 +264,36 @@ def go_bootstrap(out, env, verify=False):
     finally:save(out/('go-bootstrap-'+record['phase']+'.json'),record)
 
 
+def go_setup_outcome(out,env):
+    action='924ae3a1cded613372ab5595356fb5720e22ba16';outcome=env.get('TM_GO_SETUP_OUTCOME','');deadline=time.monotonic()+5;previous=signal.getsignal(signal.SIGALRM)
+    record=dict(state='UNKNOWN',error_code='GO_SETUP_UNOBSERVED',outcome=outcome,run_id=env.get('GITHUB_RUN_ID'),attempt=env.get('GITHUB_RUN_ATTEMPT'),ci_sha=env.get('GITHUB_SHA'),source_sha=env.get('TM_SOURCE_SHA'),action=action,step_id='tm-go-setup',logs='Actions run/attempt tm-connected-diagnostic Setup diagnostic Go step logs')
+    def expired(signum,frame):raise ValueError('GO_SETUP_RECEIPT_DEADLINE')
+    signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,5)
+    try:
+        require(env.get('TM_PHASE')=='build' and env.get('TM_GO_SETUP_ACTION')==action and HEX40.fullmatch(env.get('GITHUB_SHA','')) and all(re.fullmatch('[1-9][0-9]*',env.get(k,'')) for k in ('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')),'GO_SETUP_ASSOCIATION')
+        if outcome!='success':
+            record.update(state='REFUSED' if outcome in ('failure','skipped') else 'UNKNOWN',error_code={'failure':'GO_SETUP_FAILURE_OR_TIMEOUT','skipped':'GO_SETUP_SKIPPED','cancelled':'GO_SETUP_CANCELLED_UNKNOWN'}.get(outcome,'GO_SETUP_OUTCOME_MISSING_OR_UNKNOWN'));raise ValueError(record['error_code'])
+        record['state']='REFUSED';record['error_code']='GO_SETUP_BOOTSTRAP_UNBOUND'
+        bootstrap=json.loads((out/'go-bootstrap-before-setup.json').read_text());root=out/'INPUT/bootstrap'
+        require(bootstrap['state']=='PASS' and bootstrap['source_sha']==env['TM_SOURCE_SHA']==GO_BOOTSTRAP_MONO and bootstrap['sha256']==GO_BOOTSTRAP_SHA and bootstrap['actor_id']==env.get('TM_MANAGER_ACTOR_ID')==env.get('GITHUB_ACTOR_ID'),'GO_SETUP_BOOTSTRAP_UNBOUND')
+        manifest(root,bootstrap['manifest_sha256']);require(sha(root/'enterprise/go.mod')==GO_BOOTSTRAP_SHA and time.monotonic()<deadline,'GO_SETUP_BOOTSTRAP_DRIFT_OR_DEADLINE')
+        record.update(state='PASS',error_code=None,bootstrap_manifest=bootstrap['manifest_sha256'],bootstrap_sha256=GO_BOOTSTRAP_SHA)
+    except BaseException as error:record.update(error=repr(error),error_code=str(error) if isinstance(error,ValueError) else record['error_code']);raise
+    finally:
+        signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous);record['ended_monotonic']=time.monotonic();save(out/'go-setup-outcome.json',record)
+
 def admitted_build_root(out,env):
     target=runner_build_root(env,fresh=False);preflight=json.loads((out/'runner-preflight.json').read_text());require(preflight['state']=='PASS' and preflight['root']==str(target) and preflight['run_id']==env['GITHUB_RUN_ID'] and preflight['attempt']==env['GITHUB_RUN_ATTEMPT'],'RUNNER_PREFLIGHT_UNBOUND');actual=target.stat();require(dict(dev=actual.st_dev,inode=actual.st_ino,uid=actual.st_uid)==preflight['root_identity'] and actual.st_uid==os.getuid(),'BUILD_ROOT_IDENTITY_DRIFT')
     return target
 
+def admitted_go_setup(out,env):
+    row=json.loads((out/'go-setup-outcome.json').read_text());require(row['state']=='PASS' and row['action']=='924ae3a1cded613372ab5595356fb5720e22ba16' and row['bootstrap_sha256']==GO_BOOTSTRAP_SHA and all(row[key]==env[value] for key,value in [('run_id','GITHUB_RUN_ID'),('attempt','GITHUB_RUN_ATTEMPT'),('ci_sha','GITHUB_SHA'),('source_sha','TM_SOURCE_SHA')]),'GO_SETUP_NOT_ADMITTED')
 
 def build(source, out, env):
     require(command(['git','rev-parse','HEAD'],out,'mono-head',time.monotonic()+10,cwd=source).decode().strip() == env['TM_SOURCE_SHA'], 'SOURCE_HEAD_DRIFT')
     require(not command(['git','status','--porcelain','--untracked-files=normal'],out,'mono-clean-before',time.monotonic()+10,cwd=source).strip(),'SOURCE_TREE_DIRTY')
     require((source/'enterprise/rust/sw-rdma-loader/src/tm_adapter_tests.rs').is_file(), 'SOURCE_ROW_MISSING')
+    admitted_go_setup(out,env)
     go_bootstrap(out,env,verify=True)
     snapshots = {str(p.relative_to(source)):sha(p) for name in ('enterprise/rust','enterprise/seaweed-volume') for p in [source/name/'Cargo.toml',source/name/'Cargo.lock']}
     snapshots.update({name:sha(source/name) for name in ('enterprise/go.mod','enterprise/go.sum')})
@@ -553,7 +574,7 @@ def upload_proof(output, env, artifact_id, artifact_digest):
     save(output/'publication-proof.json',dict(state='UPLOAD_OBSERVED_NOT_FINAL_RUN_VERDICT',artifact=row))
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('phase',choices=['preflight','prepare','bootstrap','bootstrap-verify','build','run','guardian','publish']); parser.add_argument('output'); parser.add_argument('extra',nargs='*'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('phase',choices=['preflight','prepare','bootstrap','bootstrap-verify','setup-outcome','build','run','guardian','publish']); parser.add_argument('output'); parser.add_argument('extra',nargs='*'); args=parser.parse_args()
     if args.phase=='guardian':
         item=json.loads(pathlib.Path(args.output).read_text()); guardian(item['bind'],pathlib.Path(args.extra[0]),item['replacements']); return
     out=pathlib.Path(args.output).resolve(); env=os.environ.copy()
@@ -564,7 +585,8 @@ def main():
     if args.phase=='publish': upload_proof(out,env,*args.extra); return
     try:
         if args.phase in ('bootstrap','bootstrap-verify'):go_bootstrap(out,env,args.phase=='bootstrap-verify');return
-        if args.phase=='preflight':runner_preflight(out,env);return
+        if args.phase=='setup-outcome':go_setup_outcome(out,env);return
+        if args.phase=='preflight':admitted_go_setup(out,env);runner_preflight(out,env);return
         if args.phase=='build':
             require(env.get('TM_BUILD_AUTHORITY')=='BUILD_ONLY '+env['TM_SOURCE_SHA'] and env.get('TM_MANAGER_ACTOR_ID') and env.get('TM_MANAGER_ACTOR_ID')==env.get('GITHUB_ACTOR_ID'),'BUILD_AUTHORITY_UNBOUND')
             state=build(pathlib.Path(env['GITHUB_WORKSPACE'])/'seaweedfs-source',out,env)

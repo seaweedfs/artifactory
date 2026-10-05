@@ -483,6 +483,7 @@ jobs:
         if: inputs.diagnostic_phase == 'build'
         run: python3 .github/scripts/rdma-tm-diagnostic.py bootstrap "$TM_RECEIPT"
       - name: Setup diagnostic Go from authenticated exact source bytes
+        id: tm-go-setup
         if: inputs.diagnostic_phase == 'build'
         timeout-minutes: 5
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6, Node24; tp01 runner2.337.0
@@ -490,6 +491,13 @@ jobs:
           go-version-file: tm-diagnostic/INPUT/bootstrap/enterprise/go.mod
           check-latest: false
           cache: false
+      - name: Record diagnostic Go setup outcome on every result
+        if: always() && inputs.diagnostic_phase == 'build'
+        timeout-minutes: 1
+        env:
+          TM_GO_SETUP_OUTCOME: ${{ steps.tm-go-setup.outcome }}
+          TM_GO_SETUP_ACTION: 924ae3a1cded613372ab5595356fb5720e22ba16
+        run: python3 .github/scripts/rdma-tm-diagnostic.py setup-outcome "$TM_RECEIPT"
       - name: First BUILD runner preflight (no compiler or service)
         if: inputs.diagnostic_phase == 'build'
         run: python3 .github/scripts/rdma-tm-diagnostic.py preflight "$TM_RECEIPT"

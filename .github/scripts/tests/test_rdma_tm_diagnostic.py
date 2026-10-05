@@ -102,6 +102,34 @@ class GoBootstrap(unittest.TestCase):
         # Exact LF prefix from reviewed 106e1fc1; no dependence on git/worktree aliases.
         self.assertEqual(hashlib.sha256(workflow.split('  tm-connected-diagnostic:',1)[0].encode()).hexdigest(),'3d52314c5858d523a07793d9893aaa2f3160c9c11d0f1fa215f4d8ddb34e6a51')
 
+class GoSetupReceipt(unittest.TestCase):
+    def test_real_outcome_entry_preserves_refusals_and_bindings(self):
+        for outcome in ('success','failure','cancelled','skipped','','foreign-action','missing-bootstrap','drift'):
+            with self.subTest(outcome=outcome),tempfile.TemporaryDirectory() as directory:
+                out=pathlib.Path(directory);env=dict(os.environ,TM_PHASE='build',TM_SOURCE_SHA=a.GO_BOOTSTRAP_MONO,TM_BUILD_AUTHORITY='BUILD_ONLY '+a.GO_BOOTSTRAP_MONO,TM_MANAGER_ACTOR_ID='6647175',GITHUB_ACTOR_ID='6647175',GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='1',GITHUB_SHA='a'*40,TM_GO_SETUP_ACTION='924ae3a1cded613372ab5595356fb5720e22ba16',TM_GO_SETUP_OUTCOME=outcome)
+                if outcome!='missing-bootstrap':a.go_bootstrap(out,env)
+                if outcome=='foreign-action':env.update(TM_GO_SETUP_OUTCOME='success',TM_GO_SETUP_ACTION='b'*40)
+                if outcome=='missing-bootstrap':env['TM_GO_SETUP_OUTCOME']='success'
+                if outcome=='drift':env['TM_GO_SETUP_OUTCOME']='success';(out/'INPUT/bootstrap/enterprise/go.mod').write_bytes(b'WRONG')
+                child=subprocess.run([sys.executable,str(SCRIPTS/'rdma-tm-diagnostic.py'),'setup-outcome',str(out)],env=env,capture_output=True,timeout=10)
+                record=json.loads((out/'go-setup-outcome.json').read_text());self.assertEqual(record['outcome'],env['TM_GO_SETUP_OUTCOME']);self.assertEqual(record['run_id'],'123');self.assertEqual(record['ci_sha'],'a'*40);self.assertEqual(record['step_id'],'tm-go-setup');self.assertTrue(record['logs'])
+                if outcome=='success':
+                    self.assertEqual(child.returncode,0);self.assertEqual(record['state'],'PASS');a.admitted_go_setup(out,env)
+                    for key in ('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_SHA','TM_SOURCE_SHA'):
+                        bad=dict(env,**{key:'999' if key.startswith('GITHUB_RUN') else 'b'*40})
+                        with self.assertRaisesRegex(ValueError,'GO_SETUP_NOT_ADMITTED'):a.admitted_go_setup(out,bad)
+                else:
+                    self.assertNotEqual(child.returncode,0);self.assertNotEqual(record['state'],'PASS')
+                    with self.assertRaisesRegex(ValueError,'GO_SETUP_NOT_ADMITTED'):a.admitted_go_setup(out,env)
+                    if outcome=='failure':self.assertEqual(record['error_code'],'GO_SETUP_FAILURE_OR_TIMEOUT')
+                    if outcome=='cancelled':self.assertEqual(record['state'],'UNKNOWN');self.assertEqual(record['error_code'],'GO_SETUP_CANCELLED_UNKNOWN')
+                    self.assertEqual(json.loads((out/'state.json').read_text())['state'],'REFUSED_OR_UNKNOWN')
+                a.manifest(out)
+    def test_always_outcome_consumer_precedes_admission_and_upload(self):
+        diagnostic=(SCRIPTS.parent/'workflows/rdma-softroce-tests.yml').read_text().split('  tm-connected-diagnostic:',1)[1]
+        start=diagnostic.index('Record diagnostic Go setup outcome');end=diagnostic.index('First BUILD runner preflight');consumer=diagnostic[start:end]
+        self.assertLess(start,diagnostic.index('Upload raw'));self.assertIn("if: always() && inputs.diagnostic_phase == 'build'",consumer);self.assertIn('timeout-minutes: 1',consumer);self.assertIn('steps.tm-go-setup.outcome',consumer);self.assertIn('setup-outcome',consumer);self.assertIn('id: tm-go-setup',diagnostic);self.assertNotIn('continue-on-error',diagnostic)
+
 class Fixture(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='tm-ci-control-'); self.dir=pathlib.Path(self.temp.name)
