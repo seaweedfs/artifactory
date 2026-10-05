@@ -49,15 +49,36 @@ def routing(event, inputs, environment):
 
 def command(argv, output, label, deadline, env=None, cwd=None):
     remaining = deadline-time.monotonic(); require(remaining > 0, 'ABSOLUTE_DEADLINE')
-    with (output/(label+'.stdout.raw')).open('wb') as out, (output/(label+'.stderr.raw')).open('wb') as err:
-        child = subprocess.Popen(argv, stdout=out, stderr=err, env=env, cwd=cwd, start_new_session=True)
-        try: rc = child.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGTERM)
-            try: child.wait(timeout=1)
-            except subprocess.TimeoutExpired: os.killpg(child.pid, signal.SIGKILL); child.wait()
-            rc = 124
-    save(output/(label+'.exit.json'), dict(argv=argv, exit=rc, deadline=deadline, end=time.monotonic()))
+    child=None; identity=None; primary=None; cleanup=None;rc=None
+    try:
+        with (output/(label+'.stdout.raw')).open('wb') as out, (output/(label+'.stderr.raw')).open('wb') as err:
+            child = subprocess.Popen(argv, stdout=out, stderr=err, env=env, cwd=cwd, start_new_session=True)
+            identity=proc(child.pid)
+            rc=child.wait(timeout=max(.001,deadline-time.monotonic()))
+    except BaseException as error:
+        primary=error
+        if child is not None:
+            # Unreaped direct Popen child owns this PID; never address a foreign reaped PID.
+            cleanup=dict(pid=child.pid,identity=identity,tail_seconds=2,checked=False)
+            try:
+                if child.poll() is None:
+                    actual=proc(child.pid)
+                    require(actual and (identity is None or actual['starttime']==identity['starttime']),'COMMAND_CHILD_IDENTITY_DRIFT')
+                    identity=actual;cleanup['identity']=actual
+                    try:os.killpg(child.pid,signal.SIGTERM)
+                    except ProcessLookupError:pass
+                    try:child.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        try:os.killpg(child.pid,signal.SIGKILL)
+                        except ProcessLookupError:pass
+                        child.wait(timeout=1)
+                require(child.returncode is not None,'COMMAND_CHILD_NOT_REAPED')
+                cleanup.update(checked=True,reaped=True,actual_exit=child.returncode)
+            except BaseException as stop_error:cleanup['error']=repr(stop_error)
+        rc=124 if isinstance(error,subprocess.TimeoutExpired) else child.returncode if child is not None else None
+    finally:
+        save(output/(label+'.exit.json'),dict(argv=argv,exit=rc,deadline=deadline,end=time.monotonic(),primary_refusal=repr(primary) if primary else None,cleanup=cleanup))
+    if primary is not None and not isinstance(primary,subprocess.TimeoutExpired):raise primary
     require(rc == 0 and time.monotonic() < deadline, 'COMMAND_REFUSED '+label)
     return (output/(label+'.stdout.raw')).read_bytes()
 

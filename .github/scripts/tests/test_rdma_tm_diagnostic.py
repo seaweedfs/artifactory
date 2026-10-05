@@ -387,3 +387,29 @@ class BuildRunnerAdmission(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'BUILD_RUN_IDENTITY'):a.runner_build_root(env)
             env['GITHUB_RUN_ID']='1';target=a.runner_build_root(env);target.mkdir();target.rmdir();target.symlink_to(pathlib.Path(td),target_is_directory=True)
             with self.assertRaisesRegex(ValueError,'BUILD_ROOT_ALIAS'):a.runner_build_root(env,fresh=False)
+
+
+class PreflightRealAlarmCleanup(unittest.TestCase):
+    def test_alarm_stops_and_reaps_real_owned_child(self):
+        original_spawn=subprocess.Popen;original_timer=signal.setitimer;children=[]
+        with tempfile.TemporaryDirectory() as td:
+            base=pathlib.Path(td);workspace=base/'workspace';workspace.mkdir();out=base/'raw';out.mkdir()
+            env=dict(os.environ,GITHUB_WORKSPACE=str(workspace),GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='1',RUNNER_NAME='inert-real-child',TM_SOURCE_SHA='a'*40,TM_BUILD_AUTHORITY='BUILD_ONLY '+'a'*40,TM_MANAGER_ACTOR_ID='6647175',GITHUB_ACTOR_ID='6647175')
+            def spawn(argv,**kwargs):
+                child=original_spawn([sys.executable,'-u','-c',"import time,signal;signal.signal(signal.SIGTERM,signal.SIG_IGN);print('REAL_CHILD_STARTED',flush=True);time.sleep(5)"],**kwargs);children.append(child);return child
+            try:
+                with patch.object(a.shutil,'which',return_value='/inert/tool'),patch.object(a.subprocess,'Popen',side_effect=spawn),patch.object(signal,'setitimer',side_effect=lambda kind,seconds:original_timer(kind,.15 if seconds else 0)):
+                    with self.assertRaisesRegex(ValueError,'RUNNER_PREFLIGHT_DEADLINE'):a.runner_preflight(out,env)
+                self.assertEqual(len(children),1);child=children[0]
+                self.assertIsNotNone(child.returncode);self.assertIsNone(a.proc(child.pid))
+                with self.assertRaises(ChildProcessError):os.waitpid(child.pid,os.WNOHANG)
+                record=json.loads((out/'runner-whoami.exit.json').read_text());self.assertIn('RUNNER_PREFLIGHT_DEADLINE',record['primary_refusal']);self.assertTrue(record['cleanup']['checked']);self.assertTrue(record['cleanup']['reaped']);self.assertEqual(record['cleanup']['actual_exit'],-signal.SIGKILL)
+                self.assertIn(b'REAL_CHILD_STARTED',(out/'runner-whoami.stdout.raw').read_bytes());self.assertTrue((out/'runner-whoami.stderr.raw').is_file());self.assertEqual(json.loads((out/'runner-preflight.json').read_text())['error_code'],'RUNNER_PREFLIGHT_DEADLINE')
+                if os.environ.get('TM_ALARM_CONTROL_RECEIPT'):
+                    import shutil
+                    retained=pathlib.Path(os.environ['TM_ALARM_CONTROL_RECEIPT']);retained.mkdir(parents=True,exist_ok=True)
+                    for path in out.iterdir():shutil.copyfile(path,retained/path.name)
+                    a.save(retained/'child-proof.json',dict(pid=child.pid,identity=record['cleanup']['identity'],absent=a.proc(child.pid) is None,reaped=True,grade='LOCAL_REAL_CHILD_CONTROL_NOT_HOST',alarm_seconds=.15,admission_seconds=20,term_ignored=True))
+            finally:
+                for child in children:
+                    if child.poll() is None:os.killpg(child.pid,signal.SIGKILL);child.wait(timeout=1)
