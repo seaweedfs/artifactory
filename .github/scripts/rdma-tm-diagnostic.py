@@ -352,13 +352,25 @@ def wait_ci(api, bind, output, deadline):
         if not active: return
         require(deadline-time.monotonic()>1,'CI_ACTIVE_SETUP_BLOCKED'); time.sleep(min(1,deadline-time.monotonic()))
 
+def owned_root(root, lock_path, work='/opt/work'):
+    root=pathlib.Path(root); base=pathlib.Path(work).resolve()
+    require(not root.exists() and not root.is_symlink(),'OWNED_ROOT_NOT_FRESH')
+    canonical=root.resolve()
+    require(canonical.parent==base and canonical.name.startswith('codex03-tm-') and len(canonical.name)>len('codex03-tm-') and pathlib.Path(lock_path).resolve()==base/'siw-lab.lock','OWNED_ROOT_OR_LOCK')
+    return canonical
+
+def test_environment(bind, root, deadline):
+    ms=int((deadline-time.monotonic())*1000)
+    require(0 < ms <= 540000,'TEST_BODY_BUDGET')
+    return service_env({**bind['test_env'],'TM_CHILD_EVIDENCE_FILE':str(root/'tm-child.raw'),'TM_BODY_REMAINING_MS':str(ms)})
+
 def runtime(bind, input_root, build_root, output, api, private=False):
-    root=pathlib.Path(bind['root']); require(not root.exists() and str(root)==str(root.resolve()),'OWNED_ROOT_NOT_FRESH')
+    root=pathlib.Path(bind['root']); require(not root.exists(),'OWNED_ROOT_NOT_FRESH')
     if not private:
-        require(str(root).startswith('/opt/work/codex03-tm-') and bind['lock_path']=='/opt/work/siw-lab.lock', 'OWNED_ROOT_OR_LOCK')
+        root=owned_root(root,bind['lock_path'])
         require(bind['whole_seconds']==600 and bind['reserve_seconds']==60 and bind['ports']==PORTS,'CLOCK_OR_PORTS')
     replacements={'ROOT':str(root),'INPUT':str(input_root),'BUILD':str(build_root)}
-    b=dict(bind,caller=proc(os.getpid()));
+    b=dict(bind,root=str(root),caller=proc(os.getpid()));
     if private: b['local_inert_fixture']=True
     else: require('local_inert_fixture' not in b,'PRIVATE_FIXTURE_FORBIDDEN')
     save(output/'guardian-input.json',dict(bind=b,replacements=replacements))
@@ -371,7 +383,7 @@ def runtime(bind, input_root, build_root, output, api, private=False):
             require(state in ('ADMISSION','SETUP') and child.poll() is None,'SETUP_REFUSED'); time.sleep(.05)
         else: raise ValueError('GUARD_READY_DEADLINE')
         clock=json.loads((root/'clock.json').read_text()); deadline=min(clock['body_deadline'],time.monotonic()+360)
-        env=service_env({**bind['test_env'],'TM_CHILD_EVIDENCE_FILE':str(root/'tm-child.raw'),'TM_SHARED_REMAINING_MS':str(max(1,int((deadline-time.monotonic())*1000)))})
+        env=test_environment(bind,root,deadline)
         argv=[str(build_root/'loader.elf'),'--ignored','--exact',decoder.ROW,'--nocapture','--test-threads=1']
         with (root/'test.stdout.raw').open('wb') as out,(root/'test.stderr.raw').open('wb') as err:
             test=subprocess.Popen(argv,env=env,stdout=out,stderr=err,start_new_session=True)

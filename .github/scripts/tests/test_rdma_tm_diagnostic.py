@@ -177,6 +177,23 @@ class Fixture(unittest.TestCase):
         self.assertTrue((out/'runtime-raw/tm-child.raw').is_file()); self.assertTrue((root/'probe-1.exit.json').is_file())
         self.assertEqual(json.loads((root/'ledger.jsonl').read_text().splitlines()[-1])['event'],'END')
         with open(bind['lock_path'],'a') as lock:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    def test_real_body_budget_consumer_at_exec(self):
+        env=a.test_environment({'test_env':{}},self.dir,time.monotonic()+3)
+        consumer='import os;ms=int(os.environ["TM_BODY_REMAINING_MS"]);assert 0<ms<=540000;print(ms)'
+        self.assertEqual(subprocess.run([sys.executable,'-c',consumer],env=env,capture_output=True).returncode,0)
+        broken=dict(env);broken['TM_SHARED_REMAINING_MS']=broken.pop('TM_BODY_REMAINING_MS')
+        self.assertNotEqual(subprocess.run([sys.executable,'-c',consumer],env=broken,capture_output=True).returncode,0)
+        for delta in (-1,541):self.reject(lambda:a.test_environment({'test_env':{}},self.dir,time.monotonic()+delta),'TEST_BODY_BUDGET')
+    def test_production_root_symlink_and_foreign(self):
+        real=self.dir/'relocated'/'opt'/'work';real.mkdir(parents=True)
+        alias=self.dir/'opt-work';alias.symlink_to(real,target_is_directory=True)
+        candidate=alias/'codex03-tm-run';lock=alias/'siw-lab.lock'
+        self.assertEqual(a.owned_root(candidate,lock,alias),real/'codex03-tm-run')
+        self.assertEqual(a.owned_root(real/'codex03-tm-run',real/'siw-lab.lock',alias),real/'codex03-tm-run')
+        for root,bad_lock in [(self.dir/'codex03-tm-foreign',lock),(alias/'codex03-tm-run'/'escape',lock),(candidate,self.dir/'siw-lab.lock')]:
+            self.reject(lambda:a.owned_root(root,bad_lock,alias),'OWNED_ROOT_OR_LOCK')
+        candidate.symlink_to(self.dir/'foreign',target_is_directory=True)
+        self.reject(lambda:a.owned_root(candidate,lock,alias),'OWNED_ROOT_NOT_FRESH')
     def test_whole_caller_setup_error(self): self.failure_case('setup-error',False)
     def test_whole_caller_producer_timeout(self): self.failure_case('probe-timeout',False)
     def test_whole_caller_child_error(self): self.failure_case('child-error',False)
