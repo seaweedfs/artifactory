@@ -20,6 +20,28 @@ on:
         required: false
         default: 'ubuntu-22.04'
 
+      diagnostic_profile:
+        description: 'Default-off TM diagnostic'
+        type: choice
+        options: [none, tm-connected-v1]
+        default: none
+      mono_sha:
+        description: 'Exact mono SHA for diagnostics'
+        default: ''
+      diagnostic_phase:
+        type: choice
+        options: [build, run]
+        default: build
+      diagnostic_objects:
+        description: 'Exact INPUT and separate authorization artifact references (JSON)'
+        default: ''
+      build_authority:
+        description: 'Manager BUILD_ONLY <monoSHA> dispatch; not RUN authority'
+        default: ''
+      fetch_authority:
+        description: 'Optional manager FETCH_LOCKED <monoSHA> dispatch'
+        default: ''
+
 concurrency:
   # `inputs.*` is empty in the workflow-level concurrency context; read the dispatch
   # input through github.event (2026-09-18: a tp01 dispatch cancelled another
@@ -49,6 +71,7 @@ jobs:
   # Fast gate: the enterprise/rust workspace builds and its unit tests pass with
   # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
   rdma-off-build:
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.diagnostic_profile || 'none') == 'none'
     name: RDMA-off build + unit tests
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 20
@@ -104,6 +127,7 @@ jobs:
   # drive a real volume server + gRPC + one-sided RDMA. Needs the siw kernel
   # module and root for verbs/rdma_cm.
   rdma-softroce-e2e:
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.diagnostic_profile || 'none') == 'none'
     name: software RDMA e2e (read + staged write)
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 40
@@ -412,3 +436,57 @@ jobs:
             echo "- sw-rdma-vfs (real-rdma): ${vfs:-none}"
             echo "- seaweed-volume (rdma,test-support): ${vol:-none}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  tm-connected-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.diagnostic_profile || 'none') != 'none'
+    runs-on: tp01
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      TM_SOURCE_SHA: ${{ inputs.mono_sha }}
+      TM_PHASE: ${{ inputs.diagnostic_phase }}
+      TM_BUILD_AUTHORITY: ${{ inputs.build_authority }}
+      TM_FETCH_AUTHORITY: ${{ inputs.fetch_authority }}
+      TM_MANAGER_ACTOR_ID: ${{ vars.TM_MANAGER_ACTOR_ID }}
+      TM_PUBLICATION_WORKFLOW_ID: ${{ vars.TM_PUBLICATION_WORKFLOW_ID }}
+      TM_PUBLICATION_HEAD_SHA: ${{ vars.TM_PUBLICATION_HEAD_SHA }}
+      TM_RECEIPT: ${{ github.workspace }}/tm-diagnostic
+    steps:
+      - name: Checkout reviewed diagnostic source
+        uses: actions/checkout@v6
+      - name: Validate manual allowlisted profile and capture dispatch
+        run: python3 .github/scripts/rdma-tm-diagnostic.py prepare "$TM_RECEIPT"
+      - name: Clone exact mono source for BUILD only
+        if: inputs.diagnostic_phase == 'build'
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+      - name: Build all three source-bound artifacts without services
+        if: inputs.diagnostic_phase == 'build'
+        run: python3 .github/scripts/rdma-tm-diagnostic.py build "$TM_RECEIPT"
+      - name: Authenticate INPUT and independent manager envelope, then owned RUN
+        if: inputs.diagnostic_phase == 'run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/rdma-tm-diagnostic.py run "$TM_RECEIPT"
+      - name: Upload raw and refused evidence on every outcome
+        id: diagnostic-upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tm-connected-${{ inputs.diagnostic_phase }}-${{ inputs.mono_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tm-diagnostic/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Observe exact publication via read-only Actions API
+        if: always() && steps.diagnostic-upload.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.diagnostic-upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.diagnostic-upload.outputs.artifact-digest }}
+        run: python3 .github/scripts/rdma-tm-diagnostic.py publish "$TM_RECEIPT" "$ARTIFACT_ID" "$ARTIFACT_DIGEST"
