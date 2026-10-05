@@ -170,16 +170,12 @@ class Actions:
                 archive.extract(item, dest)
         return run, artifact
 
-def authorize(bind, envelope, trust):
-    require(trust.get('manager_actor_id') and trust.get('publication_workflow_id') and HEX40.fullmatch(trust.get('publication_head_sha', '')), 'AUTHORITY_UNBOUND')
-    require(str(trust['dispatch_actor_id']) == str(trust['manager_actor_id']), 'FOREIGN_MANAGER_DISPATCH')
-    publication = trust['publication']
-    require(str(publication['actor']['id']) == str(trust['manager_actor_id']) and str(publication['workflow_id']) == str(trust['publication_workflow_id']) and publication['head_sha'] == trust['publication_head_sha'], 'FOREIGN_AUTHORITY_PUBLICATION')
-    require(not any(k in bind for k in ('launch', 'envelope', 'envelope_id', 'envelope_digest')), 'AUTHORITY_CYCLE')
-    require(envelope['workspace'] == 'seaweed' and envelope['channelId'] == '6a9c32d9c96e4d19d8100d51' and envelope['sender'] == '1207574175858819073', 'FOREIGN_HULY_AUTHORITY')
-    launches=re.findall(r'(?<!\w)LAUNCH\s+([0-9a-f]{64})(?![0-9a-f])',envelope['text'])
+def authorize(bind, request, env, actor_id):
+    require(env.get('TM_MANAGER_ACTOR_ID') and str(actor_id)==env['TM_MANAGER_ACTOR_ID']==env.get('GITHUB_ACTOR_ID'),'FOREIGN_MANAGER_DISPATCH')
+    require(bind['ci_sha']==env['GITHUB_SHA'] and bind['source_sha']==env['TM_SOURCE_SHA'],'SOURCE_OR_ADAPTER_BIND_DRIFT')
+    require(re.fullmatch(r'[0-9a-f]{24}',request.get('launch_id','')) and re.fullmatch(r'[0-9a-f]{64}',request.get('input_manifest','')),'LAUNCH_RECEIPT_UNBOUND')
     require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}',bind['run_id']),'LOGICAL_RUN_ID')
-    require(envelope['id']==trust['envelope_id'] and launches==[trust['input_manifest']] and re.search(r'(?<![\w.-])'+re.escape(bind['run_id'])+r'(?![\w.-])',envelope['text']),'LAUNCH_CROSS_REFERENCE')
+
 def fetch_policy(source, env):
     require(not any(k.startswith('CARGO_SOURCE_') or k.startswith('CARGO_REGISTRIES_') for k in env),'FETCH_REGISTRY_OVERRIDE');paths=set()
     for workspace in ('enterprise/rust','enterprise/seaweed-volume'):

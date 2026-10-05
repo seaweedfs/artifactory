@@ -450,8 +450,6 @@ jobs:
       TM_BUILD_AUTHORITY: ${{ inputs.build_authority }}
       TM_FETCH_AUTHORITY: ${{ inputs.fetch_authority }}
       TM_MANAGER_ACTOR_ID: ${{ vars.TM_MANAGER_ACTOR_ID }}
-      TM_PUBLICATION_WORKFLOW_ID: ${{ vars.TM_PUBLICATION_WORKFLOW_ID }}
-      TM_PUBLICATION_HEAD_SHA: ${{ vars.TM_PUBLICATION_HEAD_SHA }}
       TM_RECEIPT: ${{ github.workspace }}/tm-diagnostic
     steps:
       - name: Checkout reviewed diagnostic source
@@ -526,7 +524,7 @@ jobs:
       - name: Build all three source-bound artifacts without services
         if: inputs.diagnostic_phase == 'build'
         run: python3 .github/scripts/rdma-tm-diagnostic.py build "$TM_RECEIPT"
-      - name: Authenticate INPUT and independent manager envelope, then owned RUN
+      - name: Authenticate manager actor and exact INPUT SHAs, then owned RUN
         if: inputs.diagnostic_phase == 'run'
         env:
           GH_TOKEN: ${{ github.token }}

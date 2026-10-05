@@ -85,7 +85,7 @@ class ProbeControls(unittest.TestCase):
             with patch.object(subprocess.Popen,'wait',interrupted):
                 with self.assertRaises(KeyboardInterrupt):a.command([sys.executable,'-c','import time;time.sleep(60)'],out,'cancel',time.monotonic()+1)
             self.assertIsNone(a.proc(calls[0]));self.assertTrue(json.loads((out/'cancel.exit.json').read_text())['cleanup']['reaped'])
-    def test_output_manifest_allows_authenticated_envelope_not_input_cycle(self):
+    def test_output_manifest_keeps_optional_historical_envelope_out_of_input(self):
         with tempfile.TemporaryDirectory() as directory:
             out=pathlib.Path(directory);(out/'envelope.json').write_text('{}');a.seal(out)
             with self.assertRaisesRegex(ValueError,'AUTHORITY_CYCLE'):a.manifest(out)

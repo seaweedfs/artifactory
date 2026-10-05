@@ -171,17 +171,15 @@ class Fixture(unittest.TestCase):
         self.assertEqual(projected.count(guard),2);projected=projected.replace(guard,'').rstrip()+'\n'
         self.assertEqual(hashlib.sha256(projected.encode()).hexdigest(),'c3596fa8a4038f5d58cc2648201e1efdd6a8356f28054209dc9452a4f964ee71')
     def authority(self):
-        bind=dict(run_id='fixture-run')
-        trust=dict(manager_actor_id='1',publication_workflow_id='2',publication_head_sha='a'*40,dispatch_actor_id=1,publication=dict(actor=dict(id=1),workflow_id=2,head_sha='a'*40),envelope_id='e'*24,input_manifest='b'*64)
-        envelope=dict(workspace='seaweed',channelId='6a9c32d9c96e4d19d8100d51',sender='1207574175858819073',id='e'*24,text='LAUNCH '+'b'*64+' fixture-run')
-        return bind,envelope,trust
-    def test_authority_cycle_drift_foreign(self):
-        bind,envelope,trust=self.authority(); a.authorize(bind,envelope,trust)
-        full=dict(envelope,text='@codex03 12:54Z '+envelope['text']+' — quote in START; no retry.')
-        a.authorize(bind,full,trust)
-        self.reject(lambda:a.authorize(bind,dict(full,text=full['text']+' LAUNCH '+'b'*64),trust),'LAUNCH_CROSS_REFERENCE')
-        for mut,reason in [(lambda b,e,t:b.update(envelope=e),'AUTHORITY_CYCLE'),(lambda b,e,t:t.update(manager_actor_id=''),'AUTHORITY_UNBOUND'),(lambda b,e,t:t.update(dispatch_actor_id=99),'FOREIGN_MANAGER'),(lambda b,e,t:t['publication']['actor'].update(id=99),'FOREIGN_AUTHORITY'),(lambda b,e,t:t['publication'].update(head_sha='c'*40),'FOREIGN_AUTHORITY'),(lambda b,e,t:e.update(sender='99'),'FOREIGN_HULY'),(lambda b,e,t:e.update(text='LAUNCH foreign'),'LAUNCH_CROSS_REFERENCE'),(lambda b,e,t:b.update(run_id='foreign'),'LAUNCH_CROSS_REFERENCE')]:
-            b,e,t=copy.deepcopy((bind,envelope,trust)); mut(b,e,t); self.reject(lambda:a.authorize(b,e,t),reason)
+        bind=dict(run_id='fixture-run',ci_sha='a'*40,source_sha='c'*40)
+        request=dict(launch_id='e'*24,input_manifest='b'*64)
+        env=dict(TM_MANAGER_ACTOR_ID='1',GITHUB_ACTOR_ID='1',GITHUB_SHA='a'*40,TM_SOURCE_SHA='c'*40)
+        return bind,request,env
+    def test_authority_actor_exact_shas_launch_receipt(self):
+        bind,request,env=self.authority();a.authorize(bind,request,env,1)
+        for mut,reason in [(lambda b,q,e:e.update(TM_MANAGER_ACTOR_ID=''),'FOREIGN_MANAGER'),(lambda b,q,e:e.update(GITHUB_ACTOR_ID='99'),'FOREIGN_MANAGER'),(lambda b,q,e:b.update(ci_sha='d'*40),'BIND_DRIFT'),(lambda b,q,e:b.update(source_sha='d'*40),'BIND_DRIFT'),(lambda b,q,e:q.update(launch_id=''),'LAUNCH_RECEIPT'),(lambda b,q,e:q.update(input_manifest='drift'),'LAUNCH_RECEIPT'),(lambda b,q,e:b.update(run_id='bad id'),'LOGICAL_RUN_ID')]:
+            b,q,e=copy.deepcopy((bind,request,env));mut(b,q,e);self.reject(lambda:a.authorize(b,q,e,1),reason)
+        self.reject(lambda:a.authorize(bind,request,env,99),'FOREIGN_MANAGER')
     def test_manifest_external_envelope_and_mutation(self):
         root=self.dir/'input'; root.mkdir(); (root/'bind.json').write_text('{}'); a.seal(root); before=a.sha(root/'manifest.sha256'); a.manifest(root,before)
         external=self.dir/'envelope.json'; external.write_text('{}'); self.assertEqual(before,a.sha(root/'manifest.sha256'))
@@ -326,10 +324,10 @@ class Fixture(unittest.TestCase):
             api.artifact(reference,self.dir/'download',time.monotonic()+2)
         self.assertEqual(download.call_args.args[0],'https://signed.invalid/object');self.assertEqual((self.dir/'download/bind.json').read_text(),'{}')
     def test_unbound_authority_refuses_before_artifact_or_services(self):
-        event=self.dir/'event.json';event.write_text(json.dumps(dict(inputs=dict(diagnostic_objects=json.dumps(dict(envelope_id='x',input_manifest='y'))),sender=dict(id=1))))
+        event=self.dir/'event.json';event.write_text(json.dumps(dict(inputs=dict(diagnostic_objects=json.dumps(dict(launch_id='x',input_manifest='y'))),sender=dict(id=1))))
         env=dict(GITHUB_REPOSITORY='fixture/repo',GH_TOKEN='INERT',GITHUB_EVENT_PATH=str(event))
         with patch.object(a.Actions,'artifact') as download:
-            self.reject(lambda:a.run_phase(self.dir,env),'AUTHORITY_UNBOUND');download.assert_not_called()
+            self.reject(lambda:a.run_phase(self.dir,env),'FOREIGN_MANAGER_DISPATCH');download.assert_not_called()
     def test_ci_wait_uses_actual_jobs_and_original_deadline(self):
         api=a.Actions('fixture/repo','INERT',self.dir)
         busy=dict(total_count=1,workflow_runs=[dict(id=9)])

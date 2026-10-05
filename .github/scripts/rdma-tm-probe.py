@@ -16,16 +16,12 @@ def exact_build(a,bind,env):
 def prepare(a,out,env):
     deadline=time.monotonic()+180;api=a.Actions(env['GITHUB_REPOSITORY'],env['GH_TOKEN'],out)
     event=json.loads(pathlib.Path(env['GITHUB_EVENT_PATH']).read_text());request=json.loads(event['inputs']['diagnostic_objects'])
-    trust=dict(manager_actor_id=env.get('TM_MANAGER_ACTOR_ID'),publication_workflow_id=env.get('TM_PUBLICATION_WORKFLOW_ID'),publication_head_sha=env.get('TM_PUBLICATION_HEAD_SHA'),dispatch_actor_id=event['sender']['id'],envelope_id=request['envelope_id'],input_manifest=request['input_manifest'])
-    a.require(all(trust[k] for k in ('manager_actor_id','publication_workflow_id','publication_head_sha')),'AUTHORITY_UNBOUND')
-    a.require(str(trust['dispatch_actor_id'])==str(trust['manager_actor_id']),'FOREIGN_MANAGER_DISPATCH')
+    a.require(env.get('TM_MANAGER_ACTOR_ID') and str(event['sender']['id'])==env['TM_MANAGER_ACTOR_ID']==env.get('GITHUB_ACTOR_ID'),'FOREIGN_MANAGER_DISPATCH')
     api.artifact(request['input'],out/'input',deadline);a.manifest(out/'input',request['input_manifest'])
     bind=json.loads((out/'input/bind.json').read_text());a.require('local_inert_fixture' not in bind,'PRIVATE_FIXTURE_FORBIDDEN');exact_build(a,bind,env)
     a.require(bind['phase']==env['TM_PHASE'] and bind['phase'] in ('probe','run'),'PHASE_BIND_DRIFT')
     for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):a.require(a.sha(out/'input'/name)==a.sha(a.HERE/name),'ADAPTER_DRIFT')
-    pub,_=api.artifact(request['authorization'],out/'authorization',deadline);trust['publication']=pub
-    file=out/'authorization/envelope.json';a.require(a.sha(file)==request['envelope_sha256'],'ENVELOPE_DRIFT')
-    a.authorize(bind,json.loads(file.read_text()),trust);a.save(out/'authority-association.json',dict(request=request,trust=trust))
+    a.authorize(bind,request,env,event['sender']['id']);a.save(out/'authority-association.json',dict(launch_id=request['launch_id'],input_digest=request['input_manifest'],actor_id=event['sender']['id'],ci_sha=env['GITHUB_SHA'],source_sha=env['TM_SOURCE_SHA'],run_id=bind['run_id']))
     run,_=api.artifact(bind['build_reference'],out/'build',deadline);a.manifest(out/'build')
     info=json.loads((out/'build/build.json').read_text())
     a.require(info['ci_sha']==run['head_sha']==bind['build_ci_sha'] and info['source_sha']==MONO_SHA and a.sha(out/'build/build.json')==BUILD_JSON,'BUILD_BIND_DRIFT')
