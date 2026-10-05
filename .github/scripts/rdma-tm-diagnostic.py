@@ -56,6 +56,8 @@ def command(argv, output, label, deadline, env=None, cwd=None):
             identity=proc(child.pid)
             rc=child.wait(timeout=max(.001,deadline-time.monotonic()))
     except BaseException as error:
+        # Refusal ends admission; quench its alarm so it cannot interrupt checked cleanup.
+        signal.setitimer(signal.ITIMER_REAL,0)
         primary=error
         if child is not None:
             # Unreaped direct Popen child owns this PID; never address a foreign reaped PID.
