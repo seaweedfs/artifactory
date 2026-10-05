@@ -342,3 +342,48 @@ class WorkflowActionlint(unittest.TestCase):
             self.assertIn('context \"runner\" is not allowed here',refused.stdout+refused.stderr)
 
 if __name__=='__main__': unittest.main()
+
+
+class BuildRunnerAdmission(unittest.TestCase):
+    def test_actual_preflight_and_refusals(self):
+        import shutil
+        for case in ('canonical','workspace-alias','foreign-owner','root-alias','collision','permission','missing-tool','wrong-go','deadline','authority'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as td:
+                base=pathlib.Path(td);workspace=base/'workspace';workspace.mkdir();alias=base/'alias';alias.symlink_to(workspace);out=base/'raw';out.mkdir()
+                env=dict(os.environ,GITHUB_WORKSPACE=str(alias if case=='workspace-alias' else workspace),GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='1',RUNNER_NAME='inert-fixture',TM_SOURCE_SHA='a'*40,TM_BUILD_AUTHORITY='BUILD_ONLY '+'a'*40,TM_MANAGER_ACTOR_ID='6647175',GITHUB_ACTOR_ID='6647175')
+                target=workspace/'codex03-tm-build-123-1'
+                if case=='root-alias':target.symlink_to(base,target_is_directory=True)
+                if case=='collision':target.mkdir()
+                if case=='authority':env['GITHUB_ACTOR_ID']='foreign'
+                original_stat=pathlib.Path.stat;original_mkdir=pathlib.Path.mkdir;original_timer=signal.setitimer
+                def stat(path,*args,**kwargs):
+                    row=original_stat(path,*args,**kwargs)
+                    if case=='foreign-owner' and path==workspace:
+                        values=list(row);values[4]=os.getuid()+1;return os.stat_result(values)
+                    return row
+                def mkdir(path,*args,**kwargs):
+                    if case=='permission' and path==target:raise PermissionError('fixture denied')
+                    return original_mkdir(path,*args,**kwargs)
+                def command(argv,*args,**kwargs):
+                    if case=='deadline':time.sleep(.1)
+                    return b'go version go1.25.0 linux/amd64' if case=='wrong-go' else b'go version go1.26.6 linux/amd64'
+                with patch.object(pathlib.Path,'stat',stat),patch.object(pathlib.Path,'mkdir',mkdir),patch.object(a.shutil,'which',return_value=None if case=='missing-tool' else '/inert/tool'),patch.object(a,'command',side_effect=command),patch.object(signal,'setitimer',side_effect=lambda kind,seconds:original_timer(kind,.03 if case=='deadline' and seconds else seconds)):
+                    if case in ('canonical','workspace-alias'):a.runner_preflight(out,env)
+                    else:
+                        with self.assertRaises((ValueError,PermissionError)):a.runner_preflight(out,env)
+                record=json.loads((out/'runner-preflight.json').read_text())
+                self.assertEqual(record['state'],'PASS' if case in ('canonical','workspace-alias') else 'FAIL')
+                if record['state']=='PASS':
+                    self.assertEqual(record['root'],str(target));self.assertEqual(record['root_identity']['uid'],os.getuid());self.assertEqual(record['capacity'],'CAPACITY_UNQUALIFIED');self.assertFalse((target/'admission-probe').exists())
+                    self.assertEqual(a.admitted_build_root(out,env),target)
+                    record['root_identity']['inode']+=1;a.save(out/'runner-preflight.json',record)
+                    with self.assertRaisesRegex(ValueError,'BUILD_ROOT_IDENTITY_DRIFT'):a.admitted_build_root(out,env)
+                else:self.assertIn('error_code',record)
+                self.assertEqual(signal.getitimer(signal.ITIMER_REAL),(0.0,0.0))
+
+    def test_build_root_drift_and_containment(self):
+        with tempfile.TemporaryDirectory() as td:
+            env=dict(GITHUB_WORKSPACE=td,GITHUB_RUN_ID='../foreign',GITHUB_RUN_ATTEMPT='1')
+            with self.assertRaisesRegex(ValueError,'BUILD_RUN_IDENTITY'):a.runner_build_root(env)
+            env['GITHUB_RUN_ID']='1';target=a.runner_build_root(env);target.mkdir();target.rmdir();target.symlink_to(pathlib.Path(td),target_is_directory=True)
+            with self.assertRaisesRegex(ValueError,'BUILD_ROOT_ALIAS'):a.runner_build_root(env,fresh=False)

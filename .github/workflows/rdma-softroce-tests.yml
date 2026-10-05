@@ -460,6 +460,9 @@ jobs:
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: python3 .github/scripts/rdma-tm-diagnostic.py prepare "$TM_RECEIPT"
+      - name: First BUILD runner preflight (no compiler or service)
+        if: inputs.diagnostic_phase == 'build'
+        run: python3 .github/scripts/rdma-tm-diagnostic.py preflight "$TM_RECEIPT"
       - name: Clone exact mono source for BUILD only
         if: inputs.diagnostic_phase == 'build'
         uses: ./.github/actions/clone-mono-source

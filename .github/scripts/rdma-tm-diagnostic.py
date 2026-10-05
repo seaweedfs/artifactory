@@ -165,13 +165,60 @@ def fetch_policy(source, env):
         if path.is_file():require(not re.search(r'\[\s*(?:source|registries)(?:\.|\])|replace-with',path.read_text()),'FETCH_CONFIG_OVERRIDE')
     return dict(env,CARGO_NET_RETRY='0',CARGO_REGISTRIES_CRATES_IO_PROTOCOL='sparse',CARGO_REGISTRIES_CRATES_IO_INDEX='sparse+https://index.crates.io/')
 
+def runner_build_root(env, fresh=True):
+    workspace=pathlib.Path(env['GITHUB_WORKSPACE']).resolve(strict=True)
+    require(workspace.is_dir() and workspace.stat().st_uid==os.getuid(),'RUNNER_WORKSPACE_OWNER')
+    require(all(re.fullmatch(r'[1-9][0-9]*',env[k]) for k in ('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')),'BUILD_RUN_IDENTITY')
+    target=workspace/('codex03-tm-build-'+env['GITHUB_RUN_ID']+'-'+env['GITHUB_RUN_ATTEMPT'])
+    require(not target.is_symlink(),'BUILD_ROOT_ALIAS')
+    if fresh:require(not target.exists(),'BUILD_ROOT_NOT_FRESH')
+    return target
+
+
+def runner_preflight(out, env):
+    deadline=time.monotonic()+20;previous=signal.getsignal(signal.SIGALRM)
+    def expired(signum,frame):raise ValueError('RUNNER_PREFLIGHT_DEADLINE')
+    signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,20)
+    record=dict(state='FAIL',scope='BUILD_ONLY_RUNNER_PREFLIGHT')
+    try:
+        require(env.get('TM_BUILD_AUTHORITY')=='BUILD_ONLY '+env['TM_SOURCE_SHA'] and env.get('TM_MANAGER_ACTOR_ID')==env.get('GITHUB_ACTOR_ID') and env.get('TM_MANAGER_ACTOR_ID'),'BUILD_AUTHORITY_UNBOUND')
+        target=runner_build_root(env);workspace=target.parent
+        record.update(root=str(target),workspace=str(workspace),workspace_alias=env['GITHUB_WORKSPACE'],uid=os.getuid(),runner=env['RUNNER_NAME'],run_id=env['GITHUB_RUN_ID'],attempt=env['GITHUB_RUN_ATTEMPT'])
+        require(all(shutil.which(name,path=env.get('PATH')) for name in ('whoami','rustc','cargo','go','cc','readelf','pkg-config')),'BUILD_TOOLCHAIN_MISSING')
+        record['whoami']=command(['whoami'],out,'runner-whoami',deadline,env=env).decode().strip()
+        record['free_bytes']=shutil.disk_usage(workspace).free;record['capacity']='CAPACITY_UNQUALIFIED';record['filesystem_device']=workspace.stat().st_dev
+        target.mkdir(mode=0o700);root_stat=target.stat();require(root_stat.st_uid==os.getuid(),'BUILD_ROOT_OWNER');record['root_identity']=dict(dev=root_stat.st_dev,inode=root_stat.st_ino,uid=root_stat.st_uid)
+        probe=target/'admission-probe'
+        fd=os.open(probe,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        try:
+            require(os.write(fd,b'write-probe')==11,'BUILD_PROBE_SHORT_WRITE');os.fsync(fd);opened=os.fstat(fd);actual=probe.stat();require(opened.st_uid==os.getuid() and (opened.st_dev,opened.st_ino)==(actual.st_dev,actual.st_ino),'BUILD_PROBE_IDENTITY');record['probe_identity']=dict(dev=actual.st_dev,inode=actual.st_ino,uid=actual.st_uid)
+        finally:os.close(fd);probe.unlink()
+        record['writable']=True
+        tools={name:shutil.which(name,path=env.get('PATH')) for name in ('rustc','cargo','go','cc','readelf','pkg-config')}
+        require(all(tools.values()),'BUILD_TOOLCHAIN_MISSING');record['tool_paths']=tools
+        for name,argv in [('rustc',['rustc','-Vv']),('cargo',['cargo','-Vv']),('go',['go','version']),('cc',['cc','--version'])]:
+            raw=command(argv,out,'runner-'+name,deadline,env=dict(env,GOTOOLCHAIN='local',RUSTUP_AUTO_INSTALL='0'))
+            if name=='go':
+                found=re.search(r'go(\d+)\.(\d+)\.(\d+)',raw.decode());require(found and tuple(map(int,found.groups()))>=(1,26,6),'GO_TOOLCHAIN_UNBOUND')
+        require(time.monotonic()<deadline,'RUNNER_PREFLIGHT_DEADLINE');record['state']='PASS'
+    except BaseException as error:
+        record['error']=repr(error);record['error_code']=str(error) if isinstance(error,ValueError) else 'RUNNER_PREFLIGHT_'+type(error).__name__;raise
+    finally:
+        signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous);save(out/'runner-preflight.json',record)
+
+
+def admitted_build_root(out,env):
+    target=runner_build_root(env,fresh=False);preflight=json.loads((out/'runner-preflight.json').read_text());require(preflight['state']=='PASS' and preflight['root']==str(target) and preflight['run_id']==env['GITHUB_RUN_ID'] and preflight['attempt']==env['GITHUB_RUN_ATTEMPT'],'RUNNER_PREFLIGHT_UNBOUND');actual=target.stat();require(dict(dev=actual.st_dev,inode=actual.st_ino,uid=actual.st_uid)==preflight['root_identity'] and actual.st_uid==os.getuid(),'BUILD_ROOT_IDENTITY_DRIFT')
+    return target
+
+
 def build(source, out, env):
     require(command(['git','rev-parse','HEAD'],out,'mono-head',time.monotonic()+10,cwd=source).decode().strip() == env['TM_SOURCE_SHA'], 'SOURCE_HEAD_DRIFT')
     require(not command(['git','status','--porcelain','--untracked-files=normal'],out,'mono-clean-before',time.monotonic()+10,cwd=source).strip(),'SOURCE_TREE_DIRTY')
     require((source/'enterprise/rust/sw-rdma-loader/src/tm_adapter_tests.rs').is_file(), 'SOURCE_ROW_MISSING')
     snapshots = {str(p.relative_to(source)):sha(p) for name in ('enterprise/rust','enterprise/seaweed-volume') for p in [source/name/'Cargo.toml',source/name/'Cargo.lock']}
     snapshots.update({name:sha(source/name) for name in ('enterprise/go.mod','enterprise/go.sum')})
-    target = pathlib.Path('/opt/work')/('codex03-tm-build-'+env['GITHUB_RUN_ID']+'-'+env['GITHUB_RUN_ATTEMPT']); require(not target.exists(),'BUILD_ROOT_NOT_FRESH'); target.mkdir()
+    target=admitted_build_root(out,env)
     safe = dict(env, CARGO_TARGET_DIR=str(target/'target'), GOTOOLCHAIN='local', GOPROXY='off', GOSUMDB='off', GOFLAGS='-mod=readonly', RUSTUP_AUTO_INSTALL='0')
     for label, argv in [('rustc',['rustc','-Vv']),('cargo',['cargo','-Vv']),('go',['go','version']),('cc',['cc','--version'])]: command(argv,out,'toolchain-'+label,time.monotonic()+10,env=safe)
     save(out/'toolchain-files.json',{name:dict(path=str(pathlib.Path(shutil.which(name)).resolve()),sha256=sha(pathlib.Path(shutil.which(name)).resolve())) for name in ('rustc','cargo','go','cc')})
@@ -448,16 +495,17 @@ def upload_proof(output, env, artifact_id, artifact_digest):
     save(output/'publication-proof.json',dict(state='UPLOAD_OBSERVED_NOT_FINAL_RUN_VERDICT',artifact=row))
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('phase',choices=['prepare','build','run','guardian','publish']); parser.add_argument('output'); parser.add_argument('extra',nargs='*'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('phase',choices=['preflight','prepare','build','run','guardian','publish']); parser.add_argument('output'); parser.add_argument('extra',nargs='*'); args=parser.parse_args()
     if args.phase=='guardian':
         item=json.loads(pathlib.Path(args.output).read_text()); guardian(item['bind'],pathlib.Path(args.extra[0]),item['replacements']); return
     out=pathlib.Path(args.output).resolve(); env=os.environ.copy()
     if args.phase=='prepare':
         event=json.loads(pathlib.Path(env['GITHUB_EVENT_PATH']).read_text()); require(routing(event['event_name'] if 'event_name' in event else env['GITHUB_EVENT_NAME'],event.get('inputs',{}),env['RUNNER_ENVIRONMENT'])=='DIAGNOSTIC','ROUTING')
-        out.mkdir(); save(out/'dispatch.json',dict(event=event,ci_sha=env['GITHUB_SHA'],runner=env['RUNNER_NAME'])); return
+        out.mkdir(exist_ok=True); save(out/'dispatch.json',dict(event=event,ci_sha=env['GITHUB_SHA'],runner=env['RUNNER_NAME'])); return
     require(out.is_dir(),'OUTPUT_MISSING')
     if args.phase=='publish': upload_proof(out,env,*args.extra); return
     try:
+        if args.phase=='preflight':runner_preflight(out,env);return
         if args.phase=='build':
             require(env.get('TM_BUILD_AUTHORITY')=='BUILD_ONLY '+env['TM_SOURCE_SHA'] and env.get('TM_MANAGER_ACTOR_ID') and env.get('TM_MANAGER_ACTOR_ID')==env.get('GITHUB_ACTOR_ID'),'BUILD_AUTHORITY_UNBOUND')
             state=build(pathlib.Path(env['GITHUB_WORKSPACE'])/'seaweedfs-source',out,env)
