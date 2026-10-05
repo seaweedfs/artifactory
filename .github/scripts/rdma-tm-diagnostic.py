@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import types
 import os
 import pathlib
 import re
@@ -27,6 +28,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('tm_decode', HERE/'rdma-tm-decode.py')
 decoder = importlib.util.module_from_spec(spec); spec.loader.exec_module(decoder)
 require = decoder.require
+probe_spec = importlib.util.spec_from_file_location('tm_probe', HERE/'rdma-tm-probe.py')
+probe_module = importlib.util.module_from_spec(probe_spec); probe_spec.loader.exec_module(probe_module)
 PORTS = [46240, 46241, 46242, 46243, 46244, 46245, 46246, 56243]
 HEX40 = re.compile('[0-9a-f]{40}')
 HEX64 = re.compile('[0-9a-f]{64}')
@@ -48,7 +51,7 @@ def routing(event, inputs, environment):
     profile = inputs.get('diagnostic_profile') or 'none'
     if event != 'workflow_dispatch' or profile == 'none': return 'DEFAULT'
     require(profile == 'tm-connected-v1' and inputs.get('runner') == 'tp01' and environment == 'self-hosted', 'PROFILE_OR_RUNNER')
-    require(inputs.get('diagnostic_phase') in ('build', 'run') and HEX40.fullmatch(inputs.get('mono_sha', '')), 'PHASE_OR_SHA')
+    require(inputs.get('diagnostic_phase') in ('build', 'run', 'probe') and HEX40.fullmatch(inputs.get('mono_sha', '')), 'PHASE_OR_SHA')
     return 'DIAGNOSTIC'
 
 def command(argv, output, label, deadline, env=None, cwd=None):
@@ -88,7 +91,7 @@ def command(argv, output, label, deadline, env=None, cwd=None):
     require(rc == 0 and time.monotonic() < deadline, 'COMMAND_REFUSED '+label)
     return (output/(label+'.stdout.raw')).read_bytes()
 
-def manifest(root, expected=None):
+def manifest(root, expected=None, output_receipt=False):
     root = pathlib.Path(root); f = root/'manifest.sha256'
     if expected is not None: require(sha(f) == expected, 'INPUT_MANIFEST_DRIFT')
     seen = set()
@@ -99,7 +102,7 @@ def manifest(root, expected=None):
         require(name != 'manifest.sha256' and target.is_file() and target.resolve().is_relative_to(root.resolve()) and not any(x.is_symlink() for x in [target, *target.parents] if x.is_relative_to(root)), 'MANIFEST_FILE')
         require(sha(target) == digest, 'INPUT_BYTE_DRIFT'); seen.add(name)
     require(seen == {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file() and p != f}, 'UNLISTED_INPUT')
-    require(not any('launch' in n.lower() or 'envelope' in n.lower() for n in seen), 'AUTHORITY_CYCLE')
+    require(output_receipt or not any('launch' in n.lower() or 'envelope' in n.lower() for n in seen), 'AUTHORITY_CYCLE')
     return seen
 
 def seal(root):
@@ -543,27 +546,9 @@ def runtime(bind, input_root, build_root, output, api, private=False):
     return 'RUNTIME_PASS_PUBLICATION_PENDING'
 
 def run_phase(out, env):
-    deadline=time.monotonic()+180; api=Actions(env['GITHUB_REPOSITORY'],env['GH_TOKEN'],out)
-    event=json.loads(pathlib.Path(env['GITHUB_EVENT_PATH']).read_text()); request=json.loads(event['inputs']['diagnostic_objects'])
-    trust=dict(manager_actor_id=env.get('TM_MANAGER_ACTOR_ID'),publication_workflow_id=env.get('TM_PUBLICATION_WORKFLOW_ID'),publication_head_sha=env.get('TM_PUBLICATION_HEAD_SHA'),dispatch_actor_id=event['sender']['id'],envelope_id=request['envelope_id'],input_manifest=request['input_manifest'])
-    require(trust['manager_actor_id'] and trust['publication_workflow_id'] and trust['publication_head_sha'],'AUTHORITY_UNBOUND')
-    require(str(trust['dispatch_actor_id'])==str(trust['manager_actor_id']),'FOREIGN_MANAGER_DISPATCH')
-    run,artifact=api.artifact(request['input'],out/'input',deadline); manifest(out/'input',request['input_manifest'])
-    bind=json.loads((out/'input/bind.json').read_text()); require('local_inert_fixture' not in bind,'PRIVATE_FIXTURE_FORBIDDEN'); require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'],'SOURCE_OR_ADAPTER_BIND_DRIFT')
-    for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py'): require(sha(out/'input'/name)==sha(HERE/name),'ADAPTER_DRIFT')
-    pub,_=api.artifact(request['authorization'],out/'authorization',deadline); trust['publication']=pub
-    file=out/'authorization/envelope.json'; require(sha(file)==request['envelope_sha256'],'ENVELOPE_DRIFT')
-    authorize(bind,json.loads(file.read_text()),trust); save(out/'authority-association.json',dict(request=request,trust=trust))
-    build_run,_=api.artifact(bind['build_reference'],out/'build',deadline); require(build_run['head_sha']==env['GITHUB_SHA'],'BUILD_CI_SOURCE_DRIFT'); manifest(out/'build')
-    build_info=json.loads((out/'build/build.json').read_text()); require(build_info['source_sha']==env['TM_SOURCE_SHA'] and sha(out/'build/build.json')==bind['build_json_sha256'],'BUILD_BIND_DRIFT')
-    require(build_info['ci_sha']==build_run['head_sha'] and build_info['run_id']==build_run['id'] and build_info['attempt']==build_run['run_attempt'] and build_info['job']=='tm-connected-diagnostic','BUILD_JOB_ASSOCIATION')
-    jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(build_run['id'])+'/attempts/'+str(build_run['run_attempt'])+'/jobs?per_page=100',deadline)
-    require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==build_info['job'] and j['runner_name']==build_info['runner'] and j['conclusion']=='success'])==1,'BUILD_RUNNER_ASSOCIATION')
-    for label in ('loader','server','master'):
-        row=build_info['products'][label]; require(row['source_sha']==env['TM_SOURCE_SHA'] and sha(out/'build'/row['file'])==row['sha256']==bind['product_hashes'][label],'BUILD_ELF_DRIFT')
-        (out/'build'/row['file']).chmod(0o700)
-    require(sha(out/'build/loader-list.stdout.raw')==build_info['list_sha256']==bind['list_sha256'],'BUILD_LIST_DRIFT')
-    exact_row((out/'build/loader-list.stdout.raw').read_bytes())
+    api_surface=types.SimpleNamespace(**globals());bind,api,deadline=probe_module.prepare(api_surface,out,env)
+    if env['TM_PHASE']=='probe':return probe_module.produce(api_surface,bind,out,env,api)
+    probe_module.run_admit(api_surface,bind,out,env,api,deadline)
     require(set(bind['test_env'])=={'TM_RDMA_ADDR','TM_CONTROL_ADDR'},'TEST_ENV_UNBOUND')
     require(len(bind['setup'])==2 and len(bind['down'])==2 and len(bind['probes'])>=2,'TOPOLOGY_UNBOUND')
     return runtime(bind,out/'input',out/'build',out,api)
@@ -575,7 +560,7 @@ def upload_proof(output, env, artifact_id, artifact_digest):
     save(output/'publication-proof.json',dict(state='UPLOAD_OBSERVED_NOT_FINAL_RUN_VERDICT',artifact=row))
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('phase',choices=['preflight','prepare','bootstrap','bootstrap-verify','setup-outcome','build','run','guardian','publish']); parser.add_argument('output'); parser.add_argument('extra',nargs='*'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('phase',choices=['preflight','prepare','bootstrap','bootstrap-verify','setup-outcome','build','run','probe','guardian','publish']); parser.add_argument('output'); parser.add_argument('extra',nargs='*'); args=parser.parse_args()
     if args.phase=='guardian':
         item=json.loads(pathlib.Path(args.output).read_text()); guardian(item['bind'],pathlib.Path(args.extra[0]),item['replacements']); return
     out=pathlib.Path(args.output).resolve(); env=os.environ.copy()

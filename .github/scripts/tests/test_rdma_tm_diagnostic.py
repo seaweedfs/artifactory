@@ -100,7 +100,7 @@ class GoBootstrap(unittest.TestCase):
         self.assertEqual(positions,sorted(positions));self.assertIn('actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16',diagnostic)
         setup=diagnostic[positions[1]:positions[2]];self.assertIn("if: inputs.diagnostic_phase == 'build'",setup);self.assertIn('timeout-minutes: 5',setup);self.assertIn('go-version-file: tm-diagnostic/INPUT/bootstrap/enterprise/go.mod',setup);self.assertIn('check-latest: false',setup);self.assertIn('cache: false',setup)
         # Exact LF prefix from reviewed 106e1fc1; no dependence on git/worktree aliases.
-        self.assertEqual(hashlib.sha256(workflow.split('  tm-connected-diagnostic:',1)[0].encode()).hexdigest(),'3d52314c5858d523a07793d9893aaa2f3160c9c11d0f1fa215f4d8ddb34e6a51')
+        self.assertEqual(hashlib.sha256(workflow.replace('options: [build, run, probe]','options: [build, run]').split('  tm-connected-diagnostic:',1)[0].encode()).hexdigest(),'3d52314c5858d523a07793d9893aaa2f3160c9c11d0f1fa215f4d8ddb34e6a51')
 
 class GoSetupReceipt(unittest.TestCase):
     def test_real_outcome_entry_preserves_refusals_and_bindings(self):

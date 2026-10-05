@@ -30,7 +30,7 @@ on:
         default: ''
       diagnostic_phase:
         type: choice
-        options: [build, run]
+        options: [build, run, probe]
         default: build
       diagnostic_objects:
         description: 'Exact INPUT and separate authorization artifact references (JSON)'
@@ -531,6 +531,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/rdma-tm-diagnostic.py run "$TM_RECEIPT"
+      - name: PROBE_ONLY authenticated installed facts (no service or build)
+        if: inputs.diagnostic_phase == 'probe'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/rdma-tm-diagnostic.py probe "$TM_RECEIPT"
       - name: Upload raw and refused evidence on every outcome
         id: diagnostic-upload
         if: always()
