@@ -460,6 +460,25 @@ jobs:
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: python3 .github/scripts/rdma-tm-diagnostic.py prepare "$TM_RECEIPT"
+      - name: Install build + RDMA userspace deps
+        if: inputs.diagnostic_phase == 'build' && runner.environment == 'github-hosted'
+        run: |
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y \
+            protobuf-compiler clang libclang-dev \
+            libibverbs-dev librdmacm-dev rdma-core ibverbs-providers ibverbs-utils
+
+      - name: Verify pre-provisioned software RDMA (self-hosted)
+        if: inputs.diagnostic_phase == 'build' && runner.environment != 'github-hosted'
+        run: |
+          set -euo pipefail
+          rdma link | grep -q '^link siw0/' || { echo "::error::siw0 not provisioned on $(hostname); see siw-ci.service"; exit 1; }
+          ibv_devices | grep -q siw0 || { echo "::error::siw0 not visible to $(id -un); check the rdma group / udev rules"; exit 1; }
+          echo "RXE_IP=${SOFT_RDMA_IP:-198.51.100.1}" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        if: inputs.diagnostic_phase == 'build'
+        uses: dtolnay/rust-toolchain@stable
       - name: First BUILD runner preflight (no compiler or service)
         if: inputs.diagnostic_phase == 'build'
         run: python3 .github/scripts/rdma-tm-diagnostic.py preflight "$TM_RECEIPT"
@@ -470,6 +489,18 @@ jobs:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ inputs.gitlab_branch }}
           sha: ${{ inputs.mono_sha }}
+      - name: Cache cargo registry and target
+        if: inputs.diagnostic_phase == 'build'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/rust/target
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-rdma-${{ hashFiles('seaweedfs-source/enterprise/rust/Cargo.lock', 'seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-rdma-
       - name: Build all three source-bound artifacts without services
         if: inputs.diagnostic_phase == 'build'
         run: python3 .github/scripts/rdma-tm-diagnostic.py build "$TM_RECEIPT"

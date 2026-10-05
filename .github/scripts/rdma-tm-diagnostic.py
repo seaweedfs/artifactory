@@ -207,8 +207,22 @@ def runner_preflight(out, env):
         require(env.get('TM_BUILD_AUTHORITY')=='BUILD_ONLY '+env['TM_SOURCE_SHA'] and env.get('TM_MANAGER_ACTOR_ID')==env.get('GITHUB_ACTOR_ID') and env.get('TM_MANAGER_ACTOR_ID'),'BUILD_AUTHORITY_UNBOUND')
         target=runner_build_root(env);workspace=target.parent
         record.update(root=str(target),workspace=str(workspace),workspace_alias=env['GITHUB_WORKSPACE'],uid=os.getuid(),runner=env['RUNNER_NAME'],run_id=env['GITHUB_RUN_ID'],attempt=env['GITHUB_RUN_ATTEMPT'])
-        require(all(shutil.which(name,path=env.get('PATH')) for name in ('whoami','rustc','cargo','go','cc','readelf','pkg-config')),'BUILD_TOOLCHAIN_MISSING')
-        record['whoami']=command(['whoami'],out,'runner-whoami',deadline,env=env).decode().strip()
+        version_args={'whoami':[],'rustc':['-Vv'],'cargo':['-Vv'],'go':['version'],'cc':['--version'],'readelf':['--version'],'pkg-config':['--version']}
+        tools={name:shutil.which(name,path=env.get('PATH')) for name in version_args}
+        record['tool_paths']=tools;record['missing_tools']=[name for name,path in tools.items() if path is None]
+        record['tools']={name:dict(path=path,state='LOOKUP_FOUND' if path else 'MISSING',error_code=None if path else 'BUILD_TOOLCHAIN_MISSING_'+name) for name,path in tools.items()}
+        for name,args in version_args.items():
+            if tools[name] is None:continue
+            item=record['tools'][name];item['state']='VERSION_PENDING'
+            try:
+                raw=command([tools[name],*args],out,'runner-'+name,deadline,env=dict(env,GOTOOLCHAIN='local',RUSTUP_AUTO_INSTALL='0'))
+                item.update(state='VERSION_FOUND',version_raw=raw.decode(errors='replace'),raw_file='runner-'+name+'.stdout.raw')
+                if name=='whoami':record['whoami']=raw.decode().strip()
+                if name=='go':
+                    found=re.search(r'go(\d+)\.(\d+)\.(\d+)',raw.decode());require(found and tuple(map(int,found.groups()))>=(1,26,6),'GO_TOOLCHAIN_UNBOUND')
+            except BaseException as error:
+                item.update(state='VERSION_REFUSED',error_code=str(error),error=repr(error));raise
+        require(not record['missing_tools'],'BUILD_TOOLCHAIN_MISSING_'+','.join(record['missing_tools']))
         record['free_bytes']=shutil.disk_usage(workspace).free;record['capacity']='CAPACITY_UNQUALIFIED';record['filesystem_device']=workspace.stat().st_dev
         target.mkdir(mode=0o700);root_stat=target.stat();require(root_stat.st_uid==os.getuid(),'BUILD_ROOT_OWNER');record['root_identity']=dict(dev=root_stat.st_dev,inode=root_stat.st_ino,uid=root_stat.st_uid)
         probe=target/'admission-probe'
@@ -217,12 +231,6 @@ def runner_preflight(out, env):
             require(os.write(fd,b'write-probe')==11,'BUILD_PROBE_SHORT_WRITE');os.fsync(fd);opened=os.fstat(fd);actual=probe.stat();require(opened.st_uid==os.getuid() and (opened.st_dev,opened.st_ino)==(actual.st_dev,actual.st_ino),'BUILD_PROBE_IDENTITY');record['probe_identity']=dict(dev=actual.st_dev,inode=actual.st_ino,uid=actual.st_uid)
         finally:os.close(fd);probe.unlink()
         record['writable']=True
-        tools={name:shutil.which(name,path=env.get('PATH')) for name in ('rustc','cargo','go','cc','readelf','pkg-config')}
-        require(all(tools.values()),'BUILD_TOOLCHAIN_MISSING');record['tool_paths']=tools
-        for name,argv in [('rustc',['rustc','-Vv']),('cargo',['cargo','-Vv']),('go',['go','version']),('cc',['cc','--version'])]:
-            raw=command(argv,out,'runner-'+name,deadline,env=dict(env,GOTOOLCHAIN='local',RUSTUP_AUTO_INSTALL='0'))
-            if name=='go':
-                found=re.search(r'go(\d+)\.(\d+)\.(\d+)',raw.decode());require(found and tuple(map(int,found.groups()))>=(1,26,6),'GO_TOOLCHAIN_UNBOUND')
         require(time.monotonic()<deadline,'RUNNER_PREFLIGHT_DEADLINE');record['state']='PASS'
     except BaseException as error:
         record['error']=repr(error);record['error_code']=str(error) if isinstance(error,ValueError) else 'RUNNER_PREFLIGHT_'+type(error).__name__;raise

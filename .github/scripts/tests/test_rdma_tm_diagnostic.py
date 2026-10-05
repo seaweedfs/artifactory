@@ -345,6 +345,31 @@ if __name__=='__main__': unittest.main()
 
 
 class BuildRunnerAdmission(unittest.TestCase):
+    def test_missing_lookup_names_and_found_versions_before_mutation(self):
+        names=('whoami','rustc','cargo','go','cc','readelf','pkg-config')
+        for missing in (*names,'rustc,cargo'):
+            with self.subTest(missing=missing),tempfile.TemporaryDirectory() as td:
+                base=pathlib.Path(td);workspace=base/'workspace';workspace.mkdir();out=base/'raw';out.mkdir();seen=[]
+                env=dict(os.environ,GITHUB_WORKSPACE=str(workspace),GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='1',RUNNER_NAME='inert-fixture',TM_SOURCE_SHA='a'*40,TM_BUILD_AUTHORITY='BUILD_ONLY '+'a'*40,TM_MANAGER_ACTOR_ID='6647175',GITHUB_ACTOR_ID='6647175')
+                missing_set=set(missing.split(','))
+                def lookup(name,**kwargs):return None if name in missing_set else '/inert/'+name
+                def version(argv,*args,**kwargs):
+                    name=pathlib.Path(argv[0]).name;seen.append(name)
+                    return b'go version go1.26.6 linux/amd64' if name=='go' else ('FOUND_VERSION_'+name).encode()
+                with patch.object(a.shutil,'which',side_effect=lookup),patch.object(a,'command',side_effect=version):
+                    with self.assertRaisesRegex(ValueError,'BUILD_TOOLCHAIN_MISSING_'):a.runner_preflight(out,env)
+                row=json.loads((out/'runner-preflight.json').read_text())
+                self.assertEqual(row['missing_tools'],[name for name in names if name in missing_set])
+                self.assertEqual(row['error_code'],'BUILD_TOOLCHAIN_MISSING_'+','.join(row['missing_tools']))
+                self.assertEqual(seen,[name for name in names if name not in missing_set])
+                for name in names:
+                    tool=row['tools'][name]
+                    if name in missing_set:
+                        self.assertIsNone(tool['path']);self.assertEqual(tool['state'],'MISSING');self.assertEqual(tool['error_code'],'BUILD_TOOLCHAIN_MISSING_'+name)
+                    else:
+                        self.assertEqual(tool['state'],'VERSION_FOUND');self.assertTrue(tool['version_raw']);self.assertEqual(tool['raw_file'],'runner-'+name+'.stdout.raw')
+                self.assertFalse((workspace/'codex03-tm-build-123-1').exists());self.assertEqual(signal.getitimer(signal.ITIMER_REAL),(0.0,0.0))
+
     def test_actual_preflight_and_refusals(self):
         import shutil
         for case in ('canonical','workspace-alias','foreign-owner','root-alias','collision','permission','missing-tool','wrong-go','deadline','authority'):
