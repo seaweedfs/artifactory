@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+import base64
 from unittest.mock import patch
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1]
@@ -68,6 +69,38 @@ elif phase=='down':
 elif phase=='probe': pass
 else: raise ValueError(phase)
 '''
+
+class GoBootstrap(unittest.TestCase):
+    def test_bytes_authority_source_and_clone_refusals(self):
+        for case in ('positive','foreign-actor','wrong-source','payload-drift','bootstrap-drift','clone-drift','manifest-drift','clone-head-drift'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as directory:
+                out=pathlib.Path(directory);env=dict(TM_PHASE='build',TM_SOURCE_SHA=a.GO_BOOTSTRAP_MONO,TM_BUILD_AUTHORITY='BUILD_ONLY '+a.GO_BOOTSTRAP_MONO,TM_MANAGER_ACTOR_ID='6647175',GITHUB_ACTOR_ID='6647175',GITHUB_WORKSPACE=str(out))
+                blob=base64.b64decode(a.GO_BOOTSTRAP_B64,validate=True)
+                self.assertEqual(hashlib.sha256(blob).hexdigest(),a.GO_BOOTSTRAP_SHA);self.assertIn(b'\ngo 1.26.6\n',blob)
+                if case in ('foreign-actor','wrong-source','payload-drift'):
+                    if case=='foreign-actor':env['GITHUB_ACTOR_ID']='1'
+                    if case=='wrong-source':env['TM_SOURCE_SHA']='0'*40
+                    with patch.object(a,'GO_BOOTSTRAP_B64',base64.b64encode(blob+b'DRIFT').decode() if case=='payload-drift' else a.GO_BOOTSTRAP_B64):
+                        with self.assertRaisesRegex(ValueError,'BUILD_AUTHORITY_UNBOUND|GO_BOOTSTRAP_SOURCE|GO_BOOTSTRAP_BYTES'):a.go_bootstrap(out,env)
+                    self.assertFalse((out/'INPUT/bootstrap').exists());self.assertEqual(json.loads((out/'go-bootstrap-before-setup.json').read_text())['state'],'FAIL');continue
+                a.go_bootstrap(out,env);target=out/'INPUT/bootstrap/enterprise/go.mod';self.assertEqual(target.read_bytes(),blob)
+                clone=out/'seaweedfs-source/enterprise/go.mod';clone.parent.mkdir(parents=True);clone.write_bytes(blob)
+                if case=='bootstrap-drift':target.write_bytes(blob+b'DRIFT')
+                if case=='clone-drift':clone.write_bytes(blob+b'DRIFT')
+                if case=='manifest-drift':(out/'INPUT/bootstrap/manifest.sha256').write_text('DRIFT')
+                with patch.object(a,'command',return_value=((('0'*40) if case=='clone-head-drift' else a.GO_BOOTSTRAP_MONO)+'\n').encode()) as head:
+                    if case=='positive':a.go_bootstrap(out,env,True)
+                    else:
+                        with self.assertRaisesRegex(ValueError,'GO_BOOTSTRAP_DRIFT|GO_CLONE_MOD_DRIFT|INPUT_MANIFEST_DRIFT|SOURCE_HEAD_DRIFT'):a.go_bootstrap(out,env,True)
+                record=json.loads((out/'go-bootstrap-clone-verify.json').read_text());self.assertEqual(record['state'],'PASS' if case=='positive' else 'FAIL')
+                if case=='positive':head.assert_called_once();self.assertEqual(record['version'],'1.26.6')
+    def test_workflow_order_exact_pin_and_default_jobs_unchanged(self):
+        workflow=(SCRIPTS.parent/'workflows/rdma-softroce-tests.yml').read_text();diagnostic=workflow.split('  tm-connected-diagnostic:',1)[1]
+        positions=[diagnostic.index(s) for s in ('Authenticate frozen mono go.mod','Setup diagnostic Go','First BUILD runner preflight','Clone exact mono','Compare cloned mono go.mod','Build all three')]
+        self.assertEqual(positions,sorted(positions));self.assertIn('actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16',diagnostic)
+        setup=diagnostic[positions[1]:positions[2]];self.assertIn("if: inputs.diagnostic_phase == 'build'",setup);self.assertIn('timeout-minutes: 5',setup);self.assertIn('go-version-file: tm-diagnostic/INPUT/bootstrap/enterprise/go.mod',setup);self.assertIn('check-latest: false',setup);self.assertIn('cache: false',setup)
+        # Exact LF prefix from reviewed 106e1fc1; no dependence on git/worktree aliases.
+        self.assertEqual(hashlib.sha256(workflow.split('  tm-connected-diagnostic:',1)[0].encode()).hexdigest(),'3d52314c5858d523a07793d9893aaa2f3160c9c11d0f1fa215f4d8ddb34e6a51')
 
 class Fixture(unittest.TestCase):
     def setUp(self):

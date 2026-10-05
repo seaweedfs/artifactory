@@ -479,6 +479,17 @@ jobs:
       - name: Install Rust toolchain
         if: inputs.diagnostic_phase == 'build'
         uses: dtolnay/rust-toolchain@stable
+      - name: Authenticate frozen mono go.mod before Go setup
+        if: inputs.diagnostic_phase == 'build'
+        run: python3 .github/scripts/rdma-tm-diagnostic.py bootstrap "$TM_RECEIPT"
+      - name: Setup diagnostic Go from authenticated exact source bytes
+        if: inputs.diagnostic_phase == 'build'
+        timeout-minutes: 5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6, Node24; tp01 runner2.337.0
+        with:
+          go-version-file: tm-diagnostic/INPUT/bootstrap/enterprise/go.mod
+          check-latest: false
+          cache: false
       - name: First BUILD runner preflight (no compiler or service)
         if: inputs.diagnostic_phase == 'build'
         run: python3 .github/scripts/rdma-tm-diagnostic.py preflight "$TM_RECEIPT"
@@ -489,6 +500,9 @@ jobs:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ inputs.gitlab_branch }}
           sha: ${{ inputs.mono_sha }}
+      - name: Compare cloned mono go.mod with authenticated bootstrap
+        if: inputs.diagnostic_phase == 'build'
+        run: python3 .github/scripts/rdma-tm-diagnostic.py bootstrap-verify "$TM_RECEIPT"
       - name: Cache cargo registry and target
         if: inputs.diagnostic_phase == 'build'
         uses: actions/cache@v5
