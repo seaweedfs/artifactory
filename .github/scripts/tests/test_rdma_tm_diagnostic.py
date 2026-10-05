@@ -319,4 +319,26 @@ class Fixture(unittest.TestCase):
         with patch.object(a.Actions,'get',side_effect=OSError('publication unavailable')):
             with self.assertRaises(OSError):a.upload_proof(self.dir,env,'2','a'*64)
 
+class WorkflowActionlint(unittest.TestCase):
+    """Mandatory CI-box workflow parser; missing pinned tool is a failure."""
+    def test_pinned_actionlint_and_runner_context_refusal(self):
+        tool=os.environ['TM_ACTIONLINT']
+        version=subprocess.run([tool,'-version'],capture_output=True,text=True,check=True)
+        self.assertTrue(version.stdout.startswith('1.7.12\n'),version.stdout)
+        workflow=SCRIPTS.parents[0]/'workflows/rdma-softroce-tests.yml'
+        with tempfile.TemporaryDirectory() as directory:
+            config=pathlib.Path(directory)/'actionlint.yaml'
+            config.write_text('self-hosted-runner:\n  labels: [tp01]\n')
+            argv=[tool,'-config-file',str(config),'-shellcheck=','-pyflakes=']
+            result=subprocess.run([*argv,str(workflow)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertEqual(result.stdout+result.stderr,'')
+            invalid=pathlib.Path(directory)/'invalid.yml'
+            text=workflow.read_text().replace('    env:\n      TM_SOURCE_SHA:', '    env:\n      RUNNER_ENVIRONMENT: ${{ runner.environment }}\n      TM_SOURCE_SHA:')
+            self.assertNotEqual(text,workflow.read_text())
+            invalid.write_text(text)
+            refused=subprocess.run([*argv,str(invalid)],capture_output=True,text=True)
+            self.assertNotEqual(refused.returncode,0)
+            self.assertIn('context \"runner\" is not allowed here',refused.stdout+refused.stderr)
+
 if __name__=='__main__': unittest.main()

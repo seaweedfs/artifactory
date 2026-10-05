@@ -445,7 +445,6 @@ jobs:
       contents: read
       actions: read
     env:
-      RUNNER_ENVIRONMENT: ${{ runner.environment }}
       TM_SOURCE_SHA: ${{ inputs.mono_sha }}
       TM_PHASE: ${{ inputs.diagnostic_phase }}
       TM_BUILD_AUTHORITY: ${{ inputs.build_authority }}
@@ -458,6 +457,8 @@ jobs:
       - name: Checkout reviewed diagnostic source
         uses: actions/checkout@v6
       - name: Validate manual allowlisted profile and capture dispatch
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: python3 .github/scripts/rdma-tm-diagnostic.py prepare "$TM_RECEIPT"
       - name: Clone exact mono source for BUILD only
         if: inputs.diagnostic_phase == 'build'
