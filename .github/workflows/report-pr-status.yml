@@ -46,8 +46,9 @@ jobs:
     # own checked-in code (no PR code), so the "PR-triggered never on
     # self-hosted" rule does not apply, and on hosted it was the single largest
     # occupant of the org queue (51 of 81 queued runs on 2026-09-10 05:50Z),
-    # delaying every status it exists to deliver. runner-watchdog rescues it to
-    # hosted if tp01 is down.
+    # delaying every status it exists to deliver. runner-watchdog does NOT rescue
+    # it: a workflow_run job cannot be re-dispatched, so while tp01 is down these
+    # status mirrors wait in the queue (up to 24 h) and post when tp01 returns.
     runs-on: [self-hosted, tp01]
     timeout-minutes: 5
     # Only mirror runs that came from seaweed-mono (push/PR dispatch), not manual ones.

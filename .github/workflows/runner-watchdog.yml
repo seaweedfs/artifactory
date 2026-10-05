@@ -95,6 +95,20 @@ jobs:
           set -euo pipefail
           now=$(date -u +%s)
 
+          # Read-only API calls retry on failure: one HTTP 504 from the API used to
+          # exit this step under `set -e` and leave every queued job stranded
+          # (run 37156382019, 2026-10-03). Cancel and dispatch are not retried, so a
+          # retry can never dispatch a run twice.
+          gh_retry() {
+            local attempt out
+            for attempt in 1 2 3 4 5; do
+              if out=$("$@"); then printf '%s\n' "$out"; return 0; fi
+              echo "gh call failed (attempt $attempt/5): $*" >&2
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+
           # Liveness probe: how many minutes since a job last STARTED on a tp01
           # runner. A saturated runner keeps starting jobs, so a recent start
           # proves it is alive however deep the queue is; only silence means
@@ -109,9 +123,9 @@ jobs:
           # "no job start in 120 min" while both tp01 workers were busy and
           # evacuated four queued builds to hosted (run 34509663939).
           probe_jq=".workflow_runs[] | select(.updated_at >= \"$since\") | select(.name | test(\"^(runner watchdog|Report status)\") | not) | .id"
-          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq "$probe_jq"; \
-                       gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=completed&per_page=100" --jq "$probe_jq"); do
-            started=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
+          for rid in $(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq "$probe_jq"; \
+                       gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=completed&per_page=100" --jq "$probe_jq"); do
+            started=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
               --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | .started_at | fromdate] | max // 0')
             if [ "$started" -gt "$newest" ]; then newest=$started; fi
           done
@@ -124,12 +138,15 @@ jobs:
           fi
 
           for wf in $WORKFLOWS; do
-            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --status queued --limit 20 \
-              --json databaseId,createdAt,headBranch,displayTitle > queued.json
+            if ! gh_retry gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --status queued --limit 20 \
+              --json databaseId,createdAt,headBranch,displayTitle > queued.json; then
+              echo "$wf: queue unreadable after retries - skipping it this round"
+              continue
+            fi
             jq -r '.[] | [.databaseId,.createdAt,.headBranch,.displayTitle] | @tsv' queued.json |
             while IFS=$'\t' read -r id created branch title; do
               age=$(( (now - $(date -u -d "$created" +%s)) / 60 ))
-              labels=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+              labels=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
                 --jq '[.jobs[] | select(.status=="queued") | .labels[]] | unique | join(",")')
               case ",$labels," in
                 *,self-hosted,*) ;;
@@ -155,7 +172,7 @@ jobs:
               # form matters too: a bare `[ -n "$x" ] && args+=(...)` is the last
               # command of an && list, so under `set -e` an empty field would
               # kill the rescue loop instead of skipping the input.
-              declared=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$wf?ref=$branch" --jq .content | base64 -d)
+              declared=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$wf?ref=$branch" --jq .content | base64 -d)
               gh run cancel "$id" --repo "$GITHUB_REPOSITORY"
               args=(-f runner=hosted)
               if [ -n "$mono" ] && grep -qE '^ +mono_sha:' <<<"$declared"; then args+=(-f "mono_sha=$mono"); fi
