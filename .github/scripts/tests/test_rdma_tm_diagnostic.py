@@ -380,6 +380,55 @@ class Fixture(unittest.TestCase):
         with patch.object(a.Actions,'get',side_effect=OSError('publication unavailable')):
             with self.assertRaises(OSError):a.upload_proof(self.dir,env,'2','a'*64)
 
+class LockedFetchControls(unittest.TestCase):
+    def test_actual_fetch_branch_serial_exit_deadline_and_hash_refusals(self):
+        import ast
+        tree=ast.parse((SCRIPTS/'rdma-tm-diagnostic.py').read_text())
+        build=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='build')
+        branch=next(n for n in build.body if isinstance(n,ast.If) and 'TM_FETCH_AUTHORITY' in ast.unparse(n.test))
+        entry=compile(ast.fix_missing_locations(ast.Module(body=[branch],type_ignores=[])),'actual-build-fetch-branch','exec')
+        fake='''#!/usr/bin/python3
+import os,sys,json,pathlib,time
+assert os.environ['CARGO_NET_RETRY']=='0' and os.environ['CARGO_NET_OFFLINE']=='false'
+assert os.environ['CARGO_REGISTRIES_CRATES_IO_INDEX']=='sparse+https://index.crates.io/'
+assert sys.argv[1:4]==['fetch','--locked','--target'] and sys.argv[4]=='x86_64-unknown-linux-gnu'
+manifest=pathlib.Path(sys.argv[sys.argv.index('--manifest-path')+1]);case=os.environ['FETCH_CONTROL_CASE']
+print(json.dumps(dict(workspace=str(manifest.parent),case=case)),flush=True)
+if case in ('drift','error-drift'):manifest.with_name('Cargo.lock').write_text('MUTATED')
+if case=='deadline':time.sleep(10)
+raise SystemExit(7 if case in ('error','error-drift') else 0)
+'''
+        for case in ('positive','error','deadline','drift','error-drift','wrong-authority','missing-build-authority'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as td:
+                root=pathlib.Path(td);source=root/'source';out=root/'out';out.mkdir();bin=root/'bin';bin.mkdir();cargo=bin/'cargo';cargo.write_text(fake);cargo.chmod(0o700)
+                for name in ('enterprise/rust','enterprise/seaweed-volume'):
+                    directory=source/name;directory.mkdir(parents=True);(directory/'Cargo.toml').write_text('[workspace]\n');(directory/'Cargo.lock').write_text('source = "registry+https://github.com/rust-lang/crates.io-index"\n')
+                snapshots={str(f.relative_to(source)):a.sha(f) for f in source.rglob('Cargo.*')}
+                env=dict(os.environ,PATH=str(bin)+':'+os.environ['PATH'],CARGO_HOME=str(root/'cargo'),TM_SOURCE_SHA='a'*40,TM_FETCH_AUTHORITY='FETCH_LOCKED '+'a'*40,TM_BUILD_AUTHORITY='BUILD_ONLY '+'a'*40,FETCH_CONTROL_CASE=case)
+                if case=='wrong-authority':env['TM_FETCH_AUTHORITY']='FETCH_LOCKED '+'b'*40
+                if case=='missing-build-authority':env['TM_BUILD_AUTHORITY']=''
+                calls=[];actual=a.command
+                def bounded(*args,**kwargs):
+                    argv,output,label,deadline=args;calls.append(dict(argv=argv,deadline_seconds=deadline-time.monotonic(),offline=kwargs['env']['CARGO_NET_OFFLINE']))
+                    self.assertLessEqual(calls[-1]['deadline_seconds'],300);self.assertGreater(calls[-1]['deadline_seconds'],299)
+                    return actual(argv,output,label,min(deadline,time.monotonic()+.15) if case=='deadline' else deadline,**kwargs)
+                namespace=dict(a.__dict__,source=source,out=out,env=env,safe=dict(env,CARGO_NET_OFFLINE='true'),snapshots=snapshots)
+                error=None
+                with patch.object(a,'command',side_effect=bounded):
+                    try:exec(entry,namespace)
+                    except BaseException as failure:error=failure
+                records=sorted([json.loads(f.read_text()) for f in out.glob('*.fetch.json')],key=lambda row:row['invocation_ordinal'])
+                if case=='positive':
+                    self.assertIsNone(error);self.assertEqual([r['workspace'] for r in records],['enterprise/rust','enterprise/seaweed-volume']);self.assertEqual(len(calls),2);self.assertGreaterEqual(records[1]['started'],records[0]['ended'])
+                elif case in ('wrong-authority','missing-build-authority'):
+                    self.assertIn('FETCH_AUTHORITY',str(error));self.assertFalse(calls);self.assertFalse(records);continue
+                else:self.assertIsNotNone(error);self.assertEqual(len(calls),1);self.assertEqual(len(records),1)
+                for record in records:
+                    self.assertEqual(record['state'],'PASS' if case=='positive' else 'REFUSED');self.assertEqual(record['sparse_index_git_revision'],'NOT_APPLICABLE');self.assertGreaterEqual(record['duration_seconds'],0)
+                    self.assertEqual(record['hashes_unchanged'],case not in ('drift','error-drift'));self.assertIsNotNone(record['command_exit'])
+                if case in ('drift','error-drift'):self.assertIn('FETCH_MANIFEST_DRIFT',str(error))
+                if case=='error-drift':self.assertIn('COMMAND_REFUSED',records[0]['primary_refusal'])
+                if case=='deadline':self.assertTrue(records[0]['command_exit']['cleanup']['reaped']);self.assertEqual(records[0]['command_exit']['exit'],124)
 class WorkflowActionlint(unittest.TestCase):
     """Mandatory CI-box workflow parser; missing pinned tool is a failure."""
     def test_pinned_actionlint_and_runner_context_refusal(self):

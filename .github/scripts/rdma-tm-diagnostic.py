@@ -177,21 +177,25 @@ def authorize(bind, envelope, trust):
     launches=re.findall(r'(?<!\w)LAUNCH\s+([0-9a-f]{64})(?![0-9a-f])',envelope['text'])
     require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}',bind['run_id']),'LOGICAL_RUN_ID')
     require(envelope['id']==trust['envelope_id'] and launches==[trust['input_manifest']] and re.search(r'(?<![\w.-])'+re.escape(bind['run_id'])+r'(?![\w.-])',envelope['text']),'LAUNCH_CROSS_REFERENCE')
-
 def fetch_policy(source, env):
-    require(not any(k.startswith('CARGO_SOURCE_') or k.startswith('CARGO_REGISTRIES_') for k in env),'FETCH_REGISTRY_OVERRIDE')
-    paths=set()
+    require(not any(k.startswith('CARGO_SOURCE_') or k.startswith('CARGO_REGISTRIES_') for k in env),'FETCH_REGISTRY_OVERRIDE');paths=set()
     for workspace in ('enterprise/rust','enterprise/seaweed-volume'):
-        directory=source/workspace
-        require(all(v=='registry+https://github.com/rust-lang/crates.io-index' for v in re.findall(r'^source = "([^"]+)"',(directory/'Cargo.lock').read_text(),re.M)),'FETCH_NON_CRATES_IO_SOURCE')
-        for ancestor in (directory,*directory.parents):
-            paths.update(ancestor/'.cargo'/name for name in ('config','config.toml'))
-    home=pathlib.Path(env.get('CARGO_HOME',str(pathlib.Path.home()/'.cargo')))
-    paths.update(home/name for name in ('config','config.toml'))
-    for path in paths:
-        if path.is_file():require(not re.search(r'\[\s*(?:source|registries)(?:\.|\])|replace-with',path.read_text()),'FETCH_CONFIG_OVERRIDE')
-    return dict(env,CARGO_NET_RETRY='0',CARGO_REGISTRIES_CRATES_IO_PROTOCOL='sparse',CARGO_REGISTRIES_CRATES_IO_INDEX='sparse+https://index.crates.io/')
-
+        directory=source/workspace;require(all(v=='registry+https://github.com/rust-lang/crates.io-index' for v in re.findall(r'^source = "([^"]+)"',(directory/'Cargo.lock').read_text(),re.M)),'FETCH_NON_CRATES_IO_SOURCE')
+        for ancestor in (directory,*directory.parents):paths.update(ancestor/'.cargo'/name for name in ('config','config.toml'))
+    home=pathlib.Path(env.get('CARGO_HOME',str(pathlib.Path.home()/'.cargo')));paths.update(home/name for name in ('config','config.toml'))
+    for path in paths:require(not path.is_file() or not re.search(r'\[\s*(?:source|registries)(?:\.|\])|replace-with',path.read_text()),'FETCH_CONFIG_OVERRIDE')
+    return dict(env,CARGO_NET_RETRY='0',CARGO_NET_OFFLINE='false',CARGO_REGISTRIES_CRATES_IO_PROTOCOL='sparse',CARGO_REGISTRIES_CRATES_IO_INDEX='sparse+https://index.crates.io/')
+def locked_fetch(source,out,env,snapshots):
+    for ordinal,name in enumerate(('enterprise/rust','enterprise/seaweed-volume'),1):
+        label='fetch-'+name.split('/')[-1];started=time.monotonic();deadline=started+300;primary=None;after={};verification_error=None
+        try:command(['cargo','fetch','--locked','--target','x86_64-unknown-linux-gnu','--manifest-path',str(source/name/'Cargo.toml')],out,label,deadline,env=env,cwd=source)
+        except BaseException as error:primary=error
+        finally:
+            try:after={key:sha(source/key) if (source/key).is_file() else None for key in snapshots}
+            except BaseException as error:verification_error=repr(error)
+            unchanged=verification_error is None and after==snapshots;ended=time.monotonic();exit_path=out/(label+'.exit.json')
+            save(out/(label+'.fetch.json'),dict(state='PASS' if primary is None and unchanged else 'REFUSED',workspace=name,invocation_ordinal=ordinal,ordinal_producer='locked_fetch serial workspace enumerate',started=started,deadline=deadline,ended=ended,duration_seconds=ended-started,primary_refusal=repr(primary) if primary else None,verification_error=verification_error,manifest_lock_before=snapshots,manifest_lock_after=after,hashes_unchanged=unchanged,command_exit=json.loads(exit_path.read_text()) if exit_path.is_file() else None,exit_producer=label+'.exit.json',sparse_index_git_revision='NOT_APPLICABLE'));require(unchanged,'FETCH_MANIFEST_DRIFT')
+        if primary is not None:raise primary
 def runner_build_root(env, fresh=True):
     workspace=pathlib.Path(env['GITHUB_WORKSPACE']).resolve(strict=True)
     require(workspace.is_dir() and workspace.stat().st_uid==os.getuid(),'RUNNER_WORKSPACE_OWNER')
@@ -306,10 +310,7 @@ def build(source, out, env):
     save(out/'prebuild-environment.json',dict(python=sys.version,python_path=str(pathlib.Path(sys.executable).resolve()),python_sha256=sha(sys.executable),cargo_home=env.get('CARGO_HOME',str(pathlib.Path.home()/'.cargo')),target_dir=safe['CARGO_TARGET_DIR'],target='x86_64-unknown-linux-gnu',flags={k:env.get(k,'') for k in ('RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS')}))
     version = (out/'toolchain-go.stdout.raw').read_text(); found=re.search(r'go(\d+)\.(\d+)\.(\d+)',version); require(found and tuple(map(int,found.groups())) == (1,26,6), 'GO_TOOLCHAIN_UNBOUND')
     if env.get('TM_FETCH_AUTHORITY'):
-        require(env['TM_FETCH_AUTHORITY'] == 'FETCH_LOCKED '+env['TM_SOURCE_SHA'] and env.get('TM_BUILD_AUTHORITY'), 'FETCH_AUTHORITY')
-        fetch_env=fetch_policy(source,safe)
-        for name in ('enterprise/rust','enterprise/seaweed-volume'):
-            command(['cargo','fetch','--locked','--target','x86_64-unknown-linux-gnu','--manifest-path',str(source/name/'Cargo.toml')],out,'fetch-'+name.split('/')[-1],time.monotonic()+300,env=fetch_env,cwd=source)
+        require(env['TM_FETCH_AUTHORITY'] == 'FETCH_LOCKED '+env['TM_SOURCE_SHA'] and env.get('TM_BUILD_AUTHORITY'), 'FETCH_AUTHORITY');fetch_env=fetch_policy(source,safe);locked_fetch(source,out,fetch_env,snapshots)
     products = {}
     for label, directory, argv, target, test in [('loader','enterprise/rust',['test','-p','seaweedfs-sw-rdma-loader','--features','real-rdma','--lib','--no-run'],'sw_rdma_loader',True),('server','enterprise/seaweed-volume',['build','--features','rdma','--bin','weed-volume'],'weed-volume',False)]:
         args = ['cargo',*argv,'--release','--offline','--locked','--message-format=json','--manifest-path',str(source/directory/'Cargo.toml')]
