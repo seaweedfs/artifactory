@@ -154,6 +154,7 @@ class ProbeControls(unittest.TestCase):
                 if case=='r2-positive':
                     argv=row['plans']['r2_services']['server']['argv'];self.assertEqual([argv[argv.index(flag)+1] for flag in ('--ip','--ip.bind')],['127.0.0.1']*2);self.assertEqual(argv[argv.index('--rdma.ip')+1],'198.51.100.1')
                     grow=next(r['argv'] for r in row['plans']['probes'] if '/vol/grow' in r['argv'][-1]);self.assertIn('--retry-all-errors',grow);self.assertEqual([grow[grow.index(flag)+1] for flag in ('--retry-delay','--retry-max-time')],['1','13'])
+                    self.assertEqual([r['argv'][r['argv'].index('--max-time')+1] for r in row['plans']['probes'] if r['argv'][0]=='curl'],['1','1','13'])
                     self.assertEqual(row['plans']['probes'][2]['argv'][-2:],['server','ready'])
                 if case in ('r2-job','r2-qp'):self.assertEqual(row['error_code'],'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED' if case=='r2-job' else 'COMMAND_REFUSED probe-qp-json')
                 if case=='runner-missing':self.assertTrue((out/'runner-inventory.json').exists())

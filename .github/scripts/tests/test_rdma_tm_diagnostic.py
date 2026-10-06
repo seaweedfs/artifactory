@@ -281,10 +281,12 @@ class Fixture(unittest.TestCase):
         for jobs in ([],[job,job]):self.reject(lambda:a.probe_module.job_identity(a,jobs,env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
     def test_r2_registration_wait_real_http_with_topology_model(self):
         node=dict(Url='127.0.0.1:46240',Max=4);body=dict(Topology=dict(DataCenters=[dict(Racks=[dict(DataNodes=[node])])]))
-        for case in ('delayed','wrong-node','empty','malformed','duplicate'):
+        for case in ('delayed','wrong-node','empty','malformed','duplicate','zero-max','missing-max'):
             calls=[];data=copy.deepcopy(body)
             if case=='wrong-node':data['Topology']['DataCenters'][0]['Racks'][0]['DataNodes'][0]['Url']='127.0.0.1:1'
             if case=='duplicate':data['Topology']['DataCenters'][0]['Racks'][0]['DataNodes'].append(node)
+            if case=='zero-max':data['Topology']['DataCenters'][0]['Racks'][0]['DataNodes'][0]['Max']=0
+            if case=='missing-max':data['Topology']['DataCenters'][0]['Racks'][0]['DataNodes'][0].pop('Max')
             class Handler(http.server.BaseHTTPRequestHandler):
                 def do_GET(inner):
                     calls.append(inner.path);reply={} if case=='malformed' else dict(Topology=dict(DataCenters=None)) if case=='empty' or case=='delayed' and len(calls)==1 else data;raw=json.dumps(reply).encode();inner.send_response(200);inner.send_header('Content-Length',str(len(raw)));inner.end_headers();inner.wfile.write(raw)
