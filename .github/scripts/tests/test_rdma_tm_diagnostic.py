@@ -100,7 +100,7 @@ class GoBootstrap(unittest.TestCase):
         self.assertEqual(positions,sorted(positions));self.assertIn('actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16',diagnostic)
         setup=diagnostic[positions[1]:positions[2]];self.assertIn("if: inputs.diagnostic_phase == 'build'",setup);self.assertIn('timeout-minutes: 5',setup);self.assertIn('go-version-file: tm-diagnostic/INPUT/bootstrap/enterprise/go.mod',setup);self.assertIn('check-latest: false',setup);self.assertIn('cache: false',setup)
         # Exact LF prefix from reviewed 106e1fc1; no dependence on git/worktree aliases.
-        self.assertEqual(hashlib.sha256(workflow.replace('options: [build, run, probe]','options: [build, run]').split('  tm-connected-diagnostic:',1)[0].encode()).hexdigest(),'3d52314c5858d523a07793d9893aaa2f3160c9c11d0f1fa215f4d8ddb34e6a51')
+        self.assertEqual(hashlib.sha256(workflow.replace('options: [build, run, probe]','options: [build, run]').replace('options: [none, tm-connected-v1, r2-recovery-v1]','options: [none, tm-connected-v1]').split('  tm-connected-diagnostic:',1)[0].encode()).hexdigest(),'3d52314c5858d523a07793d9893aaa2f3160c9c11d0f1fa215f4d8ddb34e6a51')
 
 class GoSetupReceipt(unittest.TestCase):
     def test_real_outcome_entry_preserves_refusals_and_bindings(self):
@@ -162,6 +162,34 @@ class Fixture(unittest.TestCase):
         for key,value in [('diagnostic_profile','foreign'),('runner','ubuntu'),('mono_sha','main'),('diagnostic_phase','unknown')]:
             broken=dict(request,**{key:value}); self.reject(lambda:a.routing('workflow_dispatch',broken,'self-hosted'),'PROFILE_OR_RUNNER|PHASE_OR_SHA')
         self.reject(lambda:a.routing('workflow_dispatch',request,'github-hosted'),'PROFILE_OR_RUNNER')
+    def test_r2_typed_parser_positive_and_all_refusals(self):
+        """Inert records only; fields-valid is never provider qualification."""
+        request=dict(diagnostic_profile='r2-recovery-v1',runner='tp01',mono_sha='a'*40,diagnostic_phase='run')
+        self.assertEqual(a.routing('workflow_dispatch',request,'self-hosted'),'DIAGNOSTIC');self.assertEqual(a.routing('repository_dispatch',request,'self-hosted'),'DEFAULT')
+        maps='\n'.join('0-1 r-xp 0000 '+v['dev']+' '+str(v['inode'])+' '+v['path'] for v in self.objects.values())+'\n'
+        group={'/proc/self/maps':[maps],'process_fd':['fd="3" target=Ok("/dev/infiniband/uverbs0")'],'uverbs_ibdev':['fd="3" sysfs="/sys/class/infiniband_verbs/uverbs0/ibdev" ibdev=Ok("siw0")']}
+        actors=[dict(self.identity,namespace=1),dict(pid=999,starttime=7,namespace=1)];providers={str(v['pid']):dict(decoder_alias_group=group) for v in actors}
+        rows=[dict(label='initial',actors=actors,providers=providers,counts=[0]*7)];stdout=[]
+        for cycle in range(18):
+            connected=[1,1,1,cycle+1,cycle,0,cycle+1];settled=[0,0,0,cycle+1,cycle+1,0,0]
+            rows.extend([dict(label=f'{cycle}-connected',actors=actors,providers=providers,counts=connected),dict(label=f'{cycle}-settled',actors=actors,providers=providers,counts=settled)])
+            if 1<=cycle<=16:stdout.append(f'R2_TERMINAL cycle={cycle} wr_id={cycle+100} qp_num={cycle+1} status=10 vendor_err=0 retained=true id_matches=true')
+            stdout.append(f'R2_CYCLE cycle={cycle} failed={str(1<=cycle<=16).lower()} capacity=32 counts={settled}')
+        stdout+='R2_RECOVERY_PASS cycles=16 controls=2 same_process=123 remote_landing=NOT_CLAIMED','test result: ok. 1 passed; 0 failed'
+        text='\n'.join(stdout);raw=lambda data:('\n'.join(map(json.dumps,data))+'\n').encode()
+        self.assertEqual(d.recovery(raw(rows),text,self.objects,self.identity)['state'],'R2_RECOVERY_FIELDS_VALID_ONLY')
+        for case in ('zero-row','missing-terminal','duplicate-terminal','wrong-qpn','peer-growth','missing-provider','wrong-server','wrong-child'):
+            with self.subTest(case=case):
+                records=copy.deepcopy(rows);output=text
+                if case=='zero-row':output=output.replace('1 passed','0 passed')
+                if case=='missing-terminal':output=output.replace(stdout[1],'')
+                if case=='duplicate-terminal':output+='\n'+next(v for v in stdout if v.startswith('R2_TERMINAL '))
+                if case=='wrong-qpn':output=output.replace('qp_num=2 ','qp_num=99 ')
+                if case=='peer-growth':records[4]['counts'][1]=1
+                if case=='missing-provider':records[1]['providers']={}
+                if case=='wrong-server':records[1]['actors']=copy.deepcopy(records[1]['actors']);records[1]['actors'][1]['starttime']=88
+                if case=='wrong-child':records[1]['actors'][0]['pid']=888
+                with self.assertRaises((ValueError,KeyError)):d.recovery(raw(records),output,self.objects,self.identity)
     def test_default_workflow_projection_is_byte_equal(self):
         workflow=(SCRIPTS.parent/'workflows/rdma-softroce-tests.yml').read_text()
         projected=workflow[:workflow.index('\n  tm-connected-diagnostic:')]
@@ -170,6 +198,15 @@ class Fixture(unittest.TestCase):
         guard="    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.diagnostic_profile || 'none') == 'none'\n"
         self.assertEqual(projected.count(guard),2);projected=projected.replace(guard,'').rstrip()+'\n'
         self.assertEqual(hashlib.sha256(projected.encode()).hexdigest(),'c3596fa8a4038f5d58cc2648201e1efdd6a8356f28054209dc9452a4f964ee71')
+    def test_r2_real_service_body_and_role_port_scope(self):
+        root=self.dir/'lease';root.mkdir();now=time.monotonic();a.save(root/'clock.json',dict(origin=now,body_deadline=now+20,terminal_deadline=now+30))
+        file=self.dir/'bundle.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(root),r2_services=dict(master=dict(argv=[sys.executable,'-c','import time;time.sleep(20)',str(root)],env={}))),replacements=dict(ROOT=str(root))))
+        a.service(file,'master','up');owner=a.enrollment(root)[0]
+        try:
+            with patch.object(pathlib.Path,'read_text',return_value='header\n0: 0100007F:B4A3\n'):
+                a.ports_free([46240,46241,46242,46244]);self.reject(a.ports_free,'PRE_SPAWN_PORT_COLLISION')
+        finally:a.service(file,'master','down');os.waitpid(owner['pid'],0)
+        self.assertIsNone(a.proc(owner['pid']))
     def authority(self):
         bind=dict(run_id='fixture-run',ci_sha='a'*40,source_sha='c'*40)
         request=dict(launch_id='e'*24,input_manifest='b'*64)

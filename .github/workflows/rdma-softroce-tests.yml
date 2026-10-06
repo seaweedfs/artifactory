@@ -23,7 +23,7 @@ on:
       diagnostic_profile:
         description: 'Default-off TM diagnostic'
         type: choice
-        options: [none, tm-connected-v1]
+        options: [none, tm-connected-v1, r2-recovery-v1]
         default: none
       mono_sha:
         description: 'Exact mono SHA for diagnostics'
@@ -446,6 +446,7 @@ jobs:
       actions: read
     env:
       TM_SOURCE_SHA: ${{ inputs.mono_sha }}
+      TM_PROFILE: ${{ inputs.diagnostic_profile }}
       TM_PHASE: ${{ inputs.diagnostic_phase }}
       TM_BUILD_AUTHORITY: ${{ inputs.build_authority }}
       TM_FETCH_AUTHORITY: ${{ inputs.fetch_authority }}

@@ -5,6 +5,7 @@ import pathlib
 import re
 
 ROW = 'tests::tm_adapter_tests::tm1_r_tm1_c_tm2_g_connected_registration'
+R2_ROW = 'transport::owned_write_tests::r2_close_siw_volume_cycles'
 SIZES = (65536, 4194304, 8388608)
 
 def require(ok, reason):
@@ -112,3 +113,31 @@ def decode(raw, stdout, identities, child_identity):
     require(len(seen) == 2511 and len(points) == 2430 and stdout.count('TM_SETUP connection_ns=') == 1, 'TIMING_OR_SETUP_COUNT')
     return dict(state='CONNECTED_DIAGNOSTIC_ONLY',points=points,operations=558,measured_operations=540,
                 native_pd='UNAVAILABLE',kernel_mr='UNAVAILABLE',raw_sha256=hashlib.sha256(raw).hexdigest())
+
+def recovery(raw,stdout,identities,child_identity):
+    require('test result: ok. 1 passed; 0 failed' in stdout and stdout.count('R2_RECOVERY_PASS cycles=16 controls=2')==1,'R2_ROW_COUNT_OR_FINAL')
+    snapshots={}
+    for record in map(json.loads,raw.decode().splitlines()):
+        require(record['actors'][0]['pid']==child_identity['pid'] and record['actors'][0]['starttime']==child_identity['starttime'],'R2_CHILD_IDENTITY')
+        counts=record['counts'];require(len(counts)==7 and all(type(v) is int and v>=0 for v in counts),'R2_COUNT_SCHEMA');snapshots[record['label']]=record
+        require(record['actors'][0]['namespace']==record['actors'][1]['namespace'] and (not snapshots.get('initial') or record['actors'][1]==snapshots['initial']['actors'][1]),'R2_SERVER_OR_NAMESPACE_DRIFT')
+        require(str(record['actors'][1]['pid']) in record['providers'] and (not counts[0] or str(child_identity['pid']) in record['providers']),'R2_PROVIDER_MISSING')
+        for value in record['providers'].values():provider(value['decoder_alias_group'],identities)
+    terminal=[];complete=[]
+    for line in stdout.splitlines():
+        if line.startswith('R2_TERMINAL '):
+            match=re.fullmatch(r'R2_TERMINAL cycle=(\d+) wr_id=(\d+) qp_num=(\d+) status=(\d+) vendor_err=(\d+) retained=true id_matches=true',line)
+            require(match is not None,'R2_TERMINAL_FIELDS');terminal.append(tuple(map(int,match.groups())))
+        if line.startswith('R2_CYCLE '):
+            match=re.fullmatch(r'R2_CYCLE cycle=(\d+) failed=(true|false) capacity=32 counts=\[([0-9, ]+)\]',line)
+            require(match is not None,'R2_CYCLE_FIELDS');complete.append((int(match[1]),match[2],list(map(int,match[3].split(',')))))
+    require([v[0] for v in terminal]==list(range(1,17)) and len({v[1] for v in terminal})==16,'R2_TERMINAL_COUNT_OR_IDS')
+    require([v[0] for v in complete]==list(range(18)),'R2_CYCLE_COUNT')
+    prior=snapshots['initial']['counts']
+    for cycle,failed,counts in complete:
+        require(failed==str(1<=cycle<=16).lower(),'R2_FAILURE_SCOPE');connect=snapshots[f'{cycle}-connected']['counts'];settled=snapshots[f'{cycle}-settled']['counts']
+        require(connect[:3]==[v+1 for v in prior[:3]] and connect[3]==prior[3]+1 and connect[4:6]==prior[4:6],'R2_CONNECT_CONSERVATION')
+        require(settled==counts and settled[:3]==prior[:3] and settled[3:5]==[v+1 for v in prior[3:5]] and settled[5]==prior[5],'R2_SETTLE_CONSERVATION')
+        if 1<=cycle<=16:require(terminal[cycle-1][2]==connect[6] and terminal[cycle-1][3]>0,'R2_REAL_TERMINAL_CORRELATION')
+        prior=settled
+    return dict(state='R2_RECOVERY_FIELDS_VALID_ONLY',cycles=16,controls=2,remote_landing='NOT_CLAIMED',internal_cm_pd='UNCHECKED',raw_sha256=hashlib.sha256(raw).hexdigest())
