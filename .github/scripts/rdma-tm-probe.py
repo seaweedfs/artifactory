@@ -20,7 +20,11 @@ def prepare(a,out,env):
     deadline=time.monotonic()+180;api=a.Actions(env['GITHUB_REPOSITORY'],env['GH_TOKEN'],out)
     event=json.loads(pathlib.Path(env['GITHUB_EVENT_PATH']).read_text());request=json.loads(event['inputs']['diagnostic_objects'])
     a.require(env.get('TM_MANAGER_ACTOR_ID') and str(event['sender']['id'])==env['TM_MANAGER_ACTOR_ID']==env.get('GITHUB_ACTOR_ID'),'FOREIGN_MANAGER_DISPATCH')
-    api.artifact(request['input'],out/'input',deadline);a.manifest(out/'input',request['input_manifest'])
+    if env.get('TM_PROFILE')=='r2-recovery-v1':
+        raw=a.base64.b64decode(request['bind_b64'],validate=True);a.require(len(raw)<=65536,'R2_INLINE_BIND_SIZE');root=out/'input';root.mkdir();root.joinpath('bind.json').write_bytes(raw)
+        for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):root.joinpath(name).write_bytes(a.HERE.joinpath(name).read_bytes())
+        a.seal(root);a.manifest(root,request['input_manifest'])
+    else:api.artifact(request['input'],out/'input',deadline);a.manifest(out/'input',request['input_manifest'])
     bind=json.loads((out/'input/bind.json').read_text());a.require('local_inert_fixture' not in bind,'PRIVATE_FIXTURE_FORBIDDEN');exact_build(a,bind,env)
     r2=bind.get('profile')=='r2-recovery-v1';mono=env['TM_SOURCE_SHA'] if r2 else MONO_SHA;products=bind['product_hashes'] if r2 else PRODUCTS;build_json=bind['build_json_sha256'] if r2 else BUILD_JSON;listing=bind['list_sha256'] if r2 else LIST_SHA
     if r2:bind['root']=str(pathlib.Path(env['GITHUB_WORKSPACE']).resolve()/('codex03-tm-r2-'+bind['run_id']))
