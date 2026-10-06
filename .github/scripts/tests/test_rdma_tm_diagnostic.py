@@ -223,6 +223,10 @@ class Fixture(unittest.TestCase):
         text='\n'.join(lines);raw=lambda values:('\n'.join(map(json.dumps,values))+'\n').encode()
         call=lambda records,output:d.recovery(raw(records),output,objects,self.identity,'rxe0',gid)
         result=call(rows,text);self.assertEqual((result['cycles'],result['self_checks'],result['controls']),(16,1,2))
+        captured_prefix='test transport::owned_write_tests::r2_close_siw_volume_cycles ... '
+        prefixed=text.replace('R2_CYCLE cycle=0 ',captured_prefix+'R2_CYCLE cycle=0 ',1)
+        self.assertEqual(call(rows,prefixed)['cycles'],16)
+        self.reject(lambda:call(rows,prefixed.replace(captured_prefix,captured_prefix.replace('r2_close_siw_volume_cycles','foreign_selector'))),'R2_CYCLE_COUNT')
         marker='R2_INJECTION_SELF_CHECK_PASS cycle=1'
         unmarked=[line for line in lines if line!=marker]
         early='\n'.join([marker]+unmarked)
@@ -423,6 +427,17 @@ class Fixture(unittest.TestCase):
             finally:os.close(fd)
         self.assertTrue(opened);b['lock_identity']['inode']+=1;self.reject(lambda:a.probe_module.read_lock(b,a.require),'PROBE_LOCK_IDENTITY_DRIFT');lock.unlink()
         with self.assertRaises(FileNotFoundError):a.probe_module.read_lock(b,a.require)
+    def test_rxe_captured_kernel_management_qp_is_not_an_owner(self):
+        raw=b'[{"ifindex":2,"ifname":"rxe0","port":1,"lqpn":1,"type":"GSI","state":"RTS","sq-psn":0,"comm":"ib_core"}]\n'
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),'9b18276ea20edfd8fab674c23539f0213d79a1c76597c94624aecb729006b10e')
+        rows=json.loads(raw);actors=[dict(pid=os.getpid()),dict(pid=-1)]
+        self.assertEqual(a.probe_module.qp_owners(a,rows,actors,self.dir,'gsi','rxe0'),[[],[]])
+        self.assertEqual(json.loads((self.dir/'gsi-qp-ownership.json').read_text())['management'],rows)
+        for row in (dict(rows[0],pid=0),dict(rows[0],lqpn=2),dict(rows[0],type='RC'),dict(rows[0],comm='foreign')):
+            self.reject(lambda:a.probe_module.qp_owners(a,[row],actors,self.dir,'foreign','rxe0'),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+        self.reject(lambda:a.probe_module.qp_owners(a,[dict(rows[0],pid=os.getpid())],actors,self.dir,'owned-gsi','rxe0'),'R2_WRONG_QP_TYPE')
+        self.reject(lambda:a.probe_module.qp_owners(a,[dict(rows[0],ifname='siw0')],actors,self.dir,'siw','siw0'),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+
     def test_r2_run_admit_model_identity_and_root_refusals(self):
         """Inert admission model, not a host-fact fixture or real PROBE PASS."""
         for case in ('positive','alias','retarget','ports','range','live-range','inode','device','runner','host','uid','root','gid-kind','gid-type','gid-index','bound-device','module','build-ref','lock-unreadable','workspace-unwritable'):

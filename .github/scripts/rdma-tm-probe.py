@@ -260,11 +260,13 @@ def wait_registered(a,root,deadline,master='127.0.0.1:46243',expected='127.0.0.1
     finally:report['ended']=time.monotonic();a.save(root/'registration.json',report)
 
 def qp_owners(a,qps,actors,root,tag,device='siw0'):
-    owned=[[],[]];foreign=[];seen=set()
+    owned=[[],[]];foreign=[];seen=set();management=[]
     for qp in qps:
         a.require(isinstance(qp,dict) and 'ifname' in qp,'R2_QP_DEVICE_MISSING')
         if qp['ifname']!=device:continue
         qpn=qp.get('lqpn');a.require(type(qpn) is int and qpn>0 and qpn not in seen,'R2_QP_OWNER_OR_ID_MISSING');seen.add(qpn)
+        if device=='rxe0' and qp.get('type')=='GSI' and qpn==1 and qp.get('comm')=='ib_core' and 'pid' not in qp:
+            management.append(qp);continue
         pid=qp.get('pid')
         if type(pid) is not int or pid<=0:foreign.append(dict(qp=qp,reason='UNATTRIBUTED_MISSING_PID'));continue
         try:
@@ -275,7 +277,7 @@ def qp_owners(a,qps,actors,root,tag,device='siw0'):
         owners=[i for i,actor in enumerate(actors) if actor['pid']==tgid]
         if not owners:foreign.append(dict(qp=qp,reason='FOREIGN_OWNER',tgid=tgid));continue
         a.require(qp.get('type')=='RC','R2_WRONG_QP_TYPE');owned[owners[0]].append(qp)
-    a.save(root/(tag+'-qp-ownership.json'),dict(actors=actors,owned=owned,foreign=foreign,foreign_count=len(foreign)))
+    a.save(root/(tag+'-qp-ownership.json'),dict(actors=actors,owned=owned,foreign=foreign,foreign_count=len(foreign),management=management))
     a.require(not foreign,'R2_QP_FOREIGN_OR_UNATTRIBUTED')
     return owned
 

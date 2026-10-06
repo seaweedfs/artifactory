@@ -123,6 +123,8 @@ def decode(raw, stdout, identities, child_identity):
 def recovery(raw,stdout,identities,child_identity,device='siw0',gid_identity=None):
     rxe=device=='rxe0';first=2 if rxe else 1;last=17 if rxe else 16
     if rxe:
+        prefix='test transport::owned_write_tests::r2_close_siw_volume_cycles ... '
+        stdout='\n'.join(line[len(prefix):] if line.startswith(prefix+'R2_') else line for line in stdout.splitlines())
         lines=stdout.splitlines();markers=[i for i,line in enumerate(lines) if line=='R2_INJECTION_SELF_CHECK_PASS cycle=1']
         require(len(markers)==1,'R2_INJECTION_PRECONDITION_FAILED')
         terminals=[i for i,line in enumerate(lines) if line.startswith('R2_TERMINAL cycle=1 ')]
