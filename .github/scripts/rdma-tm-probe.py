@@ -140,14 +140,15 @@ def produce(a,bind,out,env,api):
             a.require(len(paths)==1,'PROBE_PROVIDER_AMBIGUOUS_'+library);objects[library]=object_identity(a,next(iter(paths)))
         candidates={str(f.resolve()) for directory in {pathlib.Path(objects['libibverbs']['path']).parent/'libibverbs',pathlib.Path('/usr/lib64/libibverbs')} for f in directory.glob('libsiw*.so*')}
         a.require(len(candidates)==1,'PROBE_PROVIDER_AMBIGUOUS_libsiw');objects['libsiw']=object_identity(a,next(iter(candidates)));record['provider_objects']=objects
-        prefix='/repos/'+api.repository+'/actions/';recent=api.get(prefix+'runs?per_page=10',deadline);inventory=[]
+        prefix='/repos/'+api.repository+'/actions/';inventory_start=time.monotonic();recent=dict(workflow_runs=[dict(id=int(env['GITHUB_RUN_ID']))]) if r2 else api.get(prefix+'runs?per_page=10',deadline);inventory=[]
         for row in recent['workflow_runs']:
-            jobs=api.get(prefix+'runs/'+str(row['id'])+'/jobs?per_page=100',deadline);a.require(jobs['total_count']<100,'PROBE_JOB_INVENTORY_TRUNCATED');inventory.extend(jobs['jobs'])
-        names=sorted({r['runner_name'] for r in inventory if r.get('runner_name') and 'tp01' in r.get('labels',[])})
-        a.save(out/'runner-inventory.json',dict(scope='repository latest10 run job observations; not exhaustive inventory/exclusion',recent=recent,jobs=inventory))
+            jobs=api.get(prefix+'runs/'+str(row['id'])+('/attempts/'+env['GITHUB_RUN_ATTEMPT'] if r2 else '')+'/jobs?per_page=100',deadline);a.require(jobs['total_count']<100,'PROBE_JOB_INVENTORY_TRUNCATED');inventory.extend(jobs['jobs'])
+        if r2:job_identity(a,inventory,env,bind,record)
+        names=bind['runner_names'] if r2 else sorted({r['runner_name'] for r in inventory if r.get('runner_name') and 'tp01' in r.get('labels',[])})
+        a.save(out/'runner-inventory.json',dict(scope='bound host-runner policy + current job name/id association' if r2 else 'repository latest10 run job observations; not exhaustive inventory/exclusion',recent=recent,jobs=inventory,seconds=time.monotonic()-inventory_start))
         a.require(len(set(names))==2 and record['runner'] in names,'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED');record['runner_names']=names
         a.ports_free();record['ports_observed_free_not_reserved']=a.PORTS
-        if r2:record['qp_access']=json.loads(a.command(['rdma','-j','resource','show','qp'],out,'probe-qp-json',deadline,limit=1048576));record['qp_owner_schema']='RUN_CONNECTED_SNAPSHOT_REQUIRED'
+        if r2:record['qp_access']=qp_access(a,out,deadline);record['qp_owner_schema']='RUN_CONNECTED_SNAPSHOT_REQUIRED'
         record['runtime_access']=root_access(a,bind,out,deadline)
         help_raw=run('master-flags',[str(out/'build/master.elf'),'master','-h'])
         help_raw+=(out/'probe-master-flags.stderr.raw').read_text()
@@ -158,6 +159,12 @@ def produce(a,bind,out,env,api):
     finally:
         signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous);record['producer_end']=time.monotonic();record['producer_seconds']=record['producer_end']-start;a.save(out/'probe.json',record)
     return 'PROBE_FACTS_CAPTURED_PLANS_NOT_EXECUTED_PUBLICATION_PENDING'
+
+def job_identity(a,inventory,env,bind,record):
+    a.require(bind['runner_names']==['tp01','tp01-2'] and len([j for j in inventory if j['name']==env['GITHUB_JOB'] and j.get('runner_name')==record['runner'] and j.get('runner_id')==bind['runner_id'] and j['status']=='in_progress'])==1,'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
+
+def qp_access(a,out,deadline):
+    return json.loads(a.command(['rdma','-j','resource','show','qp'],out,'probe-qp-json',deadline,limit=1048576).decode().strip() or '[]')
 
 def run_admit(a,bind,out,env,api,deadline):
     run,_=api.artifact(bind['probe_reference'],out/'probe',deadline);a.manifest(out/'probe',output_receipt=True)

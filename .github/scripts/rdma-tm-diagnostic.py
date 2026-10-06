@@ -542,6 +542,7 @@ def wait_ci(api, bind, output, deadline):
             active.extend(v for v in jobs['jobs'] if v['status']=='in_progress' and v.get('runner_name') in names and str(run['id'])!=os.environ['GITHUB_RUN_ID'])
         save(output/'runner-job-states.json',dict(scope=api.repository,runner_names=sorted(names),current_runner=os.environ['RUNNER_NAME'],runs=runs,foreign_active_jobs=active))
         if not active: return
+        require(not recovery(os.environ),'CI_HOST_ACTIVE')
         require(deadline-time.monotonic()>1,'CI_ACTIVE_SETUP_BLOCKED'); time.sleep(min(1,deadline-time.monotonic()))
 
 def owned_root(root, lock_path, work='/opt/work',lock_base=None):
@@ -613,7 +614,9 @@ def runtime(bind, input_root, build_root, output, api, private=False):
 
 def run_phase(out, env):
     api_surface=types.SimpleNamespace(**globals());bind,api,deadline=probe_module.prepare(api_surface,out,env)
-    if env['TM_PHASE']=='probe':return probe_module.produce(api_surface,bind,out,env,api)
+    if env['TM_PHASE']=='probe':
+        if recovery(env):wait_ci(api,bind,out,deadline)
+        return probe_module.produce(api_surface,bind,out,env,api)
     probe_module.run_admit(api_surface,bind,out,env,api,deadline)
     require(set(bind['test_env'])=={'TM_RDMA_ADDR','TM_CONTROL_ADDR'},'TEST_ENV_UNBOUND')
     require(len(bind['setup'])==2 and len(bind['down'])==2 and len(bind['probes'])>=2,'TOPOLOGY_UNBOUND')

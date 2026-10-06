@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -236,21 +237,72 @@ class Fixture(unittest.TestCase):
                 self.assertEqual(json.loads((public/'prior-artifacts.json').read_text()),refs);self.assertEqual({p.relative_to(public).as_posix() for p in public.rglob('*') if p.is_file()},{'input/bind.json','prior-artifacts.json','new.json','manifest.sha256'});self.assertTrue((root/'build/elf.raw').exists())
     def test_r2_captured_siw_mac_gid_contract(self):
         device_fixture=dict(run_id=37458451078,artifact_id=11409957122,sha256='1ddc5e6d4fd7bc6e6fa0dcf1e64b56403d5d66ec3fd483b610a5f9169f2df981',text_b64='aGNhX2lkOglzaXcwCgl0cmFuc3BvcnQ6CQkJaVdBUlAgKDEpCglmd192ZXI6CQkJCTAuMC4wCglub2RlX2d1aWQ6CQkJNzA1YzoxZGZmOmZlOGU6M2I1OAoJc3lzX2ltYWdlX2d1aWQ6CQkJNzA1YzoxZGZmOmZlOGU6M2I1OAoJdmVuZG9yX2lkOgkJCTB4NjI2ZDc0Cgl2ZW5kb3JfcGFydF9pZDoJCQkyCglod192ZXI6CQkJCTB4MAoJcGh5c19wb3J0X2NudDoJCQkxCgltYXhfbXJfc2l6ZToJCQkweGZmZmZmZmZmZmZmZmZmZmYKCXBhZ2Vfc2l6ZV9jYXA6CQkJMHgxMDAwCgltYXhfcXA6CQkJCTEwMjQwMAoJbWF4X3FwX3dyOgkJCTMyNzY4CglkZXZpY2VfY2FwX2ZsYWdzOgkJMHgwMDIwMDAwMAoJCQkJCU1FTV9NR1RfRVhURU5TSU9OUwoJbWF4X3NnZToJCQk2CgltYXhfc2dlX3JkOgkJCTEKCW1heF9jcToJCQkJMTAyNDAwCgltYXhfY3FlOgkJCTMyNzY4MDAKCW1heF9tcjoJCQkJMTAyNDAwMAoJbWF4X3BkOgkJCQkxMDI0MDAKCW1heF9xcF9yZF9hdG9tOgkJCTEyOAoJbWF4X2VlX3JkX2F0b206CQkJMAoJbWF4X3Jlc19yZF9hdG9tOgkJMTMxMDcyMDAKCW1heF9xcF9pbml0X3JkX2F0b206CQkxMjgKCW1heF9lZV9pbml0X3JkX2F0b206CQkwCglhdG9taWNfY2FwOgkJCUFUT01JQ19OT05FICgwKQoJbWF4X2VlOgkJCQkwCgltYXhfcmRkOgkJCTAKCW1heF9tdzoJCQkJMAoJbWF4X3Jhd19pcHY2X3FwOgkJMAoJbWF4X3Jhd19ldGh5X3FwOgkJMAoJbWF4X21jYXN0X2dycDoJCQkwCgltYXhfbWNhc3RfcXBfYXR0YWNoOgkJMAoJbWF4X3RvdGFsX21jYXN0X3FwX2F0dGFjaDoJMAoJbWF4X2FoOgkJCQkwCgltYXhfZm1yOgkJCTAKCW1heF9zcnE6CQkJMTAyNDAwCgltYXhfc3JxX3dyOgkJCTMyNzY4MAoJbWF4X3NycV9zZ2U6CQkJNgoJbWF4X3BrZXlzOgkJCTAKCWxvY2FsX2NhX2Fja19kZWxheToJCTAKCWdlbmVyYWxfb2RwX2NhcHM6CglyY19vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl1Y19vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl1ZF9vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl4cmNfb2RwX2NhcHM6CgkJCQkJTk8gU1VQUE9SVAoJY29tcGxldGlvbl90aW1lc3RhbXBfbWFzayBub3Qgc3VwcG9ydGVkCgljb3JlIGNsb2NrIG5vdCBzdXBwb3J0ZWQKCWRldmljZV9jYXBfZmxhZ3NfZXg6CQkweDIwMDAwMAoJdHNvX2NhcHM6CgkJbWF4X3RzbzoJCQkwCglyc3NfY2FwczoKCQltYXhfcndxX2luZGlyZWN0aW9uX3RhYmxlczoJCQkwCgkJbWF4X3J3cV9pbmRpcmVjdGlvbl90YWJsZV9zaXplOgkJCTAKCQlyeF9oYXNoX2Z1bmN0aW9uOgkJCQkweDAKCQlyeF9oYXNoX2ZpZWxkc19tYXNrOgkJCQkweDAKCW1heF93cV90eXBlX3JxOgkJCTAKCXBhY2tldF9wYWNpbmdfY2FwczoKCQlxcF9yYXRlX2xpbWl0X21pbjoJMGticHMKCQlxcF9yYXRlX2xpbWl0X21heDoJMGticHMKCXRhZyBtYXRjaGluZyBub3Qgc3VwcG9ydGVkCgludW1fY29tcF92ZWN0b3JzOgkJMTYKCQlwb3J0OgkxCgkJCXN0YXRlOgkJCVBPUlRfQUNUSVZFICg0KQoJCQltYXhfbXR1OgkJMjU2ICgxKQoJCQlhY3RpdmVfbXR1OgkJMTAyNCAoMykKCQkJc21fbGlkOgkJCTAKCQkJcG9ydF9saWQ6CQkwCgkJCXBvcnRfbG1jOgkJMHgwMAoJCQlsaW5rX2xheWVyOgkJRXRoZXJuZXQKCQkJbWF4X21zZ19zejoJCTB4ZmZmZmZmZmYKCQkJcG9ydF9jYXBfZmxhZ3M6CQkweDAwMDkwMDAwCgkJCXBvcnRfY2FwX2ZsYWdzMjoJMHgwMDAwCgkJCW1heF92bF9udW06CQlpbnZhbGlkIHZhbHVlICgwKQoJCQliYWRfcGtleV9jbnRyOgkJMHgwCgkJCXFrZXlfdmlvbF9jbnRyOgkJMHgwCgkJCXNtX3NsOgkJCTAKCQkJcGtleV90YmxfbGVuOgkJMAoJCQlnaWRfdGJsX2xlbjoJCTEKCQkJc3VibmV0X3RpbWVvdXQ6CQkwCgkJCWluaXRfdHlwZV9yZXBseToJMAoJCQlhY3RpdmVfd2lkdGg6CQkxWCAoMSkKCQkJYWN0aXZlX3NwZWVkOgkJMi41IEdicHMgKDEpCgo=');device_raw=base64.b64decode(device_fixture['text_b64'],validate=True);self.assertEqual(hashlib.sha256(device_raw).hexdigest(),device_fixture['sha256']);a.probe_module.device_info(a,device_raw.decode(),{},True)
-        for before,after in [('siw0','foreign'),('iWARP','InfiniBand'),('PORT_ACTIVE','PORT_DOWN')]:self.reject(lambda:a.probe_module.device_info(a,device_raw.decode().replace(before,after,1),{},True),'PROBE_DEVICE_GID')
+        for before,after in [('siw0','foreign'),('iWARP','InfiniBand'),('PORT_ACTIVE','PORT_DOWN'),('port:\t1','port:\t2')]:self.reject(lambda:a.probe_module.device_info(a,device_raw.decode().replace(before,after,1),{},True),'PROBE_DEVICE_GID')
         fixture=dict(run_id=37455370088,artifact_id=11408487891,raw_sha256='2e8a71fdd4b9e849483fd6a4e1e77e91fc81c1c6966498dd400bea35f2724532',sha256='b08f767707cc15d53645fbb714057c403ec356e701204986b6b40c56552c9146',text_b64='eyJyb3dzIjpbeyJnaWRfcGF0aCI6Ii9zeXMvY2xhc3MvaW5maW5pYmFuZC9zaXcwL3BvcnRzLzEvZ2lkcy8wIiwibmV0ZGV2X3BhdGgiOiIvc3lzL2NsYXNzL2luZmluaWJhbmQvc2l3MC9wb3J0cy8xL2dpZF9hdHRycy9uZGV2cy8wIiwiZ2lkIjoiNzI1YzoxZDhlOjNiNTg6MDAwMDowMDAwOjAwMDA6MDAwMDowMDAwIiwibmV0ZGV2Ijoic2l3Y2kifV0sImxpbmtzIjoibGluayBzaXcwLzEgc3RhdGUgQUNUSVZFIHBoeXNpY2FsX3N0YXRlIExJTktfVVAgbmV0ZGV2IHNpd2NpIFxuIiwiYWRkcmVzc2VzIjpbeyJpZmluZGV4Ijo2LCJpZm5hbWUiOiJzaXdjaSIsImZsYWdzIjpbIkJST0FEQ0FTVCIsIk5PQVJQIiwiVVAiLCJMT1dFUl9VUCJdLCJtdHUiOjE1MDAsInFkaXNjIjoibm9xdWV1ZSIsIm9wZXJzdGF0ZSI6IlVOS05PV04iLCJncm91cCI6ImRlZmF1bHQiLCJ0eHFsZW4iOjEwMDAsImxpbmtfdHlwZSI6ImV0aGVyIiwiYWRkcmVzcyI6IjcyOjVjOjFkOjhlOjNiOjU4IiwiYnJvYWRjYXN0IjoiZmY6ZmY6ZmY6ZmY6ZmY6ZmYiLCJhZGRyX2luZm8iOlt7ImZhbWlseSI6ImluZXQiLCJsb2NhbCI6IjE5OC41MS4xMDAuMSIsInByZWZpeGxlbiI6MjQsInNjb3BlIjoiZ2xvYmFsIiwibGFiZWwiOiJzaXdjaSIsInZhbGlkX2xpZmVfdGltZSI6NDI5NDk2NzI5NSwicHJlZmVycmVkX2xpZmVfdGltZSI6NDI5NDk2NzI5NX0seyJmYW1pbHkiOiJpbmV0NiIsImxvY2FsIjoiZmU4MDo6NzA1YzoxZGZmOmZlOGU6M2I1OCIsInByZWZpeGxlbiI6NjQsInNjb3BlIjoibGluayIsInZhbGlkX2xpZmVfdGltZSI6NDI5NDk2NzI5NSwicHJlZmVycmVkX2xpZmVfdGltZSI6NDI5NDk2NzI5NX1dfV19')
         raw=base64.b64decode(fixture['text_b64'],validate=True);self.assertEqual(hashlib.sha256(raw).hexdigest(),fixture['sha256']);observed=json.loads(raw)
-        for case in ('positive','wrong-mac','wrong-netdev','unknown-gid','missing-ip','ambiguous-ip'):
+        for case in ('positive','wrong-mac','wrong-netdev','unknown-gid','nonzero-tail','missing-ip','ambiguous-ip'):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE='r2-recovery-v1'):
                 data=copy.deepcopy(observed);device=data['addresses'][0];row=data['rows'][0]
                 if case=='wrong-mac':device['address']='00:'+device['address'][3:]
                 if case=='wrong-netdev':row['netdev']+='-foreign'
                 if case=='unknown-gid':row['gid']='::1'
+                if case=='nonzero-tail':row['gid']=str(a.probe_module.ipaddress.IPv6Address(int(a.probe_module.ipaddress.IPv6Address(row['gid']))+1))
                 if case=='missing-ip':device['addr_info']=[v for v in device['addr_info'] if v['family']!='inet']
                 if case=='ambiguous-ip':extra=copy.deepcopy(next(v for v in device['addr_info'] if v['family']=='inet'));extra['local']=str(a.probe_module.ipaddress.IPv4Address(int(a.probe_module.ipaddress.IPv4Address(extra['local']))+1));device['addr_info'].append(extra)
                 root=pathlib.Path(td);g=root/'siw0/ports/1/gids';n=root/'siw0/ports/1/gid_attrs/ndevs';g.mkdir(parents=True);n.mkdir(parents=True);(g/'0').write_text(row['gid']);(n/'0').write_text(row['netdev'])
                 call=lambda:a.probe_module.network(a,root,data['links'],data['addresses'])
                 if case=='positive':result=call();self.assertEqual(result['ip'],next(v['local'] for v in device['addr_info'] if v['family']=='inet'));self.assertEqual((result['gid'],result['netdev'],result['gid_binding']),(row['gid'],row['netdev'],'SIW_MAC_NETDEV_IPV4'))
                 else:self.reject(call,'PROBE_')
+    def test_r2_prepare_runner_pin_refuses_before_artifact(self):
+        bind,request,env=self.authority();bind.update(profile='r2-recovery-v1',runner_name='tp01-2',build_ci_sha='3f4543ab47959d86bea2deefb18193474af5ef58',build_reference=dict(head_sha='3f4543ab47959d86bea2deefb18193474af5ef58',run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')},build_json_sha256='d'*64,list_sha256='e'*64)
+        source=self.dir/'canonical';source.mkdir();a.save(source/'bind.json',bind)
+        for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):shutil.copyfile(SCRIPTS/name,source/name)
+        a.seal(source);request.update(bind_b64=base64.b64encode((source/'bind.json').read_bytes()).decode(),input_manifest=a.sha(source/'manifest.sha256'))
+        event=self.dir/'event.json';a.save(event,dict(inputs=dict(diagnostic_objects=json.dumps(request)),sender=dict(id=1)))
+        for runner in ('tp01','foreign'):
+            out=self.dir/runner;out.mkdir();current=dict(env,TM_PROFILE='r2-recovery-v1',TM_PHASE='probe',GITHUB_EVENT_PATH=str(event),GITHUB_WORKSPACE=str(self.dir),GITHUB_REPOSITORY='seaweedfs/artifactory',GH_TOKEN='INERT',RUNNER_NAME=runner)
+            with patch.dict(os.environ,current),patch.object(a.Actions,'artifact') as artifact:
+                self.reject(lambda:a.probe_module.prepare(a,out,current),'R2_RUNNER_PIN');artifact.assert_not_called()
+    def test_r2_current_job_name_id_model(self):
+        """Scheduling identity model, not a captured host fact or live job."""
+        job=dict(name='tm-connected-diagnostic',runner_name='tp01-2',runner_id=23,status='in_progress',labels=['tp01-2']);env=dict(GITHUB_JOB=job['name']);bind=dict(runner_id=23,runner_names=['tp01','tp01-2']);record=dict(runner='tp01-2')
+        a.probe_module.job_identity(a,[job],env,bind,record)
+        for field,value in [('name','foreign'),('runner_name','tp01'),('runner_id',22),('status','completed')]:
+            wrong=dict(job,**{field:value});self.reject(lambda:a.probe_module.job_identity(a,[wrong],env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
+        for jobs in ([],[job,job]):self.reject(lambda:a.probe_module.job_identity(a,jobs,env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
+    def test_r2_qp_empty_success_and_failed_command(self):
+        spawn=subprocess.Popen
+        for rc in (0,1):
+            with tempfile.TemporaryDirectory() as td,patch.object(a.subprocess,'Popen',side_effect=lambda argv,**kw:spawn([sys.executable,'-c',f'import sys;sys.exit({rc})'],**kw)):
+                call=lambda:a.probe_module.qp_access(a,pathlib.Path(td),time.monotonic()+5)
+                if rc==0:self.assertEqual(call(),[])
+                else:self.reject(call,'COMMAND_REFUSED')
+    def test_r2_run_admit_model_identity_and_root_refusals(self):
+        """Inert admission model, not a host-fact fixture or real PROBE PASS."""
+        for case in ('positive','runner','host','uid','root','gid-kind','build-ref'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as td:
+                out=pathlib.Path(td);lock=out/'siw-lab.lock';lock.touch();st=lock.stat();build_ref=dict(run_id=37449089123,artifact_id=11406265930,digest='sha256:'+'a'*64)
+                row=dict(state='PASS_FACTS_PLANS_NOT_RUN',ci_sha='1'*40,source_sha='2'*40,build_ci_sha='3'*40,run_id=10,attempt=1,job='tm-connected-diagnostic',runner='tp01-2',hostname=a.probe_module.socket.gethostname(),uid=os.getuid(),kernel_release='INERT',siw_module_required_lines=[],gid='INERT',gid_index=0,netdev='INERT',ip='198.51.100.1',gid_binding='SIW_MAC_NETDEV_IPV4',provider_objects={},runner_names=['tp01','tp01-2'],runtime_access=dict(base=str(out),lock=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid)),plans={k:[] for k in ('setup','down','probes','r2_services','test_env')})
+                b=dict(row,profile='r2-recovery-v1',root=str(out/'codex03-tm-model'),lock_path=str(lock),probe_reference={},build_reference=build_ref,plans_status='REVIEWED_RENDERED_OWNED_WRAPPERS',**row['plans']);env=dict(RUNNER_NAME='tp01-2',TM_SOURCE_SHA='2'*40)
+                if case=='runner':env['RUNNER_NAME']='foreign'
+                if case=='host':row['hostname']='foreign'
+                if case=='uid':row['uid']+=1
+                if case=='root':b['root']=str(out.parent/'foreign')
+                if case=='gid-kind':b['gid_binding']='foreign'
+                expected=out/'expected';expected.mkdir();a.save(expected/'probe.json',row);b.update(probe_json_sha256=a.sha(expected/'probe.json'),probe_plan_source_sha256=a.sha(expected/'probe.json'))
+                def artifact(reference,dest,deadline):
+                    dest.mkdir();a.save(dest/'probe.json',row);a.save(dest/'prior-artifacts.json',dict(build_reference={} if case=='build-ref' else build_ref));a.seal(dest);return dict(head_sha='1'*40,id=10,run_attempt=1),None
+                api=a.types.SimpleNamespace(repository='seaweedfs/artifactory',artifact=artifact,get=lambda url,deadline:dict(total_count=1,jobs=[dict(name=row['job'],runner_name=row['runner'],conclusion='success')]))
+                call=lambda:a.probe_module.run_admit(a,b,out,env,api,time.monotonic()+10)
+                if case=='positive':call()
+                else:self.reject(call,{'runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT'}[case])
+    def test_r2_active_host_job_refuses(self):
+        for runner in ('tp01','tp01-2'):
+            api=a.types.SimpleNamespace(repository='seaweedfs/artifactory',get=lambda url,deadline:dict(total_count=1,workflow_runs=[dict(id=2)]) if 'runs?' in url else dict(total_count=1,jobs=[dict(status='in_progress',runner_name=runner)]))
+            with patch.dict(os.environ,TM_PROFILE='r2-recovery-v1',RUNNER_NAME='tp01-2',GITHUB_RUN_ID='1'):self.reject(lambda:a.wait_ci(api,dict(runner_names=['tp01','tp01-2']),self.dir,time.monotonic()+5),'CI_HOST_ACTIVE')
+            env=dict(TM_PROFILE='r2-recovery-v1',TM_PHASE='probe',RUNNER_NAME='tp01-2',GITHUB_RUN_ID='1')
+            with patch.dict(os.environ,env),patch.object(a.probe_module,'prepare',return_value=(dict(runner_names=['tp01','tp01-2']),api,time.monotonic()+5)),patch.object(a.probe_module,'produce') as produce:
+                self.reject(lambda:a.run_phase(self.dir,env),'CI_HOST_ACTIVE');produce.assert_not_called()
     def test_r2_real_service_body_and_role_port_scope(self):
         root=self.dir/'lease';root.mkdir();now=time.monotonic();a.save(root/'clock.json',dict(origin=now,body_deadline=now+20,terminal_deadline=now+30))
         file=self.dir/'bundle.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(root),r2_services=dict(master=dict(argv=[sys.executable,'-c','import time;time.sleep(20)',str(root)],env={}))),replacements=dict(ROOT=str(root))))
