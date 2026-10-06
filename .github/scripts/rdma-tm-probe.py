@@ -10,7 +10,7 @@ LIST_SHA='656ff488ae363a21a4473ed87509381a6a7a7c565a14b8698121a32adf4db226'
 
 def exact_build(a,bind,env):
     if bind.get('profile')=='r2-recovery-v1':
-        a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA']==bind['build_ci_sha']==bind['build_reference']['head_sha'],'R2_BUILD_BIND_DRIFT')
+        a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'] and bind['build_ci_sha']==bind['build_reference']['head_sha']=='3f4543ab47959d86bea2deefb18193474af5ef58','R2_BUILD_BIND_DRIFT')
         a.require(set(bind['product_hashes'])=={'loader','server','master'} and all(a.HEX64.fullmatch(v) for v in bind['product_hashes'].values()),'R2_BUILD_PRODUCTS');return
     a.require(bind['source_sha']==env['TM_SOURCE_SHA']==MONO_SHA and bind['ci_sha']==env['GITHUB_SHA'],'SOURCE_OR_ADAPTER_BIND_DRIFT')
     a.require(bind['build_ci_sha']==BUILD_SHA and bind['build_reference']==BUILD_REF,'UNAPPROVED_PRIOR_BUILD')

@@ -112,6 +112,10 @@ def manifest(root, expected=None, output_receipt=False):
 def seal(root):
     files = sorted(p for p in root.rglob('*') if p.is_file() and p != root/'manifest.sha256')
     (root/'manifest.sha256').write_text(''.join(sha(p)+'  '+p.relative_to(root).as_posix()+'\n' for p in files))
+    if recovery(os.environ):unpack_budget(sum(p.stat().st_size for p in [*files,root/'manifest.sha256']))
+
+def unpack_budget(size):
+    require(size <= (320 if recovery(os.environ) else 256)*1024*1024,'ARTIFACT_UNPACK_SIZE')
 
 def select_elf(raw, target, test):
     items = [v['executable'] for v in map(json.loads, raw.decode().splitlines()) if v.get('reason') == 'compiler-artifact' and v.get('target', {}).get('name') == target and v.get('profile', {}).get('test', False) == test and v.get('executable')]
@@ -170,7 +174,7 @@ class Actions:
             for item in archive.infolist():
                 name = pathlib.PurePosixPath(item.filename)
                 require(not name.is_absolute() and '..' not in name.parts and '\\' not in item.filename and item.filename not in seen and (item.external_attr >> 16)&0o170000 != 0o120000, 'ARTIFACT_PATH')
-                seen.add(item.filename); require(sum(i.file_size for i in archive.infolist()) <= 256*1024*1024, 'ARTIFACT_UNPACK_SIZE')
+                seen.add(item.filename); unpack_budget(sum(i.file_size for i in archive.infolist()))
                 archive.extract(item, dest)
         return run, artifact
 
