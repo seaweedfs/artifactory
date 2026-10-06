@@ -1,0 +1,33 @@
+apiVersion: testrunner.io/v1
+kind: Template
+metadata:
+  name: k8s-alpha-images
+  description: |
+    Build sw-block + sw-block-csi local docker images and load them
+    into k3s containerd. Outputs both digests for downstream pin.
+  parameters:
+    product_root: { type: string, required: true }
+    runtime:      { type: string, default: k3s }   # k3s | docker | kind
+spec:
+  phases:
+    - id: build_block
+      action: docker_build
+      cwd: "{{.product_root}}"
+      dockerfile: deploy/k8s/g15b/Dockerfile.sw-block
+      tag: sw-block:local
+    - id: build_csi
+      action: docker_build
+      cwd: "{{.product_root}}"
+      dockerfile: deploy/k8s/g15b/Dockerfile.blockcsi
+      tag: sw-block-csi:local
+    - id: load
+      action: ctr_load
+      runtime: "{{.runtime}}"
+      images:
+        - "{{.phases.build_block.outputs.image}}"
+        - "{{.phases.build_csi.outputs.image}}"
+  outputs:
+    - { name: block_image,    from: phases.build_block.outputs.image }
+    - { name: block_digest,   from: phases.build_block.outputs.digest }
+    - { name: csi_image,      from: phases.build_csi.outputs.image }
+    - { name: csi_digest,     from: phases.build_csi.outputs.digest }

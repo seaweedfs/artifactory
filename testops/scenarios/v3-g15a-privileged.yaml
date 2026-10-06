@@ -1,0 +1,295 @@
+name: v3-g15a-privileged
+# P-D-2 — re-implements G15a privileged scenario as v3block plugin scenario.
+#
+# Scope (per QA acceptance boundary 2026-05-03):
+#   - v3pack drives daemon lifecycle: blockmaster + blockvolume r1/r2 + blockcsi.
+#   - V2 testrunner core actions drive iSCSI client side: iscsi_login_direct,
+#     mkfs, mount, dd_write, dd_read_md5, umount, plus exec for iscsiadm logout
+#     (V2 iscsi_logout requires a target spec which we don't use here).
+#   - Proves end-to-end: real iscsiadm discovery+login → mkfs.ext4 → mount →
+#     4 KiB write → sync → checksum readback → umount → iscsiadm logout.
+#   - Captures: daemon logs, mount/device info, iSCSI sessions before/after.
+#   - Asserts: write_md5 == read_md5; no dangling iSCSI session post-cleanup;
+#              no V2 authority field leak in V3 daemon logs.
+#
+# NOT in scope (forward-carry):
+#   - K8s, dynamic PVC, failover under live mount — those land in P-D-3 / G15d.
+#
+# Pre-conditions on target node (m01 or any privileged Linux):
+#   - V3 binaries pre-built at {{ bin_dir }}/{blockmaster,blockvolume,blockcsi}
+#   - open-iscsi installed; iscsi_tcp module loadable; iscsid daemon running
+#     (sudo systemctl start iscsid)
+#   - sudo NOPW (V2 actions use RunRoot which requires passwordless sudo)
+#   - Ports 9333, 19101, 19102, 19201, 19202, 3260 free
+#   - /tmp writable; /mnt writable for mountpoint creation
+
+timeout: 5m
+
+env:
+  bin_dir: "/tmp/g15b/bin"
+  master_listen: "127.0.0.1:9333"
+  authority_dir: "/tmp/v3-g15a-priv/authority"
+  lifecycle_dir: "/tmp/v3-g15a-priv/lifecycle"
+  cluster_spec_path: "/tmp/v3-g15a-priv/cluster-spec.yaml"
+  r1_root: "/tmp/v3-g15a-priv/r1"
+  r2_root: "/tmp/v3-g15a-priv/r2"
+  master_log: "/tmp/v3-g15a-priv/blockmaster.log"
+  r1_log: "/tmp/v3-g15a-priv/blockvolume-r1.log"
+  r2_log: "/tmp/v3-g15a-priv/blockvolume-r2.log"
+  csi_log: "/tmp/v3-g15a-priv/blockcsi.log"
+  iscsi_addr: "127.0.0.1:3260"
+  iscsi_iqn: "iqn.2026-05.io.seaweedfs:v3-g15a-priv-v1"
+  mountpoint: "/mnt/v3-g15a-priv"
+  artifact_collect_dir: "/tmp/v3-g15a-priv/artifacts"
+
+topology:
+  nodes:
+    target_node:
+      host: "127.0.0.1"
+      is_local: true
+
+phases:
+  - name: pre_cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          sudo umount /mnt/v3-g15a-priv 2>/dev/null || true
+          sudo iscsiadm -m node -T iqn.2026-05.io.seaweedfs:v3-g15a-priv-v1 --logout 2>/dev/null || true
+          sudo iscsiadm -m node -T iqn.2026-05.io.seaweedfs:v3-g15a-priv-v1 -o delete 2>/dev/null || true
+          pkill -9 blockmaster 2>/dev/null || true
+          pkill -9 blockvolume 2>/dev/null || true
+          pkill -9 blockcsi 2>/dev/null || true
+          rm -rf /tmp/v3-g15a-priv
+          mkdir -p /tmp/v3-g15a-priv /tmp/v3-g15a-priv/artifacts
+          # Ensure iscsi_tcp module loaded; iscsid running.
+          sudo modprobe iscsi_tcp 2>/dev/null || true
+          sudo systemctl start iscsid 2>/dev/null || true
+
+  - name: cluster_spec
+    actions:
+      - action: v3_apply_cluster_spec
+        node: target_node
+        path: "{{ cluster_spec_path }}"
+        content: |
+          volumes:
+            - id: v1
+              size_bytes: 1048576
+              replication_factor: 2
+              placements:
+                - server_id: s1
+                  replica_id: r1
+                  source: existing_replica
+                - server_id: s2
+                  replica_id: r2
+                  source: existing_replica
+
+  - name: capture_iscsi_baseline
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sudo iscsiadm -m session 2>&1 > /tmp/v3-g15a-priv/artifacts/iscsi-session-pre.txt || true; cat /tmp/v3-g15a-priv/artifacts/iscsi-session-pre.txt"
+
+  - name: start_master
+    actions:
+      - action: v3_start_blockmaster
+        node: target_node
+        bin: "{{ bin_dir }}/blockmaster"
+        listen: "{{ master_listen }}"
+        authority_dir: "{{ authority_dir }}"
+        cluster_spec: "{{ cluster_spec_path }}"
+        lifecycle_store: "{{ lifecycle_dir }}"
+        product_loop_interval: "100ms"
+        expected_slots: "2"
+        log_path: "{{ master_log }}"
+        ready_timeout: "20"
+        save_as: master
+
+  - name: start_volumes
+    actions:
+      - action: v3_start_blockvolume
+        node: target_node
+        bin: "{{ bin_dir }}/blockvolume"
+        master: "{{ master_listen }}"
+        server_id: s1
+        replica_id: r1
+        volume_id: v1
+        data_addr: "127.0.0.1:19101"
+        ctrl_addr: "127.0.0.1:19102"
+        durable_root: "{{ r1_root }}"
+        iscsi_listen: "{{ iscsi_addr }}"
+        iscsi_iqn: "{{ iscsi_iqn }}"
+        log_path: "{{ r1_log }}"
+        ready_timeout: "20"
+        save_as: r1
+      - action: v3_start_blockvolume
+        node: target_node
+        bin: "{{ bin_dir }}/blockvolume"
+        master: "{{ master_listen }}"
+        server_id: s2
+        replica_id: r2
+        volume_id: v1
+        data_addr: "127.0.0.1:19201"
+        ctrl_addr: "127.0.0.1:19202"
+        durable_root: "{{ r2_root }}"
+        log_path: "{{ r2_log }}"
+        ready_timeout: "20"
+        save_as: r2
+
+  - name: wait_primary
+    actions:
+      - action: v3_wait_primary
+        node: target_node
+        log_path: "{{ r1_log }}"
+        volume_id: v1
+        expected_replica_id: r1
+        timeout_seconds: "30"
+
+  - name: start_csi
+    # blockcsi started per acceptance boundary even though this scenario drives
+    # iscsiadm directly via V2 actions (not through blockcsi NodeStage).
+    # Proves the CSI binary boots cleanly alongside the cluster.
+    actions:
+      - action: v3_start_blockcsi
+        node: target_node
+        bin: "{{ bin_dir }}/blockcsi"
+        endpoint: "tcp://127.0.0.1:0"
+        master: "{{ master_listen }}"
+        node_id: "v3-g15a-priv-node"
+        log_path: "{{ csi_log }}"
+        ready_timeout: "10"
+        save_as: csi
+
+  - name: iscsi_login
+    actions:
+      - action: iscsi_login_direct
+        node: target_node
+        host: "127.0.0.1"
+        port: "3260"
+        iqn: "{{ iscsi_iqn }}"
+        save_as: device
+
+  - name: capture_device_info
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          {
+            echo "=== iscsi sessions after login ==="
+            sudo iscsiadm -m session 2>&1
+            echo
+            echo "=== device path ==="
+            ls -la {{ device }}
+            echo
+            echo "=== /dev/disk/by-path matching test IQN ==="
+            ls -la /dev/disk/by-path/ 2>&1 | grep -F v3-g15a-priv-v1 || echo "(no matching by-path entries)"
+          } | tee /tmp/v3-g15a-priv/artifacts/device-info.txt
+
+  - name: mkfs
+    actions:
+      - action: mkfs
+        node: target_node
+        device: "{{ device }}"
+        fstype: ext4
+
+  - name: mount
+    actions:
+      - action: mount
+        node: target_node
+        device: "{{ device }}"
+        mountpoint: "{{ mountpoint }}"
+
+  - name: write_4kib
+    actions:
+      - action: dd_write
+        node: target_node
+        device: "{{ mountpoint }}/payload.bin"
+        bs: "4096"
+        count: "1"
+        oflag: ""
+        sync_mode: "fsync"
+        save_as: write_md5
+
+  - name: sync
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sync && echo synced"
+
+  - name: read_4kib_checksum
+    actions:
+      - action: dd_read_md5
+        node: target_node
+        device: "{{ mountpoint }}/payload.bin"
+        bs: "4096"
+        count: "1"
+        save_as: read_md5
+
+  - name: assert_byte_equal
+    actions:
+      - action: assert_equal
+        actual: "{{ write_md5 }}"
+        expected: "{{ read_md5 }}"
+
+  - name: umount
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sudo umount {{ mountpoint }}"
+
+  - name: iscsi_logout
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sudo iscsiadm -m node -T {{ iscsi_iqn }} --logout && sudo iscsiadm -m node -T {{ iscsi_iqn }} -o delete"
+
+  - name: capture_iscsi_post_cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: "sudo iscsiadm -m session 2>&1 > /tmp/v3-g15a-priv/artifacts/iscsi-session-post.txt || true; cat /tmp/v3-g15a-priv/artifacts/iscsi-session-post.txt"
+
+  - name: assert_no_dangling_session
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          if sudo iscsiadm -m session 2>/dev/null | grep -q -F {{ iscsi_iqn }}; then
+            echo "FAIL: dangling iSCSI session for {{ iscsi_iqn }}"
+            exit 1
+          fi
+          echo "OK: no dangling iSCSI session for {{ iscsi_iqn }}"
+
+  - name: assert_no_authority_leak
+    actions:
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ master_log }}"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ r1_log }}"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ r2_log }}"
+      - action: v3_assert_no_authority_leak
+        node: target_node
+        log_path: "{{ csi_log }}"
+
+  - name: collect_daemon_logs
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          cp {{ master_log }} {{ r1_log }} {{ r2_log }} {{ csi_log }} \
+             /tmp/v3-g15a-priv/cluster-spec.yaml \
+             /tmp/v3-g15a-priv/artifacts/ 2>/dev/null || true
+          ls -la /tmp/v3-g15a-priv/artifacts/
+
+  - name: cleanup
+    actions:
+      - action: exec
+        node: target_node
+        cmd: |
+          kill {{ master_pid }} {{ r1_pid }} {{ r2_pid }} {{ csi_pid }} 2>/dev/null || true
+          sleep 1
+          true

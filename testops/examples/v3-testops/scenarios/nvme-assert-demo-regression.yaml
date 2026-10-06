@@ -1,0 +1,33 @@
+name: nvme-assert-demo-regression
+timeout: 30s
+
+# M1 PR-4 demo — REGRESSION variant. Same scenario as
+# nvme-assert-demo.yaml but with 4 expectations deliberately
+# wrong, to demonstrate the field-level diff failure shape.
+# This is what QA/dev sees the next time CMIC, NMIC, anagrpid,
+# or ana_state regresses on the wire.
+
+topology:
+  nodes:
+    local:
+      host: "127.0.0.1"
+      is_local: true
+
+targets:
+  v3-vol:
+    node: local
+    iqn_suffix: demo-v1
+
+phases:
+  - name: assert_multipath_with_wrong_expectations
+    actions:
+      - action: nvme_assert_subsystem
+        target: v3-vol
+        node: local
+        paths: "2"             # correct
+        namespace_devices: "1" # correct
+        ana_state: "inaccessible"   # truth: optimized — REGRESSION
+        cmic: "0x00"                # truth: 0x0a — REGRESSION (lost multi-controller)
+        nmic: "0x00"                # truth: 0x01 — REGRESSION (lost NMIC.SHARED)
+        anagrpid: "99"              # truth: 1 — REGRESSION
+        cntlid_distinct: "true"     # correct
