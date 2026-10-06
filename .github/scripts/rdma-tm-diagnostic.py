@@ -117,6 +117,17 @@ def seal(root):
 def unpack_budget(size):
     require(size <= (320 if recovery(os.environ) else 256)*1024*1024,'ARTIFACT_UNPACK_SIZE')
 
+def phase_publication(out,env):
+    if not recovery(env) or env.get('TM_PHASE') not in ('probe','run'):seal(out);return
+    public=out/'publication';public.mkdir();bind=json.loads((out/'input/bind.json').read_text()) if (out/'input/bind.json').is_file() else {}
+    save(public/'prior-artifacts.json',{k:bind[k] for k in (('build_reference',) if env['TM_PHASE']=='probe' else ('build_reference','probe_reference')) if k in bind})
+    for f in out.rglob('*'):
+        relative=f.relative_to(out)
+        if not f.is_file() or relative.parts[0] in ('publication','build','probe') or relative.as_posix()=='manifest.sha256' or re.fullmatch(r'artifact-[0-9]+\.zip\.raw',relative.as_posix()):continue
+        require(not f.is_symlink() and f.resolve().is_relative_to(out.resolve()),'PUBLICATION_FILE_ALIAS')
+        target=public/relative;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(f,target)
+    seal(public)
+
 def select_elf(raw, target, test):
     items = [v['executable'] for v in map(json.loads, raw.decode().splitlines()) if v.get('reason') == 'compiler-artifact' and v.get('target', {}).get('name') == target and v.get('profile', {}).get('test', False) == test and v.get('executable')]
     require(len(items) == 1, 'ELF_SELECTION'); return pathlib.Path(items[0])
@@ -158,7 +169,7 @@ class Actions:
         run = self.get(prefix+'runs/'+str(reference['run_id']), deadline)
         require(str(run['repository']['id']) == str(os.environ['GITHUB_REPOSITORY_ID']) and run['id'] == reference['run_id'] and run['run_attempt'] == reference['attempt'] and run['workflow_id'] == reference['workflow_id'] and run['head_sha'] == reference['head_sha'] and str(run['actor']['id']) == str(reference['actor_id']) and run['conclusion'] == 'success', 'ARTIFACT_RUN_ASSOCIATION')
         artifact = self.get(prefix+'artifacts/'+str(reference['artifact_id']), deadline)
-        require(not artifact['expired'] and artifact['workflow_run']['id'] == run['id'] and artifact['name'] == reference['name'], 'ARTIFACT_IDENTITY')
+        require(not artifact['expired'] and artifact['workflow_run']['id'] == run['id'] and artifact['name'] == reference['name'] and (not recovery(os.environ) or re.fullmatch(r'sha256:[0-9a-f]{64}',reference.get('digest','')) and artifact.get('digest') == reference['digest']), 'ARTIFACT_IDENTITY')
         request = urllib.request.Request('https://api.github.com'+prefix+'artifacts/'+str(reference['artifact_id'])+'/zip', headers={'Authorization':'Bearer '+self.token})
         try: urllib.request.build_opener(NoRedirect).open(request, timeout=min(20, deadline-time.monotonic()))
         except urllib.error.HTTPError as error:
@@ -637,6 +648,6 @@ def main():
         save(out/'state.json',dict(state=state,publication='PENDING',runtime_authority='SEPARATE_MANAGER_DISPATCH'))
     except BaseException as error:
         save(out/'state.json',dict(state='REFUSED_OR_UNKNOWN',error=repr(error),publication='PENDING')); raise
-    finally: seal(out)
+    finally: phase_publication(out,env)
 
 if __name__=='__main__': main()

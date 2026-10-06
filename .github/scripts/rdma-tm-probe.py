@@ -10,7 +10,7 @@ LIST_SHA='656ff488ae363a21a4473ed87509381a6a7a7c565a14b8698121a32adf4db226'
 
 def exact_build(a,bind,env):
     if bind.get('profile')=='r2-recovery-v1':
-        a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'] and bind['build_ci_sha']==bind['build_reference']['head_sha']=='3f4543ab47959d86bea2deefb18193474af5ef58','R2_BUILD_BIND_DRIFT')
+        a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'] and bind['build_ci_sha']==bind['build_reference']['head_sha']=='3f4543ab47959d86bea2deefb18193474af5ef58' and bind['build_reference']['run_id']==37449089123,'R2_BUILD_BIND_DRIFT')
         a.require(set(bind['product_hashes'])=={'loader','server','master'} and all(a.HEX64.fullmatch(v) for v in bind['product_hashes'].values()),'R2_BUILD_PRODUCTS');return
     a.require(bind['source_sha']==env['TM_SOURCE_SHA']==MONO_SHA and bind['ci_sha']==env['GITHUB_SHA'],'SOURCE_OR_ADAPTER_BIND_DRIFT')
     a.require(bind['build_ci_sha']==BUILD_SHA and bind['build_reference']==BUILD_REF,'UNAPPROVED_PRIOR_BUILD')
@@ -157,6 +157,7 @@ def run_admit(a,bind,out,env,api,deadline):
     p=json.loads((out/'probe/probe.json').read_text())
     a.require(a.sha(out/'probe/probe.json')==bind['probe_json_sha256'] and p['state']=='PASS_FACTS_PLANS_NOT_RUN','PROBE_RECEIPT_DRIFT')
     r2=bind.get('profile')=='r2-recovery-v1';a.require(p['ci_sha']==run['head_sha']==bind['ci_sha'] and p['source_sha']==(env['TM_SOURCE_SHA'] if r2 else MONO_SHA) and p['build_ci_sha']==(bind['build_ci_sha'] if r2 else BUILD_SHA) and p['run_id']==run['id'] and p['attempt']==run['run_attempt'] and p['job']=='tm-connected-diagnostic','PROBE_JOB_ASSOCIATION')
+    if r2:a.require(json.loads((out/'probe/prior-artifacts.json').read_text()).get('build_reference')==bind['build_reference'],'PROBE_BUILD_REFERENCE_DRIFT')
     a.require(p['runner']==env['RUNNER_NAME'] and p['hostname']==socket.gethostname() and p['uid']==os.getuid(),'PROBE_FOREIGN_RUNNER')
     jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(run['id'])+'/attempts/'+str(run['run_attempt'])+'/jobs?per_page=100',deadline)
     a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==p['job'] and j['runner_name']==p['runner'] and j['conclusion']=='success'])==1,'PROBE_RUNNER_ASSOCIATION')

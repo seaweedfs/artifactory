@@ -541,7 +541,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tm-connected-${{ inputs.diagnostic_phase }}-${{ inputs.mono_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: tm-diagnostic/
+          path: ${{ inputs.diagnostic_profile == 'r2-recovery-v1' && inputs.diagnostic_phase != 'build' && 'tm-diagnostic/publication/' || 'tm-diagnostic/' }}
           if-no-files-found: error
           retention-days: 14
       - name: Observe exact publication via read-only Actions API

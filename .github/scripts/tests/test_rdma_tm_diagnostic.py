@@ -204,24 +204,35 @@ class Fixture(unittest.TestCase):
         self.assertEqual(projected.count(guard),2);projected=projected.replace(guard,'').rstrip()+'\n'
         self.assertEqual(hashlib.sha256(projected.encode()).hexdigest(),'c3596fa8a4038f5d58cc2648201e1efdd6a8356f28054209dc9452a4f964ee71')
     def test_r2_archive_consumer_and_publisher_boundaries(self):
-        reference=dict(run_id=1,attempt=1,workflow_id=2,head_sha='a'*40,actor_id=3,artifact_id=4,name='fixture')
+        reference=dict(run_id=1,attempt=1,workflow_id=2,head_sha='a'*40,actor_id=3,artifact_id=4,name='fixture',digest='sha256:'+hashlib.sha256(b'ZIP').hexdigest())
         run=dict(repository=dict(id=5),id=1,run_attempt=1,workflow_id=2,head_sha='a'*40,actor=dict(id=3),conclusion='success')
         artifact=dict(expired=False,workflow_run=dict(id=1),name='fixture',digest='sha256:'+hashlib.sha256(b'ZIP').hexdigest())
         for profile,cap in [('r2-recovery-v1',320*1024*1024),('tm-connected-v1',256*1024*1024)]:
             for size in (cap,cap+1):
                 container=Mock();container.infolist.return_value=[a.types.SimpleNamespace(filename='payload.raw',external_attr=0,file_size=size)]
-                with tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE=profile,GITHUB_REPOSITORY_ID='5'),patch.object(a.Actions,'get',side_effect=[run,artifact]),patch.object(a.urllib.request,'build_opener') as redirect,patch.object(a.urllib.request,'urlopen'),patch.object(a,'bounded_read',return_value=b'ZIP'),patch.object(a.zipfile,'ZipFile') as archive:
+                with tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE=profile,GITHUB_REPOSITORY_ID='5'),patch.object(a.Actions,'get',side_effect=[run,artifact]) as fetch,patch.object(a.urllib.request,'build_opener') as redirect,patch.object(a.urllib.request,'urlopen'),patch.object(a,'bounded_read',return_value=b'ZIP'),patch.object(a.zipfile,'ZipFile') as archive:
                     redirect.return_value.open.side_effect=a.urllib.error.HTTPError('https://fixture',302,'redirect',{'Location':'https://fixture'},None);archive.return_value.__enter__.return_value=container
                     call=lambda:a.Actions('seaweedfs/artifactory','inert',pathlib.Path(td)).artifact(reference,pathlib.Path(td)/'unpack',time.monotonic()+10)
                     if size==cap:call();self.assertTrue(container.extract.called)
                     else:self.reject(call,'ARTIFACT_UNPACK_SIZE');self.assertFalse(container.extract.called)
+                    if profile=='r2-recovery-v1' and size==cap:fetch.side_effect=[run,artifact];self.reject(lambda:a.Actions('seaweedfs/artifactory','inert',pathlib.Path(td)).artifact(dict(reference,digest='sha256:'+'0'*64),pathlib.Path(td)/'foreign',time.monotonic()+10),'ARTIFACT_IDENTITY')
                 with tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE=profile),patch.object(a,'sha',return_value='0'*64):
                     root=pathlib.Path(td)
                     with (root/'payload.raw').open('wb') as f:f.truncate(size-(64+2+len('payload.raw')+1))
                     if profile=='r2-recovery-v1' and size>cap:self.reject(lambda:a.seal(root),'ARTIFACT_UNPACK_SIZE')
                     else:a.seal(root)
-        bind=dict(profile='r2-recovery-v1',source_sha='b'*40,ci_sha='c'*40,build_ci_sha='3f4543ab47959d86bea2deefb18193474af5ef58',build_reference=dict(head_sha='3f4543ab47959d86bea2deefb18193474af5ef58'),product_hashes={k:'d'*64 for k in ('loader','server','master')});env=dict(TM_SOURCE_SHA='b'*40,GITHUB_SHA='c'*40)
-        a.probe_module.exact_build(a,bind,env);bad=copy.deepcopy(bind);bad['build_ci_sha']='e'*40;self.reject(lambda:a.probe_module.exact_build(a,bad,env),'R2_BUILD_BIND_DRIFT')
+        bind=dict(profile='r2-recovery-v1',source_sha='b'*40,ci_sha='c'*40,build_ci_sha='3f4543ab47959d86bea2deefb18193474af5ef58',build_reference=dict(head_sha='3f4543ab47959d86bea2deefb18193474af5ef58',run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')});env=dict(TM_SOURCE_SHA='b'*40,GITHUB_SHA='c'*40)
+        a.probe_module.exact_build(a,bind,env);bad=copy.deepcopy(bind);bad['build_ci_sha']=bad['build_reference']['head_sha']='e'*40;self.reject(lambda:a.probe_module.exact_build(a,bad,env),'R2_BUILD_BIND_DRIFT')
+        bad=copy.deepcopy(bind);bad['build_reference']['run_id']=1;self.reject(lambda:a.probe_module.exact_build(a,bad,env),'R2_BUILD_BIND_DRIFT')
+    def test_r2_phase_publication_excludes_prior_caches(self):
+        for phase in ('probe','run'):
+            with self.subTest(phase=phase),tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE='r2-recovery-v1'):
+                root=pathlib.Path(td);(root/'input').mkdir();refs={k:dict(run_id=1,artifact_id=2,digest='sha256:'+'a'*64) for k in (('build_reference',) if phase=='probe' else ('build_reference','probe_reference'))};a.save(root/'input/bind.json',refs);a.save(root/'new.json',dict(phase=phase))
+                for name,size in [('build/elf.raw',290949203),('probe/prior.raw',1024),('artifact-2.zip.raw',115032941)]:
+                    p=root/name;p.parent.mkdir(exist_ok=True)
+                    with p.open('wb') as f:f.truncate(size)
+                a.phase_publication(root,dict(TM_PROFILE='r2-recovery-v1',TM_PHASE=phase));public=root/'publication';a.manifest(public,output_receipt=True)
+                self.assertEqual(json.loads((public/'prior-artifacts.json').read_text()),refs);self.assertEqual({p.relative_to(public).as_posix() for p in public.rglob('*') if p.is_file()},{'input/bind.json','prior-artifacts.json','new.json','manifest.sha256'});self.assertTrue((root/'build/elf.raw').exists())
     def test_r2_real_service_body_and_role_port_scope(self):
         root=self.dir/'lease';root.mkdir();now=time.monotonic();a.save(root/'clock.json',dict(origin=now,body_deadline=now+20,terminal_deadline=now+30))
         file=self.dir/'bundle.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(root),r2_services=dict(master=dict(argv=[sys.executable,'-c','import time;time.sleep(20)',str(root)],env={}))),replacements=dict(ROOT=str(root))))
