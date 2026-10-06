@@ -113,7 +113,7 @@ class ProbeControls(unittest.TestCase):
                 b=dict(root=str(base/'codex03-tm-probe'),lock_path=str(base/'siw-lab.lock'));r2=case.startswith('r2-');seen=[]
                 if r2:
                     physical=base/'data/nvme/relocated/opt/work';physical.mkdir(parents=True);alias=base/'opt/work';alias.parent.mkdir();alias.symlink_to(physical,target_is_directory=True)
-                    lock=alias/'siw-lab.lock';lock.touch();st=lock.stat();b.update(profile='r2-recovery-v1',lock_path=str(lock),build_ci_sha='3'*40,runner_names=['tp01','tp01-2'],runner_id=23,lock_identity=dict(dev=st.st_dev,inode=st.st_ino));env.update(TM_SOURCE_SHA='2'*40,RUNNER_NAME='tp01-2')
+                    lock=alias/'siw-lab.lock';lock.touch();st=lock.stat();b.update(profile='r2-recovery-v1',ports=a.R2_PORTS,lock_path=str(lock),build_ci_sha='3'*40,runner_names=['tp01','tp01-2'],runner_id=23,lock_identity=dict(dev=st.st_dev,inode=st.st_ino));env.update(TM_SOURCE_SHA='2'*40,RUNNER_NAME='tp01-2')
                     (build/'server-help.stdout.raw').write_text((build/'server-help.stdout.raw').read_text()+'\n--metricsPort\n--metricsIp\n')
                 def command(argv,dest,label,deadline,**kwargs):
                     seen.append(label)
@@ -144,7 +144,7 @@ class ProbeControls(unittest.TestCase):
                     if r2 and pathlib.Path(path)==pathlib.Path(b['lock_path']):self.assertEqual(flags,os.O_RDONLY|os.O_NOFOLLOW);seen.append('lock-read-only')
                     return open_fd(path,flags,*args)
                 # Remap only the host lock locator; execute real filesystem validation.
-                with patch.object(os,'open',side_effect=open_control),patch.dict(os.environ,TM_PROFILE='r2-recovery-v1' if r2 else 'tm-connected-v1',GITHUB_WORKSPACE=str(base)),patch.object(a,'owned_root',side_effect=lambda rr,ll,ww,bb=None:owned(rr,ll,ww,str(lock.parent) if r2 else str(base))),patch.object(p,'device_info') if r2 else patch.object(p,'device_info',wraps=p.device_info),patch.object(a,'command',command),patch.object(pathlib.Path,'read_text',read_text),patch.object(a,'ports_free'),patch.object(p,'network',return_value=dict(gid='fixture-gid',gid_index=0,netdev='fixture-net',ip='198.51.100.1')),patch.object(p,'root_access',side_effect=lambda aa,bb,oo,dd:access(aa,bb,oo,dd,str(base))):
+                with patch.object(os,'open',side_effect=open_control),patch.dict(os.environ,TM_PROFILE='r2-recovery-v1' if r2 else 'tm-connected-v1',GITHUB_WORKSPACE=str(base)),patch.object(a,'owned_root',side_effect=lambda rr,ll,ww,bb=None:owned(rr,ll,ww,str(lock.parent) if r2 else str(base))),patch.object(p,'device_info') if r2 else patch.object(p,'device_info',wraps=p.device_info),patch.object(a,'command',command),patch.object(pathlib.Path,'read_text',read_text),patch.object(a,'ports_free',wraps=a.ports_free) if r2 else patch.object(a,'ports_free'),patch.object(p,'network',return_value=dict(gid='fixture-gid',gid_index=0,netdev='fixture-net',ip='198.51.100.1')),patch.object(p,'root_access',side_effect=lambda aa,bb,oo,dd:access(aa,bb,oo,dd,str(base))):
                     if case in ('positive','r2-positive'):self.assertIn('PLANS_NOT_EXECUTED',p.produce(a,b,out,env,types.SimpleNamespace(repository='fixture/repo',get=jobs)))
                     else:
                         with self.assertRaises((ValueError,FileNotFoundError)):p.produce(a,b,out,env,types.SimpleNamespace(repository='fixture/repo',get=jobs))
@@ -153,11 +153,13 @@ class ProbeControls(unittest.TestCase):
                 if case in ('positive','r2-positive'):self.assertEqual(set(row['provider_objects']),{'libsiw','libibverbs','librdmacm'});self.assertEqual(row['uid'],os.getuid())
                 if case=='r2-positive':self.assertEqual(row['qp_access'],[]);self.assertIn('probe-qp-json',seen)
                 if case=='r2-positive':
+                    self.assertEqual(row['ports_observed_free_not_reserved'],a.R2_PORTS);self.assertTrue(all(port<row['ephemeral_range'][0] for port in a.R2_PORTS));self.assertTrue(list(out.glob('ports-*.json')))
                     self.assertEqual(row['runtime_access']['lock'],str(physical/'siw-lab.lock'));self.assertEqual(row['runtime_access']['lock_identity'],dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid))
                     argv=row['plans']['r2_services']['server']['argv'];self.assertEqual([argv[argv.index(flag)+1] for flag in ('--ip','--ip.bind')],['127.0.0.1']*2);self.assertEqual(argv[argv.index('--rdma.ip')+1],'198.51.100.1')
                     grow=next(r['argv'] for r in row['plans']['probes'] if '/vol/grow' in r['argv'][-1]);self.assertIn('--retry-all-errors',grow);self.assertEqual([grow[grow.index(flag)+1] for flag in ('--retry-delay','--retry-max-time')],['1','13'])
                     self.assertEqual([r['argv'][r['argv'].index('--max-time')+1] for r in row['plans']['probes'] if r['argv'][0]=='curl'],['1','1','13'])
                     self.assertEqual(row['plans']['probes'][2]['argv'][-2:],['server','ready'])
+                    self.assertEqual(argv[argv.index('--rdma.port')+1],'21042');self.assertEqual(argv[argv.index('--metricsPort')+1],'21044');self.assertEqual(row['plans']['test_env'],dict(TM_RDMA_ADDR='198.51.100.1:21042',TM_CONTROL_ADDR='127.0.0.1:21041'))
                 if case in ('r2-job','r2-qp'):self.assertEqual(row['error_code'],'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED' if case=='r2-job' else 'COMMAND_REFUSED probe-qp-json')
                 if case=='runner-missing':self.assertTrue((out/'runner-inventory.json').exists())
                 if case=='tool-missing':self.assertEqual(row['error_code'],'PROBE_FileNotFoundError')

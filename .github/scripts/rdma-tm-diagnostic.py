@@ -32,6 +32,7 @@ require = decoder.require
 probe_spec = importlib.util.spec_from_file_location('tm_probe', HERE/'rdma-tm-probe.py')
 probe_module = importlib.util.module_from_spec(probe_spec); probe_spec.loader.exec_module(probe_module)
 PORTS = [46240, 46241, 46242, 46243, 46244, 46245, 46246, 56243]
+R2_PORTS = [21040, 21041, 21042, 21043, 21044, 21045, 21046, 31043]
 HEX40 = re.compile('[0-9a-f]{40}')
 HEX64 = re.compile('[0-9a-f]{64}')
 R2_TREE = '6b2068aa712cfd043b08a8d1f2a261c6b2f4c574dc1f281eedc1ca8a11af11a5'
@@ -364,11 +365,27 @@ def proc(pid):
         return dict(pid=pid,state=fields[0],starttime=int(fields[19]),sid=int(fields[3]))
     except FileNotFoundError: return None
 
-def ports_free(ports=PORTS):
-    occupied = set()
-    for path in ('/proc/net/tcp','/proc/net/tcp6'):
-        occupied.update(int(line.split()[1].split(':')[1],16) for line in pathlib.Path(path).read_text().splitlines()[1:])
-    require(not occupied.intersection(ports), 'PRE_SPAWN_PORT_COLLISION')
+def ports_free(ports=PORTS,output=None,below_ephemeral=False):
+    occupied=set();report=dict(ports=ports,raw={},matching=[],ignored=[])
+    try:
+        if below_ephemeral:
+            report['range_raw']=pathlib.Path('/proc/sys/net/ipv4/ip_local_port_range').read_text();limits=list(map(int,report['range_raw'].split()));report['ephemeral_range']=limits
+            require(len(limits)==2 and 1<=limits[0]<=limits[1]<=65535,'R2_EPHEMERAL_RANGE_INVALID')
+            require(all(type(port) is int and 0<port<limits[0] for port in ports),'R2_PORT_AT_OR_ABOVE_EPHEMERAL')
+        for path in ('/proc/net/tcp','/proc/net/tcp6'):
+            report['raw'][path]=raw=pathlib.Path(path).read_text()
+            for line in raw.splitlines()[1:]:
+                fields=line.split();port=int(fields[1].split(':')[1],16)
+                if below_ephemeral:
+                    require(len(fields)>=10,'R2_TCP_TABLE_SCHEMA');row=dict(table=path,local=fields[1],remote=fields[2],state=fields[3],uid=int(fields[7]),inode=int(fields[9]),port=port)
+                    relevant=fields[3]=='0A' or port in ports;report['matching' if relevant else 'ignored'].append(row)
+                    if relevant:occupied.add(port)
+                else:occupied.add(port)
+        report['conflicting_ports']=sorted(occupied.intersection(ports));require(not report['conflicting_ports'],'PRE_SPAWN_PORT_COLLISION');report['state']='PASS'
+    except BaseException as error:report.update(state='FAIL',error=repr(error));raise
+    finally:
+        if output is not None:save(pathlib.Path(output)/('ports-'+str(time.monotonic_ns())+'.json'),report)
+    return report if below_ephemeral else None
 
 def enrollment(root):
     owners = []
@@ -407,7 +424,7 @@ def service(bundle_file,role,phase):
     require(item['bind'].get('profile')=='r2-recovery-v1' and role in ('master','server') and phase in ('up','down','ready') and root.resolve()==root,'R2_SERVICE_SCOPE')
     if phase=='ready':
         require(role=='server','R2_REGISTRATION_ROLE');clock=json.loads((root/'clock.json').read_text())
-        probe_module.wait_registered(types.SimpleNamespace(**globals()),root,min(clock['body_deadline'],clock['origin']+90));return
+        probe_module.wait_registered(types.SimpleNamespace(**globals()),root,min(clock['body_deadline'],clock['origin']+90),master='127.0.0.1:'+str(item['bind']['ports'][3]),expected='127.0.0.1:'+str(item['bind']['ports'][0]));return
     elif phase=='up':
         directory.mkdir(mode=0o700);directory.joinpath('data').mkdir();argv,extra=render(item['bind']['r2_services'][role],item['replacements'],root)
         clock=json.loads((root/'clock.json').read_text());require(time.monotonic()<min(clock['body_deadline'],clock['origin']+90),'R2_SERVICE_START_LATE')
@@ -470,9 +487,9 @@ def guardian(bundle, output, replacements):
                 deps=command(['ldd',str(binary)],root,'fresh-'+label+'-dependencies',min(setup_deadline,time.monotonic()+10))
                 require(b'not found' not in deps,'DEPENDENCY_MISSING')
                 command([str(binary),*({'loader':['--list','--ignored'],'server':['--help'],'master':['help']}[label])],root,'fresh-'+label+'-entry',min(setup_deadline,time.monotonic()+10))
-        ports_free()
+        ports_free(bundle['ports'],root,True) if bundle.get('profile')=='r2-recovery-v1' else ports_free()
         for i,row in enumerate(bundle['setup']):
-            ports_free(([46243,56243] if row['role']=='master' else [46240,46241,46242,46244]) if bundle.get('profile')=='r2-recovery-v1' else PORTS); execute(row,'setup-'+str(i),min(90,body-time.monotonic())); owners=enrollment(root); save(root/'enrollment.json',owners)
+            ports_free(([bundle['ports'][3],bundle['ports'][7]] if row['role']=='master' else bundle['ports'][:3]+[bundle['ports'][4]]) if bundle.get('profile')=='r2-recovery-v1' else PORTS,root if bundle.get('profile')=='r2-recovery-v1' else None,bundle.get('profile')=='r2-recovery-v1'); execute(row,'setup-'+str(i),min(90,body-time.monotonic())); owners=enrollment(root); save(root/'enrollment.json',owners)
         for i,row in enumerate(bundle['probes']): execute(row,'probe-'+str(i),min(15,body-time.monotonic()))
         (root/'state').write_text('READY')
         while time.monotonic()<body:
@@ -565,7 +582,7 @@ def runtime(bind, input_root, build_root, output, api, private=False):
     root=pathlib.Path(bind['root']); require(not root.exists(),'OWNED_ROOT_NOT_FRESH')
     if not private:
         root=owned_root(root,bind['lock_path'],os.environ['GITHUB_WORKSPACE'] if r2 else '/opt/work','/opt/work' if r2 else None)
-        require(bind['whole_seconds']==600 and bind['reserve_seconds']==60 and bind['ports']==PORTS,'CLOCK_OR_PORTS')
+        require(bind['whole_seconds']==600 and bind['reserve_seconds']==60 and bind['ports']==(R2_PORTS if r2 else PORTS),'CLOCK_OR_PORTS')
     replacements={'ROOT':str(root),'INPUT':str(input_root),'BUILD':str(build_root)}
     b=dict(bind,root=str(root),caller=proc(os.getpid()));
     if private: b['local_inert_fixture']=True

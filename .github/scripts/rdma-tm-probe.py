@@ -10,7 +10,7 @@ LIST_SHA='656ff488ae363a21a4473ed87509381a6a7a7c565a14b8698121a32adf4db226'
 
 def exact_build(a,bind,env):
     if bind.get('profile')=='r2-recovery-v1':
-        a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'] and bind['build_ci_sha']==bind['build_reference']['head_sha']=='3f4543ab47959d86bea2deefb18193474af5ef58' and bind['build_reference']['run_id']==37449089123,'R2_BUILD_BIND_DRIFT')
+        a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'] and bind['build_ci_sha']==bind['build_reference']['head_sha']==bind['ci_sha'] and type(bind['build_reference']['run_id']) is int and bind['build_reference']['run_id']>0,'R2_BUILD_BIND_DRIFT')
         a.require(set(bind['product_hashes'])=={'loader','server','master'} and all(a.HEX64.fullmatch(v) for v in bind['product_hashes'].values()),'R2_BUILD_PRODUCTS');return
     a.require(bind['source_sha']==env['TM_SOURCE_SHA']==MONO_SHA and bind['ci_sha']==env['GITHUB_SHA'],'SOURCE_OR_ADAPTER_BIND_DRIFT')
     a.require(bind['build_ci_sha']==BUILD_SHA and bind['build_reference']==BUILD_REF,'UNAPPROVED_PRIOR_BUILD')
@@ -122,11 +122,12 @@ def plans(a,build,bind,facts):
     a.require('master' in (build/'master-help.stdout.raw').read_text(),'PROBE_MASTER_PLAN_UNSUPPORTED')
     if bind.get('profile')=='r2-recovery-v1':
         a.require(all(flag in help_raw for flag in ('--metricsPort','--metricsIp')),'R2_METRICS_FLAGS_UNSUPPORTED')
-        rows={'master':dict(argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-volumeSizeLimitMB=64','-mdir=${ROOT}/master/data'],env={}),'server':dict(argv=['${BUILD}/server.elf','--ip','127.0.0.1','--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server/data','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242','--metricsPort','46244','--metricsIp','127.0.0.1'],env={})}
+        a.require(bind['ports']==a.R2_PORTS,'R2_PORT_BIND');http,grpc,rdma,master,metrics,_,_,master_grpc=bind['ports']
+        rows={'master':dict(argv=['${BUILD}/master.elf','master','-ip=127.0.0.1',f'-port={master}',f'-port.grpc={master_grpc}','-volumeSizeLimitMB=64','-mdir=${ROOT}/master/data'],env={}),'server':dict(argv=['${BUILD}/server.elf','--ip','127.0.0.1','--ip.bind','127.0.0.1','--port',str(http),'--port.grpc',str(grpc),'--master',f'127.0.0.1:{master}','--dir','${ROOT}/server/data','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port',str(rdma),'--metricsPort',str(metrics),'--metricsIp','127.0.0.1'],env={})}
         wrapper=lambda role,phase:dict(role=role,argv=['python3','-B','${INPUT}/rdma-tm-diagnostic.py','service','${ROOT}/r2-service-bundle.json',role,phase],env={})
-        probes=[dict(argv=['curl','--fail','--max-time','13' if '/vol/grow' in url else '1','--retry','30','--retry-all-errors','--retry-connrefused','--retry-delay','1','--retry-max-time','13',url],env={}) for url in ['http://127.0.0.1:46243/dir/status','http://127.0.0.1:46240/status','http://127.0.0.1:46243/vol/grow?count=1&replication=000']]
+        probes=[dict(argv=['curl','--fail','--max-time','13' if '/vol/grow' in url else '1','--retry','30','--retry-all-errors','--retry-connrefused','--retry-delay','1','--retry-max-time','13',url],env={}) for url in [f'http://127.0.0.1:{master}/dir/status',f'http://127.0.0.1:{http}/status',f'http://127.0.0.1:{master}/vol/grow?count=1&replication=000']]
         probes.insert(2,wrapper('server','ready'))
-        return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',r2_services=rows,setup=[wrapper(r,'up') for r in ('master','server')],down=[wrapper(r,'down') for r in ('server','master')],probes=probes,test_env=dict(TM_RDMA_ADDR=facts['ip']+':46242',TM_CONTROL_ADDR='127.0.0.1:46241'))
+        return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',r2_services=rows,setup=[wrapper(r,'up') for r in ('master','server')],down=[wrapper(r,'down') for r in ('server','master')],probes=probes,test_env=dict(TM_RDMA_ADDR=facts['ip']+':'+str(rdma),TM_CONTROL_ADDR='127.0.0.1:'+str(grpc)))
     return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',producer_hashes={name:a.sha(build/name) for name in ('server-help.stdout.raw','server-help.stderr.raw','master-help.stdout.raw')},setup=[dict(role='master',binary_hash=PRODUCTS['master'],argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-mdir=${ROOT}/master'],flag_help='probe-master-flags.stdout.raw + stderr.raw'),dict(role='server',binary_hash=PRODUCTS['server'],argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242'])],down=[dict(role=role,argv=['kill','-TERM','--','-${ENROLLED_'+role.upper()+'_SID}'],identity='RUN PID/starttime enrollment mandatory; checked guardian census/reap required') for role in ('server','master')],probes=[dict(role='master',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46243/dir/status']),dict(role='server',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46240/status'])],runtime_renderer='NOT_RUN: direct spawn/owned SID plans require reviewed existing guardian enrollment wrapper before RUN INPUT; no plan is an observed service success')
 
 def device_info(a,text,facts,r2):
@@ -160,7 +161,9 @@ def produce(a,bind,out,env,api):
         names=bind['runner_names'] if r2 else sorted({r['runner_name'] for r in inventory if r.get('runner_name') and 'tp01' in r.get('labels',[])})
         a.save(out/'runner-inventory.json',dict(scope='bound host-runner policy + current job name/id association' if r2 else 'repository latest10 run job observations; not exhaustive inventory/exclusion',recent=recent,jobs=inventory,seconds=time.monotonic()-inventory_start))
         a.require(len(set(names))==2 and record['runner'] in names,'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED');record['runner_names']=names
-        a.ports_free();record['ports_observed_free_not_reserved']=a.PORTS
+        if r2:
+            a.require(bind['ports']==a.R2_PORTS,'R2_PORT_BIND');observed=a.ports_free(bind['ports'],out,True);record['ephemeral_range']=observed['ephemeral_range'];record['ports_observed_free_not_reserved']=bind['ports']
+        else:a.ports_free();record['ports_observed_free_not_reserved']=a.PORTS
         if r2:record['qp_access']=qp_access(a,out,deadline);record['qp_owner_schema']='RUN_CONNECTED_SNAPSHOT_REQUIRED'
         record['runtime_access']=root_access(a,bind,out,deadline)
         help_raw=run('master-flags',[str(out/'build/master.elf'),'help','master'])
@@ -190,6 +193,8 @@ def run_admit(a,bind,out,env,api,deadline):
     a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==p['job'] and j['runner_name']==p['runner'] and j['conclusion']=='success'])==1,'PROBE_RUNNER_ASSOCIATION')
     for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names')+(('gid_binding',) if r2 else ()):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
     if r2:
+        a.require(bind['ports']==p['ports_observed_free_not_reserved']==a.R2_PORTS and bind['ephemeral_range']==p['ephemeral_range'],'R2_PORT_BIND')
+        a.require(a.ports_free(bind['ports'],out,True)['ephemeral_range']==p['ephemeral_range'],'PROBE_EPHEMERAL_RANGE_DRIFT')
         root=pathlib.Path(bind['root']);lock=pathlib.Path(bind['lock_path']);s=lock.stat()
         a.save(out/'run-admission-operands.json',dict(workspace=env.get('GITHUB_WORKSPACE'),run_root=str(root),run_parent=str(root.resolve().parent),probe_root=p['runtime_access'].get('root'),probe_parent=p['runtime_access']['base'],lock_lexical=str(lock),lock_canonical=str(lock.resolve()),probe_lock=p['runtime_access']['lock'],lock_identity=dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid),probe_lock_identity=p['runtime_access']['lock_identity']))
     a.require(pathlib.Path(bind['root']).resolve().parent==pathlib.Path(p['runtime_access']['base']) and pathlib.Path(bind['lock_path']).resolve()==pathlib.Path(p['runtime_access']['lock']),'PROBE_RUN_ROOT_DRIFT')
@@ -257,11 +262,11 @@ def snapshot(a,root,client,label):
     groups={}
     for i,pid in enumerate((client,server)):
         if i==1 or owned[i]:groups[str(pid)]=a.r2_provider(pid,bind['provider_objects'])
-    tcp=pathlib.Path('/proc/net/tcp').read_text().splitlines()[1:];listeners=[line.split()[9] for line in tcp if line.split()[1]=='0100007F:B4A4' and line.split()[3]=='0A']
+    metrics_port=bind['ports'][4];tcp=pathlib.Path('/proc/net/tcp').read_text().splitlines()[1:];listeners=[line.split()[9] for line in tcp if line.split()[1]==f'0100007F:{metrics_port:04X}' and line.split()[3]=='0A']
     a.require(len(listeners)==1 and 'socket:['+listeners[0]+']' in groups[str(server)]['fd_targets'],'R2_METRICS_OWNER_UNPROVEN')
-    connection=http.client.HTTPConnection('127.0.0.1',46244,timeout=max(.01,deadline-time.monotonic()));connection.sock=socket.create_connection(('127.0.0.1',46244),timeout=max(.01,deadline-time.monotonic()))
+    connection=http.client.HTTPConnection('127.0.0.1',metrics_port,timeout=max(.01,deadline-time.monotonic()));connection.sock=socket.create_connection(('127.0.0.1',metrics_port),timeout=max(.01,deadline-time.monotonic()))
     try:
-        a.require(connection.sock.getpeername()==('127.0.0.1',46244),'R2_METRICS_WRONG_PEER');connection.request('GET','/metrics');response=connection.getresponse();a.require(response.status==200,'R2_METRICS_HTTP')
+        a.require(connection.sock.getpeername()==('127.0.0.1',metrics_port),'R2_METRICS_WRONG_PEER');connection.request('GET','/metrics');response=connection.getresponse();a.require(response.status==200,'R2_METRICS_HTTP')
         metrics=a.bounded_read(response,deadline,1048576,root/(tag+'-metrics.raw')).decode();counts=[len(v) for v in owned]
         counts.extend(r2_metrics(a,metrics))
     finally:connection.close()

@@ -220,14 +220,16 @@ class Fixture(unittest.TestCase):
                     if size==cap:call();self.assertTrue(container.extract.called)
                     else:self.reject(call,'ARTIFACT_UNPACK_SIZE');self.assertFalse(container.extract.called)
                     if profile=='r2-recovery-v1' and size==cap:fetch.side_effect=[run,artifact];self.reject(lambda:a.Actions('seaweedfs/artifactory','inert',pathlib.Path(td)).artifact(dict(reference,digest='sha256:'+'0'*64),pathlib.Path(td)/'foreign',time.monotonic()+10),'ARTIFACT_IDENTITY')
+                    if profile=='r2-recovery-v1' and size==cap:
+                        fetch.side_effect=[run];self.reject(lambda:a.Actions('seaweedfs/artifactory','inert',pathlib.Path(td)).artifact(dict(reference,run_id=2),pathlib.Path(td)/'foreign-run',time.monotonic()+10),'ARTIFACT_RUN_ASSOCIATION')
                 with tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE=profile),patch.object(a,'sha',return_value='0'*64):
                     root=pathlib.Path(td)
                     with (root/'payload.raw').open('wb') as f:f.truncate(size-(64+2+len('payload.raw')+1))
                     if profile=='r2-recovery-v1' and size>cap:self.reject(lambda:a.seal(root),'ARTIFACT_UNPACK_SIZE')
                     else:a.seal(root)
-        bind=dict(profile='r2-recovery-v1',source_sha='b'*40,ci_sha='c'*40,build_ci_sha='3f4543ab47959d86bea2deefb18193474af5ef58',build_reference=dict(head_sha='3f4543ab47959d86bea2deefb18193474af5ef58',run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')});env=dict(TM_SOURCE_SHA='b'*40,GITHUB_SHA='c'*40)
+        bind=dict(profile='r2-recovery-v1',source_sha='b'*40,ci_sha='c'*40,build_ci_sha='c'*40,build_reference=dict(head_sha='c'*40,run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')});env=dict(TM_SOURCE_SHA='b'*40,GITHUB_SHA='c'*40)
         a.probe_module.exact_build(a,bind,env);bad=copy.deepcopy(bind);bad['build_ci_sha']=bad['build_reference']['head_sha']='e'*40;self.reject(lambda:a.probe_module.exact_build(a,bad,env),'R2_BUILD_BIND_DRIFT')
-        bad=copy.deepcopy(bind);bad['build_reference']['run_id']=1;self.reject(lambda:a.probe_module.exact_build(a,bad,env),'R2_BUILD_BIND_DRIFT')
+        bad=copy.deepcopy(bind);bad['build_reference']['run_id']=0;self.reject(lambda:a.probe_module.exact_build(a,bad,env),'R2_BUILD_BIND_DRIFT')
     def test_r2_phase_publication_excludes_prior_caches(self):
         for phase in ('probe','run'):
             with self.subTest(phase=phase),tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE='r2-recovery-v1'):
@@ -263,7 +265,7 @@ class Fixture(unittest.TestCase):
                 if case=='positive':result=call();self.assertEqual(result['ip'],next(v['local'] for v in device['addr_info'] if v['family']=='inet'));self.assertEqual((result['gid'],result['netdev'],result['gid_binding']),(row['gid'],row['netdev'],'SIW_MAC_NETDEV_IPV4'))
                 else:self.reject(call,'PROBE_')
     def test_r2_prepare_runner_pin_refuses_before_artifact(self):
-        bind,request,env=self.authority();bind.update(profile='r2-recovery-v1',runner_name='tp01-2',build_ci_sha='3f4543ab47959d86bea2deefb18193474af5ef58',build_reference=dict(head_sha='3f4543ab47959d86bea2deefb18193474af5ef58',run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')},build_json_sha256='d'*64,list_sha256='e'*64)
+        bind,request,env=self.authority();bind.update(profile='r2-recovery-v1',runner_name='tp01-2',build_ci_sha=bind['ci_sha'],build_reference=dict(head_sha=bind['ci_sha'],run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')},build_json_sha256='d'*64,list_sha256='e'*64)
         source=self.dir/'canonical';source.mkdir();a.save(source/'bind.json',bind)
         for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):shutil.copyfile(SCRIPTS/name,source/name)
         a.seal(source);request.update(bind_b64=base64.b64encode((source/'bind.json').read_bytes()).decode(),input_manifest=a.sha(source/'manifest.sha256'))
@@ -301,9 +303,10 @@ class Fixture(unittest.TestCase):
                 self.assertLessEqual(json.loads((self.dir/'registration.json').read_text())['deadline'],deadline)
             finally:server.shutdown();thread.join(timeout=1);server.server_close()
     def test_r2_service_registration_uses_original_clock(self):
-        now=time.monotonic();a.save(self.dir/'clock.json',dict(origin=now,body_deadline=now+30));file=self.dir/'ready.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(self.dir))))
+        now=time.monotonic();a.save(self.dir/'clock.json',dict(origin=now,body_deadline=now+30));file=self.dir/'ready.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(self.dir),ports=a.R2_PORTS)))
         with patch.object(a.probe_module,'wait_registered') as wait:
             a.service(file,'server','ready');wait.assert_called_once();self.assertEqual(wait.call_args.args[1:],(self.dir,now+30));self.reject(lambda:a.service(file,'master','ready'),'R2_REGISTRATION_ROLE');self.assertEqual(wait.call_count,1)
+            self.assertEqual(wait.call_args.kwargs,dict(master='127.0.0.1:21043',expected='127.0.0.1:21040'))
     def test_r2_qp_non_main_native_thread_uses_tgid(self):
         stop=threading.Event();started=threading.Event();ids=[]
         def worker():ids.append(threading.get_native_id());started.set();stop.wait(3)
@@ -331,15 +334,20 @@ class Fixture(unittest.TestCase):
             return read(path,*args,**kwargs)
         with patch.object(pathlib.Path,'read_text',inaccessible):self.reject(lambda:a.probe_module.qp_owners(a,[rows[0]],actors,self.dir,'unreadable'),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
     def test_r2_public_snapshot_types_unknown_qp_before_metrics(self):
-        child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'])
+        child=subprocess.Popen([sys.executable,'-c','import socket,time;s=socket.socket();s.bind(("127.0.0.1",0));s.listen();print(s.getsockname()[1],flush=True);time.sleep(10)'],stdout=subprocess.PIPE)
         try:
+            port=int(child.stdout.readline());ports=list(a.R2_PORTS);ports[4]=port
             actors=[a.r2_identity(os.getpid()),a.r2_identity(child.pid)];server=self.dir/'server';server.mkdir();(server/'owner.pid').write_text(str(child.pid));(server/'owner.starttime').write_text(str(actors[1]['starttime']))
-            a.save(self.dir/'client.identity.json',dict(pid=os.getpid(),starttime=actors[0]['starttime']));a.save(self.dir/'r2-bind.json',dict(profile='r2-recovery-v1'));a.save(self.dir/'clock.json',dict(body_deadline=time.monotonic()+5))
+            a.save(self.dir/'client.identity.json',dict(pid=os.getpid(),starttime=actors[0]['starttime']));a.save(self.dir/'r2-bind.json',dict(profile='r2-recovery-v1',ports=ports,provider_objects={}));a.save(self.dir/'clock.json',dict(body_deadline=time.monotonic()+5))
             qp=dict(ifname='siw0',lqpn=123,type='RC')
             with patch.object(a,'command',return_value=json.dumps([qp]).encode()),patch.object(a,'r2_provider') as provider:
                 self.reject(lambda:a.probe_module.snapshot(a,self.dir,os.getpid(),'initial'),'R2_QP_FOREIGN_OR_UNATTRIBUTED');provider.assert_not_called()
             records=list(self.dir.glob('*-qp-ownership.json'));self.assertEqual(len(records),1);self.assertEqual(json.loads(records[0].read_text())['foreign_count'],1)
-        finally:child.terminate();child.wait(timeout=2)
+            targets=[os.readlink(fd) for fd in pathlib.Path('/proc/'+str(child.pid)+'/fd').iterdir()]
+            def connect(address,**kwargs):self.assertEqual(address,('127.0.0.1',port));raise ValueError('CONTROLLED_METRICS_TARGET')
+            with patch.object(a,'command',return_value=b'[]'),patch.object(a,'r2_provider',return_value=dict(fd_targets=targets)),patch.object(a.probe_module.socket,'create_connection',side_effect=connect):
+                self.reject(lambda:a.probe_module.snapshot(a,self.dir,os.getpid(),'initial'),'CONTROLLED_METRICS_TARGET')
+        finally:child.terminate();child.wait(timeout=2);child.stdout.close()
     def test_r2_qp_empty_success_and_failed_command(self):
         spawn=subprocess.Popen
         for rc in (0,1):
@@ -362,11 +370,11 @@ class Fixture(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):a.probe_module.read_lock(b,a.require)
     def test_r2_run_admit_model_identity_and_root_refusals(self):
         """Inert admission model, not a host-fact fixture or real PROBE PASS."""
-        for case in ('positive','alias','retarget','inode','device','runner','host','uid','root','gid-kind','build-ref','lock-unreadable','workspace-unwritable'):
+        for case in ('positive','alias','retarget','ports','range','live-range','inode','device','runner','host','uid','root','gid-kind','build-ref','lock-unreadable','workspace-unwritable'):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as td:
                 out=pathlib.Path(td);lock=out/'siw-lab.lock';lock.touch();st=lock.stat();build_ref=dict(run_id=37449089123,artifact_id=11406265930,digest='sha256:'+'a'*64)
                 row=dict(state='PASS_FACTS_PLANS_NOT_RUN',ci_sha='1'*40,source_sha='2'*40,build_ci_sha='3'*40,run_id=10,attempt=1,job='tm-connected-diagnostic',runner='tp01-2',hostname=a.probe_module.socket.gethostname(),uid=os.getuid(),kernel_release='INERT',siw_module_required_lines=[],gid='INERT',gid_index=0,netdev='INERT',ip='198.51.100.1',gid_binding='SIW_MAC_NETDEV_IPV4',provider_objects={},runner_names=['tp01','tp01-2'],runtime_access=dict(base=str(out),lock=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid)),plans={k:[] for k in ('setup','down','probes','r2_services','test_env')})
-                b=dict(row,profile='r2-recovery-v1',root=str(out/'codex03-tm-model'),lock_path=str(lock),probe_reference={},build_reference=build_ref,plans_status='REVIEWED_RENDERED_OWNED_WRAPPERS',**row['plans']);env=dict(RUNNER_NAME='tp01-2',TM_SOURCE_SHA='2'*40)
+                row.update(ports_observed_free_not_reserved=a.R2_PORTS,ephemeral_range=[32768,60999]);b=dict(row,ports=a.R2_PORTS,profile='r2-recovery-v1',root=str(out/'codex03-tm-model'),lock_path=str(lock),probe_reference={},build_reference=build_ref,plans_status='REVIEWED_RENDERED_OWNED_WRAPPERS',**row['plans']);env=dict(RUNNER_NAME='tp01-2',TM_SOURCE_SHA='2'*40)
                 lexical='/opt/work/siw-lab.lock';canonical='/data/nvme/relocated/opt/work/siw-lab.lock';resolve=pathlib.Path.resolve;stat=pathlib.Path.stat
                 if case in ('alias','retarget'):
                     physical=out/canonical.lstrip('/');physical.parent.mkdir(parents=True);physical.hardlink_to(lock);alias=out/'opt/work';alias.parent.mkdir();alias.symlink_to(physical.parent,target_is_directory=True)
@@ -380,6 +388,7 @@ class Fixture(unittest.TestCase):
                 if case=='host':row['hostname']='foreign'
                 if case=='uid':row['uid']+=1
                 if case=='root':b['root']=str(out.parent/'foreign')
+                if case in ('ports','range'):b['ports' if case=='ports' else 'ephemeral_range']=[1,2]
                 if case in ('inode','device'):row['runtime_access']['lock_identity']['inode' if case=='inode' else 'dev']+=1
                 if case=='gid-kind':b['gid_binding']='foreign'
                 expected=out/'expected';expected.mkdir();a.save(expected/'probe.json',row);b.update(probe_json_sha256=a.sha(expected/'probe.json'),probe_plan_source_sha256=a.sha(expected/'probe.json'))
@@ -390,9 +399,9 @@ class Fixture(unittest.TestCase):
                 def access(path,mode):
                     if pathlib.Path(path)==pathlib.Path(b['lock_path']):self.assertEqual(mode,os.R_OK);return case!='lock-unreadable'
                     self.assertEqual(pathlib.Path(path),out);self.assertEqual(mode,os.W_OK);return case!='workspace-unwritable'
-                with patch.object(os,'access',side_effect=access),patch.object(pathlib.Path,'resolve',resolve_control),patch.object(pathlib.Path,'stat',stat_control):
+                with patch.object(os,'access',side_effect=access),patch.object(pathlib.Path,'resolve',resolve_control),patch.object(pathlib.Path,'stat',stat_control),patch.object(a,'ports_free',return_value=dict(ephemeral_range=[32000,60999] if case=='live-range' else [32768,60999])):
                     if case in ('positive','alias'):call()
-                    else:self.reject(call,{'inode':'PROBE_LOCK_IDENTITY_DRIFT','device':'PROBE_LOCK_IDENTITY_DRIFT','retarget':'PROBE_RUN_ROOT_DRIFT','runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
+                    else:self.reject(call,{'ports':'R2_PORT_BIND','range':'R2_PORT_BIND','live-range':'PROBE_EPHEMERAL_RANGE_DRIFT','inode':'PROBE_LOCK_IDENTITY_DRIFT','device':'PROBE_LOCK_IDENTITY_DRIFT','retarget':'PROBE_RUN_ROOT_DRIFT','runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
                 if case in ('positive','alias','retarget','root'):
                     operands=json.loads((out/'run-admission-operands.json').read_text());self.assertEqual(operands['run_parent'],str(pathlib.Path(b['root']).parent));self.assertEqual(operands['probe_parent'],str(out))
                     if case in ('alias','retarget'):self.assertEqual(operands['lock_lexical'],lexical);self.assertEqual(operands['probe_lock'],canonical);self.assertEqual(operands['lock_identity'],row['runtime_access']['lock_identity']);self.assertEqual(operands['lock_canonical'],canonical if case=='alias' else '/foreign/siw-lab.lock')
@@ -417,6 +426,17 @@ class Fixture(unittest.TestCase):
             env=dict(TM_PROFILE='r2-recovery-v1',TM_PHASE='probe',RUNNER_NAME='tp01-2',GITHUB_RUN_ID='1')
             with patch.dict(os.environ,env),patch.object(a.probe_module,'prepare',return_value=(dict(runner_names=['tp01','tp01-2']),api,time.monotonic()+5)),patch.object(a.probe_module,'produce') as produce:
                 self.reject(lambda:a.run_phase(self.dir,env),'CI_HOST_ACTIVE');produce.assert_not_called()
+    def test_r2_guardian_consumes_bound_ports_at_all_start_boundaries(self):
+        """Port wiring only; service and terminal-census boundaries are controlled."""
+        root=self.dir/'port-guard';lock=self.dir/'shared-lock';lock.touch();st=lock.stat();seen=[];actual=a.ports_free
+        rows=[dict(role=role,argv=['controlled-service'],env={}) for role in ('master','server')]
+        bundle=dict(profile='r2-recovery-v1',root=str(root),lock_path=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino),ports=a.R2_PORTS,run_id='inert-port-guard',local_inert_fixture=True,whole_seconds=10,reserve_seconds=3,setup=rows,down=[],probes=[])
+        expected=[a.R2_PORTS,[21043,31043],[21040,21041,21042,21044]]
+        def observe(ports,output,below):
+            self.assertEqual(ports,expected[len(seen)]);self.assertEqual(output,root);self.assertTrue(below);actual(ports,output,below);seen.append(ports)
+            if len(seen)==3:raise ValueError('CONTROLLED_PORT_STOP')
+        with patch.object(a.ctypes,'CDLL'),patch.object(a,'census',return_value=[]),patch.object(a,'command',return_value=b'controlled'),patch.object(a,'ports_free',side_effect=observe):a.guardian(bundle,self.dir,{})
+        self.assertEqual(seen,expected);self.assertEqual(len(list(root.glob('ports-*.json'))),3);self.assertIn('CONTROLLED_PORT_STOP',json.loads((root/'terminal.json').read_text())['primary_setup_error'])
     def test_r2_real_service_body_and_role_port_scope(self):
         root=self.dir/'lease';root.mkdir();now=time.monotonic();a.save(root/'clock.json',dict(origin=now,body_deadline=now+20,terminal_deadline=now+30))
         file=self.dir/'bundle.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(root),r2_services=dict(master=dict(argv=[sys.executable,'-c','import time;time.sleep(20)',str(root)],env={}))),replacements=dict(ROOT=str(root))))
@@ -546,8 +566,23 @@ class Fixture(unittest.TestCase):
             self.assertEqual(a.census(root,terminal['owners']),[]);self.assertFalse((out/'runtime-result.json').exists())
     def test_command_deadline_and_ports_collision(self):
         self.reject(lambda:a.command([sys.executable,'-c','raise SystemExit(0)'],self.dir,'expired',time.monotonic()-1),'ABSOLUTE_DEADLINE')
+        with patch.object(pathlib.Path,'read_text',return_value='header\n'):self.assertIsNone(a.ports_free())
         with patch.object(pathlib.Path,'read_text',return_value='header\n0: 00000000:B4A0 rest\n'):
             self.reject(a.ports_free,'PRE_SPAWN_PORT_COLLISION')
+    def test_r2_ports_capture_floor_and_real_local_ephemeral_projection(self):
+        """Local socket capture and derived negatives, not the missing tp01 row."""
+        socket=a.probe_module.socket;listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen();client=socket.create_connection(listener.getsockname(),timeout=1)
+        try:
+            read=pathlib.Path.read_text;raw=read(pathlib.Path('/proc/net/tcp'));lines=raw.splitlines();port=client.getsockname()[1];row=next(line for line in lines[1:] if int(line.split()[1].split(':')[1],16)==port);floor=read(pathlib.Path('/proc/sys/net/ipv4/ip_local_port_range'))
+            for case in ('positive','foreign-listen','floor','bound-established','bound-listen'):
+                fields=row.split();fields[1]=fields[1].split(':')[0]+':'+format(a.R2_PORTS[0] if case.startswith('bound-') else port,'04X');fields[3]='0A' if case.endswith('listen') else '01';table=lines[0]+'\n'+' '.join(fields)+'\n'
+                capture={ '/proc/net/tcp':table,'/proc/net/tcp6':lines[0]+'\n','/proc/sys/net/ipv4/ip_local_port_range':str(a.R2_PORTS[0])+' 60999\n' if case=='floor' else floor};out=self.dir/case;out.mkdir()
+                with patch.object(pathlib.Path,'read_text',new=lambda path,*args,**kwargs:capture[str(path)] if str(path) in capture else read(path,*args,**kwargs)):
+                    if case in ('positive','foreign-listen'):observed=a.ports_free(a.R2_PORTS,out,True);self.assertEqual(observed['ignored' if case=='positive' else 'matching'][0]['port'],port);self.assertEqual(observed['ignored' if case=='positive' else 'matching'][0]['uid'],int(fields[7]));self.assertEqual(observed['ignored' if case=='positive' else 'matching'][0]['inode'],int(fields[9]))
+                    else:self.reject(lambda:a.ports_free(a.R2_PORTS,out,True),'R2_PORT_AT_OR_ABOVE_EPHEMERAL' if case=='floor' else 'PRE_SPAWN_PORT_COLLISION')
+                record=json.loads(next(out.glob('ports-*.json')).read_text());self.assertEqual(record['ports'],a.R2_PORTS);self.assertEqual(record['range_raw'],capture['/proc/sys/net/ipv4/ip_local_port_range'])
+                if case!='floor':self.assertEqual(record['raw']['/proc/net/tcp'],table);self.assertEqual(record['matching']!=[],case.startswith('bound-') or case.endswith('listen'))
+        finally:client.close();listener.close()
     def test_credentials_are_not_forwarded(self):
         with patch.dict(os.environ,{'GH_TOKEN':'INERT_NOT_A_TOKEN','EXTRA_SECRET':'INERT'}):
             safe=a.service_env({'RUN':'owned'});self.assertNotIn('GH_TOKEN',safe);self.assertNotIn('EXTRA_SECRET',safe)
