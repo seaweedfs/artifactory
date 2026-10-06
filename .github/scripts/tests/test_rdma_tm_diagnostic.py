@@ -178,6 +178,8 @@ class Fixture(unittest.TestCase):
         stdout+='R2_RECOVERY_PASS cycles=16 controls=2 same_process=123 remote_landing=NOT_CLAIMED','test result: ok. 1 passed; 0 failed'
         text='\n'.join(stdout);raw=lambda data:('\n'.join(map(json.dumps,data))+'\n').encode()
         self.assertEqual(d.recovery(raw(rows),text,self.objects,self.identity)['state'],'R2_RECOVERY_FIELDS_VALID_ONLY')
+        self.assertEqual(a.probe_module.r2_metrics(a,'SeaweedFS_rdma_connections_accepted_total 3\nSeaweedFS_rdma_connections_active 2\nSeaweedFS_rdma_connections_rejected_total 1\nSeaweedFS_rdma_connections_released_total 2\n'),[2,3,2,1])
+        for index in (0,2): records=copy.deepcopy(rows);records[0]['counts'][index]=1;self.reject(lambda:d.recovery(raw(records),text,self.objects,self.identity),'R2_FOREIGN_CLIENT_OR_PERMIT')
         for case in ('zero-row','missing-terminal','duplicate-terminal','wrong-qpn','peer-growth','missing-provider','wrong-server','wrong-child'):
             with self.subTest(case=case):
                 records=copy.deepcopy(rows);output=text

@@ -168,6 +168,12 @@ def run_admit(a,bind,out,env,api,deadline):
     if r2:a.require(all(bind[key]==p['plans'][key] for key in ('setup','down','probes','r2_services','test_env')),'R2_PLAN_DRIFT')
     # Existing guardian still checks fresh_host/job/port/flock before any service.
 
+def r2_metrics(a,metrics):
+    counts=[]
+    for key in ('active','accepted_total','released_total','rejected_total'):
+        matches=re.findall(r'^SeaweedFS_rdma_connections_'+key+r' ([0-9]+)$',metrics,re.M);a.require(len(matches)==1,'R2_METRIC_MISSING_OR_DUPLICATE');counts.append(int(matches[0]))
+    return counts
+
 def snapshot(a,root,client,label):
     a.require(re.fullmatch(r'initial|(?:[0-9]|1[0-7])-(?:connected|settled)',label),'R2_SNAPSHOT_LABEL');client=int(client)
     bind=json.loads((root/'r2-bind.json').read_text());expected=json.loads((root/'client.identity.json').read_text());server=int((root/'server/owner.pid').read_text())
@@ -191,8 +197,7 @@ def snapshot(a,root,client,label):
     try:
         a.require(connection.sock.getpeername()==('127.0.0.1',46244),'R2_METRICS_WRONG_PEER');connection.request('GET','/metrics');response=connection.getresponse();a.require(response.status==200,'R2_METRICS_HTTP')
         metrics=a.bounded_read(response,deadline,1048576,root/(tag+'-metrics.raw')).decode();counts=[len(v) for v in owned]
-        for key in ('active','accepted','released','rejected'):
-            matches=re.findall(r'^SeaweedFS_rdma_connections_'+key+r' ([0-9]+)$',metrics,re.M);a.require(len(matches)==1,'R2_METRIC_MISSING_OR_DUPLICATE');counts.append(int(matches[0]))
+        counts.extend(r2_metrics(a,metrics))
     finally:connection.close()
     counts.append(owned[0][0]['lqpn'] if len(owned[0])==1 else 0);a.require([a.r2_identity(v['pid']) for v in actors]==actors and time.monotonic()<deadline,'R2_OBSERVATION_DRIFT_OR_LATE')
     record=dict(label=label,actors=actors,counts=counts,qp_table=qps,providers=groups,metrics_file=tag+'-metrics.raw',actual_counter_scope='OWNED_TGID_NETNS_SIW_QP_AND_VOLUME_PERMITS')

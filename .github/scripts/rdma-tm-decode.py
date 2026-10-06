@@ -133,7 +133,7 @@ def recovery(raw,stdout,identities,child_identity):
             require(match is not None,'R2_CYCLE_FIELDS');complete.append((int(match[1]),match[2],list(map(int,match[3].split(',')))))
     require([v[0] for v in terminal]==list(range(1,17)) and len({v[1] for v in terminal})==16,'R2_TERMINAL_COUNT_OR_IDS')
     require([v[0] for v in complete]==list(range(18)),'R2_CYCLE_COUNT')
-    prior=snapshots['initial']['counts']
+    prior=snapshots['initial']['counts'];require(prior[0]==prior[2]==0,'R2_FOREIGN_CLIENT_OR_PERMIT')
     for cycle,failed,counts in complete:
         require(failed==str(1<=cycle<=16).lower(),'R2_FAILURE_SCOPE');connect=snapshots[f'{cycle}-connected']['counts'];settled=snapshots[f'{cycle}-settled']['counts']
         require(connect[:3]==[v+1 for v in prior[:3]] and connect[3]==prior[3]+1 and connect[4:6]==prior[4:6],'R2_CONNECT_CONSERVATION')
