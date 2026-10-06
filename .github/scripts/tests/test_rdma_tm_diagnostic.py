@@ -223,6 +223,12 @@ class Fixture(unittest.TestCase):
         text='\n'.join(lines);raw=lambda values:('\n'.join(map(json.dumps,values))+'\n').encode()
         call=lambda records,output:d.recovery(raw(records),output,objects,self.identity,'rxe0',gid)
         result=call(rows,text);self.assertEqual((result['cycles'],result['self_checks'],result['controls']),(16,1,2))
+        marker='R2_INJECTION_SELF_CHECK_PASS cycle=1'
+        unmarked=[line for line in lines if line!=marker]
+        early='\n'.join([marker]+unmarked)
+        late='\n'.join(unmarked+[marker])
+        for output in (early,late):
+            self.reject(lambda:call(rows,output),'R2_INJECTION_PRECONDITION_FAILED_ORDER')
         smoke=next(line for line in lines if line.startswith('R2_TERMINAL cycle=1 '))
         for output in (text.replace('R2_INJECTION_SELF_CHECK_PASS cycle=1',''),text.replace(smoke,''),text.replace(smoke,smoke.replace('status=10','status=0')),text.replace(smoke,smoke.replace('qp_num=2','qp_num=99')),text+'\nR2_INJECTION_SELF_CHECK_PASS cycle=1'):
             self.reject(lambda:call(rows,output),'R2_INJECTION_PRECONDITION_FAILED')

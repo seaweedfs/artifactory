@@ -122,7 +122,13 @@ def decode(raw, stdout, identities, child_identity):
 
 def recovery(raw,stdout,identities,child_identity,device='siw0',gid_identity=None):
     rxe=device=='rxe0';first=2 if rxe else 1;last=17 if rxe else 16
-    if rxe:require(stdout.count('R2_INJECTION_SELF_CHECK_PASS cycle=1')==1,'R2_INJECTION_PRECONDITION_FAILED')
+    if rxe:
+        lines=stdout.splitlines();markers=[i for i,line in enumerate(lines) if line=='R2_INJECTION_SELF_CHECK_PASS cycle=1']
+        require(len(markers)==1,'R2_INJECTION_PRECONDITION_FAILED')
+        terminals=[i for i,line in enumerate(lines) if line.startswith('R2_TERMINAL cycle=1 ')]
+        cycles=[i for i,line in enumerate(lines) if line.startswith('R2_CYCLE cycle=1 ')]
+        later=[i for i,line in enumerate(lines) if line.startswith(('R2_TERMINAL cycle=2 ','R2_CYCLE cycle=2 ','R2_RECOVERY_PASS ','test result:'))]
+        require(len(terminals)==len(cycles)==1 and bool(later) and max(terminals[0],cycles[0])<markers[0]<min(later),'R2_INJECTION_PRECONDITION_FAILED_ORDER')
     require('test result: ok. 1 passed; 0 failed' in stdout and stdout.count('R2_RECOVERY_PASS cycles=16 controls=2')==1,'R2_ROW_COUNT_OR_FINAL')
     snapshots={}
     for record in map(json.loads,raw.decode().splitlines()):
