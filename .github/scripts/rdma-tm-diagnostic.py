@@ -54,7 +54,7 @@ def save(path, value):
 def routing(event, inputs, environment):
     profile = inputs.get('diagnostic_profile') or 'none'
     if event != 'workflow_dispatch' or profile == 'none': return 'DEFAULT'
-    require(profile in ('tm-connected-v1','r2-recovery-v1') and inputs.get('runner') == 'tp01' and environment == 'self-hosted', 'PROFILE_OR_RUNNER')
+    require(profile in ('tm-connected-v1','r2-recovery-v1') and inputs.get('runner') == ('tp01-2' if profile=='r2-recovery-v1' else 'tp01') and environment == 'self-hosted', 'PROFILE_OR_RUNNER')
     require(inputs.get('diagnostic_phase') in ('build', 'run', 'probe') and HEX40.fullmatch(inputs.get('mono_sha', '')), 'PHASE_OR_SHA')
     return 'DIAGNOSTIC'
 

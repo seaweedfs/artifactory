@@ -27,7 +27,7 @@ def prepare(a,out,env):
     else:api.artifact(request['input'],out/'input',deadline);a.manifest(out/'input',request['input_manifest'])
     bind=json.loads((out/'input/bind.json').read_text());a.require('local_inert_fixture' not in bind,'PRIVATE_FIXTURE_FORBIDDEN');exact_build(a,bind,env)
     r2=bind.get('profile')=='r2-recovery-v1';mono=env['TM_SOURCE_SHA'] if r2 else MONO_SHA;products=bind['product_hashes'] if r2 else PRODUCTS;build_json=bind['build_json_sha256'] if r2 else BUILD_JSON;listing=bind['list_sha256'] if r2 else LIST_SHA
-    if r2:bind['root']=str(pathlib.Path(env['GITHUB_WORKSPACE']).resolve()/('codex03-tm-r2-'+bind['run_id']))
+    if r2:a.require(env['RUNNER_NAME']==bind.get('runner_name')=='tp01-2','R2_RUNNER_PIN');bind['root']=str(pathlib.Path(env['GITHUB_WORKSPACE']).resolve()/('codex03-tm-r2-'+bind['run_id']))
     a.require(bind['phase']==env['TM_PHASE'] and bind['phase'] in ('probe','run'),'PHASE_BIND_DRIFT')
     for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):a.require(a.sha(out/'input'/name)==a.sha(a.HERE/name),'ADAPTER_DRIFT')
     a.authorize(bind,request,env,event['sender']['id']);a.save(out/'authority-association.json',dict(launch_id=request['launch_id'],input_digest=request['input_manifest'],actor_id=event['sender']['id'],ci_sha=env['GITHUB_SHA'],source_sha=env['TM_SOURCE_SHA'],run_id=bind['run_id']))
@@ -116,6 +116,9 @@ def plans(a,build,bind,facts):
         return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',r2_services=rows,setup=[wrapper(r,'up') for r in ('master','server')],down=[wrapper(r,'down') for r in ('server','master')],probes=probes,test_env=dict(TM_RDMA_ADDR=facts['ip']+':46242',TM_CONTROL_ADDR='127.0.0.1:46241'))
     return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',producer_hashes={name:a.sha(build/name) for name in ('server-help.stdout.raw','server-help.stderr.raw','master-help.stdout.raw')},setup=[dict(role='master',binary_hash=PRODUCTS['master'],argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-mdir=${ROOT}/master'],flag_help='probe-master-flags.stdout.raw + stderr.raw'),dict(role='server',binary_hash=PRODUCTS['server'],argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242'])],down=[dict(role=role,argv=['kill','-TERM','--','-${ENROLLED_'+role.upper()+'_SID}'],identity='RUN PID/starttime enrollment mandatory; checked guardian census/reap required') for role in ('server','master')],probes=[dict(role='master',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46243/dir/status']),dict(role='server',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46240/status'])],runtime_renderer='NOT_RUN: direct spawn/owned SID plans require reviewed existing guardian enrollment wrapper before RUN INPUT; no plan is an observed service success')
 
+def device_info(a,text,facts,r2):
+    a.require((re.findall(r'^hca_id:\s*(\S+)',text,re.M)==['siw0'] and re.findall(r'^\s*transport:\s*(\w+)',text,re.M)==['iWARP'] and re.findall(r'^\s*port:\s*(\d+)',text,re.M)==['1'] and re.findall(r'^\s*state:\s*(\S+)',text,re.M)==['PORT_ACTIVE']) if r2 else 'siw0' in text and facts['gid'] in text,'PROBE_DEVICE_GID')
+
 def produce(a,bind,out,env,api):
     start=time.monotonic();deadline=start+20;previous=signal.getsignal(signal.SIGALRM)
     def expired(signum,frame):raise ValueError('PROBE_PRODUCER_DEADLINE')
@@ -130,7 +133,7 @@ def produce(a,bind,out,env,api):
         links=run('rdma-link',['rdma','link','show']);addresses=json.loads(run('IP',['ip','-j','addr','show']))
         facts=network(a,pathlib.Path('/sys/class/infiniband'),links,addresses,out);record.update(facts)
         a.require(run('memlock',['bash','-c','ulimit -l']).strip()=='unlimited','PROBE_MEMLOCK')
-        devices=run('devices',['ibv_devinfo','-v']);a.require('siw0' in devices and facts['gid'] in devices,'PROBE_DEVICE_GID')
+        devices=run('devices',['ibv_devinfo',*(['-d','siw0'] if r2 else []),'-v']);device_info(a,devices,facts,r2)
         ld=run('ldconfig',['ldconfig','-p']);objects={}
         for library in ('libibverbs','librdmacm'):
             paths={str(pathlib.Path(v).resolve()) for v in re.findall(r'\b'+library+r'\.so(?:\.\d+)*\s+[^\n]*=>\s+(\S+)',ld)}

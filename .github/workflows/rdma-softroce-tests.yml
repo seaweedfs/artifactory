@@ -439,7 +439,7 @@ jobs:
 
   tm-connected-diagnostic:
     if: github.event_name == 'workflow_dispatch' && (github.event.inputs.diagnostic_profile || 'none') != 'none'
-    runs-on: tp01
+    runs-on: ${{ inputs.diagnostic_profile == 'r2-recovery-v1' && 'tp01-2' || 'tp01' }}
     timeout-minutes: 70
     permissions:
       contents: read
