@@ -120,7 +120,8 @@ def plans(a,build,bind,facts):
         a.require(all(flag in help_raw for flag in ('--metricsPort','--metricsIp')),'R2_METRICS_FLAGS_UNSUPPORTED')
         rows={'master':dict(argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-volumeSizeLimitMB=64','-mdir=${ROOT}/master/data'],env={}),'server':dict(argv=['${BUILD}/server.elf','--ip','127.0.0.1','--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server/data','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242','--metricsPort','46244','--metricsIp','127.0.0.1'],env={})}
         wrapper=lambda role,phase:dict(role=role,argv=['python3','-B','${INPUT}/rdma-tm-diagnostic.py','service','${ROOT}/r2-service-bundle.json',role,phase],env={})
-        probes=[dict(argv=['curl','--fail','--max-time','1','--retry','30','--retry-connrefused','--retry-max-time','14',url],env={}) for url in ['http://127.0.0.1:46243/dir/status','http://127.0.0.1:46240/status','http://127.0.0.1:46243/vol/grow?count=1&replication=000']]
+        probes=[dict(argv=['curl','--fail','--max-time','1','--retry','30','--retry-all-errors','--retry-connrefused','--retry-delay','1','--retry-max-time','13',url],env={}) for url in ['http://127.0.0.1:46243/dir/status','http://127.0.0.1:46240/status','http://127.0.0.1:46243/vol/grow?count=1&replication=000']]
+        probes.insert(2,wrapper('server','ready'))
         return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',r2_services=rows,setup=[wrapper(r,'up') for r in ('master','server')],down=[wrapper(r,'down') for r in ('server','master')],probes=probes,test_env=dict(TM_RDMA_ADDR=facts['ip']+':46242',TM_CONTROL_ADDR='127.0.0.1:46241'))
     return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',producer_hashes={name:a.sha(build/name) for name in ('server-help.stdout.raw','server-help.stderr.raw','master-help.stdout.raw')},setup=[dict(role='master',binary_hash=PRODUCTS['master'],argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-mdir=${ROOT}/master'],flag_help='probe-master-flags.stdout.raw + stderr.raw'),dict(role='server',binary_hash=PRODUCTS['server'],argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242'])],down=[dict(role=role,argv=['kill','-TERM','--','-${ENROLLED_'+role.upper()+'_SID}'],identity='RUN PID/starttime enrollment mandatory; checked guardian census/reap required') for role in ('server','master')],probes=[dict(role='master',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46243/dir/status']),dict(role='server',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46240/status'])],runtime_renderer='NOT_RUN: direct spawn/owned SID plans require reviewed existing guardian enrollment wrapper before RUN INPUT; no plan is an observed service success')
 
@@ -196,6 +197,28 @@ def r2_metrics(a,metrics):
     for key in ('active','accepted_total','released_total','rejected_total'):
         matches=re.findall(r'^SeaweedFS_rdma_connections_'+key+r' ([0-9]+)$',metrics,re.M);a.require(len(matches)==1,'R2_METRIC_MISSING_OR_DUPLICATE');counts.append(int(matches[0]))
     return counts
+
+def wait_registered(a,root,deadline,master='127.0.0.1:46243',expected='127.0.0.1:46240'):
+    end=min(deadline,time.monotonic()+13);report=dict(state='FAIL',expected=expected,deadline=end,attempts=[])
+    try:
+        while time.monotonic()<end:
+            connection=http.client.HTTPConnection(master,timeout=min(1,end-time.monotonic()))
+            try:
+                connection.request('GET','/dir/status');response=connection.getresponse();index=len(report['attempts'])
+                raw=a.bounded_read(response,end,1048576,root/('registration-'+str(index)+'.raw'));report['attempts'].append(dict(status=response.status))
+                if response.status==200:
+                    try:
+                        tree=json.loads(raw)['Topology'];nodes=[n for dc in tree['DataCenters'] or [] for rack in dc['Racks'] or [] for n in rack['DataNodes'] or []];matches=[n for n in nodes if n['Url']==expected]
+                    except (ValueError,KeyError,TypeError) as error:raise ValueError('R2_REGISTRATION_SCHEMA') from error
+                    a.require(len(matches)<=1,'R2_REGISTRATION_DUPLICATE')
+                    if matches and type(matches[0].get('Max')) is int and matches[0]['Max']>0:
+                        a.require(time.monotonic()<end,'R2_REGISTRATION_LATE');report.update(state='PASS',node=matches[0]);return
+            except (OSError,http.client.HTTPException) as error:report['attempts'].append(dict(error=repr(error)))
+            finally:connection.close()
+            time.sleep(min(1,max(0,end-time.monotonic())))
+        a.require(False,'R2_SERVER_NOT_REGISTERED')
+    except ValueError as error:report['error_code']=str(error);raise
+    finally:report['ended']=time.monotonic();a.save(root/'registration.json',report)
 
 def qp_owners(a,qps,actors,root,tag):
     owned=[[],[]];foreign=[];seen=set()

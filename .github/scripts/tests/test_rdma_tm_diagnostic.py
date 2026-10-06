@@ -3,6 +3,7 @@ import copy
 import fcntl
 import importlib.util
 import hashlib
+import http.server
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import unittest
 import zipfile
 import base64
@@ -277,6 +279,37 @@ class Fixture(unittest.TestCase):
         for field,value in [('name','foreign'),('runner_name','tp01'),('runner_id',22),('status','completed')]:
             wrong=dict(job,**{field:value});self.reject(lambda:a.probe_module.job_identity(a,[wrong],env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
         for jobs in ([],[job,job]):self.reject(lambda:a.probe_module.job_identity(a,jobs,env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
+    def test_r2_registration_wait_real_http_with_topology_model(self):
+        node=dict(Url='127.0.0.1:46240',Max=4);body=dict(Topology=dict(DataCenters=[dict(Racks=[dict(DataNodes=[node])])]))
+        for case in ('delayed','wrong-node','empty','malformed','duplicate'):
+            calls=[];data=copy.deepcopy(body)
+            if case=='wrong-node':data['Topology']['DataCenters'][0]['Racks'][0]['DataNodes'][0]['Url']='127.0.0.1:1'
+            if case=='duplicate':data['Topology']['DataCenters'][0]['Racks'][0]['DataNodes'].append(node)
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(inner):
+                    calls.append(inner.path);reply={} if case=='malformed' else dict(Topology=dict(DataCenters=None)) if case=='empty' or case=='delayed' and len(calls)==1 else data;raw=json.dumps(reply).encode();inner.send_response(200);inner.send_header('Content-Length',str(len(raw)));inner.end_headers();inner.wfile.write(raw)
+                def log_message(*args):pass
+            server=http.server.HTTPServer(('127.0.0.1',0),Handler);thread=threading.Thread(target=server.serve_forever,kwargs=dict(poll_interval=.01));thread.start()
+            try:
+                deadline=time.monotonic()+(3 if case=='delayed' else .15)
+                invoke=lambda:a.probe_module.wait_registered(a,self.dir,deadline,master='127.0.0.1:'+str(server.server_port))
+                if case=='delayed':invoke();self.assertEqual(len(calls),2);self.assertEqual(json.loads((self.dir/'registration.json').read_text())['state'],'PASS')
+                else:self.reject(invoke,{'malformed':'R2_REGISTRATION_SCHEMA','duplicate':'R2_REGISTRATION_DUPLICATE'}.get(case,'R2_SERVER_NOT_REGISTERED'));self.assertEqual(json.loads((self.dir/'registration.json').read_text())['state'],'FAIL')
+                self.assertEqual(set(calls),{'/dir/status'})
+                self.assertLessEqual(json.loads((self.dir/'registration.json').read_text())['deadline'],deadline)
+            finally:server.shutdown();thread.join(timeout=1);server.server_close()
+    def test_r2_service_registration_uses_original_clock(self):
+        now=time.monotonic();a.save(self.dir/'clock.json',dict(origin=now,body_deadline=now+30));file=self.dir/'ready.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(self.dir))))
+        with patch.object(a.probe_module,'wait_registered') as wait:
+            a.service(file,'server','ready');wait.assert_called_once();self.assertEqual(wait.call_args.args[1:],(self.dir,now+30));self.reject(lambda:a.service(file,'master','ready'),'R2_REGISTRATION_ROLE');self.assertEqual(wait.call_count,1)
+    def test_r2_qp_non_main_native_thread_uses_tgid(self):
+        stop=threading.Event();started=threading.Event();ids=[]
+        def worker():ids.append(threading.get_native_id());started.set();stop.wait(3)
+        thread=threading.Thread(target=worker);thread.start()
+        try:
+            self.assertTrue(started.wait(1));self.assertNotEqual(ids[0],os.getpid());qp=dict(ifname='siw0',pid=ids[0],lqpn=123,type='RC')
+            self.assertEqual(a.probe_module.qp_owners(a,[qp],[dict(pid=os.getpid()),dict(pid=-1)],self.dir,'thread'),[[qp],[]])
+        finally:stop.set();thread.join(timeout=1);self.assertFalse(thread.is_alive())
     def test_r2_qp_metadata_model_with_real_process_status(self):
         child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);actors=[dict(pid=os.getpid()),dict(pid=child.pid)]
         rows=[dict(ifname='siw0',pid=actor['pid'],lqpn=i+1,type='RC') for i,actor in enumerate(actors)]

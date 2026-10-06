@@ -404,8 +404,11 @@ def service_env(extra):
 
 def service(bundle_file,role,phase):
     item=json.loads(bundle_file.read_text());root=pathlib.Path(item['bind']['root']);directory=root/role
-    require(item['bind'].get('profile')=='r2-recovery-v1' and role in ('master','server') and phase in ('up','down') and root.resolve()==root,'R2_SERVICE_SCOPE')
-    if phase=='up':
+    require(item['bind'].get('profile')=='r2-recovery-v1' and role in ('master','server') and phase in ('up','down','ready') and root.resolve()==root,'R2_SERVICE_SCOPE')
+    if phase=='ready':
+        require(role=='server','R2_REGISTRATION_ROLE');clock=json.loads((root/'clock.json').read_text())
+        probe_module.wait_registered(types.SimpleNamespace(**globals()),root,min(clock['body_deadline'],clock['origin']+90));return
+    elif phase=='up':
         directory.mkdir(mode=0o700);directory.joinpath('data').mkdir();argv,extra=render(item['bind']['r2_services'][role],item['replacements'],root)
         clock=json.loads((root/'clock.json').read_text());require(time.monotonic()<min(clock['body_deadline'],clock['origin']+90),'R2_SERVICE_START_LATE')
         env={k:v for k,v in service_env(extra).items() if not k.startswith(('WEED_','SWFS_'))};env['HOME']=str(directory)
