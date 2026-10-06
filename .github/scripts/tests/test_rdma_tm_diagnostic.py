@@ -362,15 +362,25 @@ class Fixture(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):a.probe_module.read_lock(b,a.require)
     def test_r2_run_admit_model_identity_and_root_refusals(self):
         """Inert admission model, not a host-fact fixture or real PROBE PASS."""
-        for case in ('positive','runner','host','uid','root','gid-kind','build-ref','lock-unreadable','workspace-unwritable'):
+        for case in ('positive','alias','retarget','inode','device','runner','host','uid','root','gid-kind','build-ref','lock-unreadable','workspace-unwritable'):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as td:
                 out=pathlib.Path(td);lock=out/'siw-lab.lock';lock.touch();st=lock.stat();build_ref=dict(run_id=37449089123,artifact_id=11406265930,digest='sha256:'+'a'*64)
                 row=dict(state='PASS_FACTS_PLANS_NOT_RUN',ci_sha='1'*40,source_sha='2'*40,build_ci_sha='3'*40,run_id=10,attempt=1,job='tm-connected-diagnostic',runner='tp01-2',hostname=a.probe_module.socket.gethostname(),uid=os.getuid(),kernel_release='INERT',siw_module_required_lines=[],gid='INERT',gid_index=0,netdev='INERT',ip='198.51.100.1',gid_binding='SIW_MAC_NETDEV_IPV4',provider_objects={},runner_names=['tp01','tp01-2'],runtime_access=dict(base=str(out),lock=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid)),plans={k:[] for k in ('setup','down','probes','r2_services','test_env')})
                 b=dict(row,profile='r2-recovery-v1',root=str(out/'codex03-tm-model'),lock_path=str(lock),probe_reference={},build_reference=build_ref,plans_status='REVIEWED_RENDERED_OWNED_WRAPPERS',**row['plans']);env=dict(RUNNER_NAME='tp01-2',TM_SOURCE_SHA='2'*40)
+                lexical='/opt/work/siw-lab.lock';canonical='/data/nvme/relocated/opt/work/siw-lab.lock';resolve=pathlib.Path.resolve;stat=pathlib.Path.stat
+                if case in ('alias','retarget'):
+                    physical=out/canonical.lstrip('/');physical.parent.mkdir(parents=True);physical.hardlink_to(lock);alias=out/'opt/work';alias.parent.mkdir();alias.symlink_to(physical.parent,target_is_directory=True)
+                    b['lock_path']=lexical;row['runtime_access']['lock']=canonical
+                    if case=='retarget':
+                        foreign=out/'foreign';foreign.mkdir();(foreign/'siw-lab.lock').hardlink_to(lock);alias.unlink();alias.symlink_to(foreign,target_is_directory=True)
+                def resolve_control(path,*args,**kwargs):
+                    return pathlib.Path('/'+resolve(out/lexical.lstrip('/'),*args,**kwargs).relative_to(out).as_posix()) if str(path)==lexical else resolve(path,*args,**kwargs)
+                def stat_control(path,*args,**kwargs):return stat(out/lexical.lstrip('/'),*args,**kwargs) if str(path)==lexical else stat(path,*args,**kwargs)
                 if case=='runner':env['RUNNER_NAME']='foreign'
                 if case=='host':row['hostname']='foreign'
                 if case=='uid':row['uid']+=1
                 if case=='root':b['root']=str(out.parent/'foreign')
+                if case in ('inode','device'):row['runtime_access']['lock_identity']['inode' if case=='inode' else 'dev']+=1
                 if case=='gid-kind':b['gid_binding']='foreign'
                 expected=out/'expected';expected.mkdir();a.save(expected/'probe.json',row);b.update(probe_json_sha256=a.sha(expected/'probe.json'),probe_plan_source_sha256=a.sha(expected/'probe.json'))
                 def artifact(reference,dest,deadline):
@@ -378,11 +388,14 @@ class Fixture(unittest.TestCase):
                 api=a.types.SimpleNamespace(repository='seaweedfs/artifactory',artifact=artifact,get=lambda url,deadline:dict(total_count=1,jobs=[dict(name=row['job'],runner_name=row['runner'],conclusion='success')]))
                 call=lambda:a.probe_module.run_admit(a,b,out,env,api,time.monotonic()+10)
                 def access(path,mode):
-                    if pathlib.Path(path)==lock:self.assertEqual(mode,os.R_OK);return case!='lock-unreadable'
+                    if pathlib.Path(path)==pathlib.Path(b['lock_path']):self.assertEqual(mode,os.R_OK);return case!='lock-unreadable'
                     self.assertEqual(pathlib.Path(path),out);self.assertEqual(mode,os.W_OK);return case!='workspace-unwritable'
-                with patch.object(os,'access',side_effect=access):
-                    if case=='positive':call()
-                    else:self.reject(call,{'runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
+                with patch.object(os,'access',side_effect=access),patch.object(pathlib.Path,'resolve',resolve_control),patch.object(pathlib.Path,'stat',stat_control):
+                    if case in ('positive','alias'):call()
+                    else:self.reject(call,{'inode':'PROBE_LOCK_IDENTITY_DRIFT','device':'PROBE_LOCK_IDENTITY_DRIFT','retarget':'PROBE_RUN_ROOT_DRIFT','runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
+                if case in ('positive','alias','retarget','root'):
+                    operands=json.loads((out/'run-admission-operands.json').read_text());self.assertEqual(operands['run_parent'],str(pathlib.Path(b['root']).parent));self.assertEqual(operands['probe_parent'],str(out))
+                    if case in ('alias','retarget'):self.assertEqual(operands['lock_lexical'],lexical);self.assertEqual(operands['probe_lock'],canonical);self.assertEqual(operands['lock_identity'],row['runtime_access']['lock_identity']);self.assertEqual(operands['lock_canonical'],canonical if case=='alias' else '/foreign/siw-lab.lock')
     def test_r2_guardian_actual_lock_open_boundary(self):
         lock=self.dir/'guard.lock';lock.touch();st=lock.stat();bundle=dict(profile='r2-recovery-v1',root=str(self.dir/'guard-root'),lock_path=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino));handles=[];fdopen=os.fdopen;open_fd=os.open
         def observe_open(path,flags,*args):

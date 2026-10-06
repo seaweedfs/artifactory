@@ -75,6 +75,10 @@ def root_access(a,bind,out,deadline,work='/opt/work'):
         a.require(not lock.is_symlink(),'PROBE_LOCK_ALIAS');created=not lock.exists()
         fd=read_lock(bind,a.require) if r2 else os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600);s=os.fstat(fd)
         a.require((s.st_uid==os.getuid() or r2) and (s.st_dev,s.st_ino)==(lock.stat().st_dev,lock.stat().st_ino),'PROBE_LOCK_OWNER_OR_DRIFT')
+        if r2:
+            canonical=lock.resolve(strict=True);observed=canonical.stat()
+            a.require((s.st_dev,s.st_ino,s.st_uid)==(observed.st_dev,observed.st_ino,observed.st_uid),'PROBE_LOCK_OWNER_OR_DRIFT')
+            record['lock']=str(canonical)
         record['lock_identity']=dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid);target.mkdir(mode=0o700);made=True
         f=target/'admission';probe=os.open(f,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         try:
@@ -185,6 +189,9 @@ def run_admit(a,bind,out,env,api,deadline):
     jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(run['id'])+'/attempts/'+str(run['run_attempt'])+'/jobs?per_page=100',deadline)
     a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==p['job'] and j['runner_name']==p['runner'] and j['conclusion']=='success'])==1,'PROBE_RUNNER_ASSOCIATION')
     for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names')+(('gid_binding',) if r2 else ()):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
+    if r2:
+        root=pathlib.Path(bind['root']);lock=pathlib.Path(bind['lock_path']);s=lock.stat()
+        a.save(out/'run-admission-operands.json',dict(workspace=env.get('GITHUB_WORKSPACE'),run_root=str(root),run_parent=str(root.resolve().parent),probe_root=p['runtime_access'].get('root'),probe_parent=p['runtime_access']['base'],lock_lexical=str(lock),lock_canonical=str(lock.resolve()),probe_lock=p['runtime_access']['lock'],lock_identity=dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid),probe_lock_identity=p['runtime_access']['lock_identity']))
     a.require(pathlib.Path(bind['root']).resolve().parent==pathlib.Path(p['runtime_access']['base']) and pathlib.Path(bind['lock_path']).resolve()==pathlib.Path(p['runtime_access']['lock']),'PROBE_RUN_ROOT_DRIFT')
     lock=pathlib.Path(bind['lock_path']);s=lock.stat();a.require(not lock.is_symlink() and dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid)==p['runtime_access']['lock_identity'],'PROBE_LOCK_IDENTITY_DRIFT')
     a.require(os.access(lock,os.R_OK if r2 else os.W_OK) and os.access(pathlib.Path(bind['root']).parent if r2 else lock.parent,os.W_OK),'PROBE_RUN_PERMISSION_DRIFT')
