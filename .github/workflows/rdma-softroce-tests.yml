@@ -471,9 +471,15 @@ jobs:
         if: inputs.diagnostic_phase == 'build' && runner.environment != 'github-hosted'
         run: |
           set -euo pipefail
-          rdma link | grep -q '^link siw0/' || { echo "::error::siw0 not provisioned on $(hostname); see siw-ci.service"; exit 1; }
-          ibv_devices | grep -q siw0 || { echo "::error::siw0 not visible to $(id -un); check the rdma group / udev rules"; exit 1; }
-          echo "RXE_IP=${SOFT_RDMA_IP:-198.51.100.1}" >> "$GITHUB_ENV"
+          if [ "$TM_PROFILE" = r2-recovery-v1 ]; then
+            rdma link | grep -Eq '^link rxe0/1 .*netdev rxeci([[:space:]]|$)' || { echo "::error::rxe0/rxeci not provisioned"; exit 1; }
+            ibv_devices | grep -Eq '^[[:space:]]*rxe0[[:space:]]' || { echo "::error::rxe0 not visible to runner"; exit 1; }
+            echo "RXE_IP=198.51.101.1" >> "$GITHUB_ENV"
+          else
+            rdma link | grep -q '^link siw0/' || { echo "::error::siw0 not provisioned on $(hostname); see siw-ci.service"; exit 1; }
+            ibv_devices | grep -q siw0 || { echo "::error::siw0 not visible to $(id -un); check the rdma group / udev rules"; exit 1; }
+            echo "RXE_IP=${SOFT_RDMA_IP:-198.51.100.1}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install Rust toolchain
         if: inputs.diagnostic_phase == 'build'

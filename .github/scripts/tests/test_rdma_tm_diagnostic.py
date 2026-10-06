@@ -199,6 +199,43 @@ class Fixture(unittest.TestCase):
                 if case=='wrong-server':records[1]['actors']=copy.deepcopy(records[1]['actors']);records[1]['actors'][1]['starttime']=88
                 if case=='wrong-child':records[1]['actors'][0]['pid']=888
                 with self.assertRaises((ValueError,KeyError)):d.recovery(raw(records),output,self.objects,self.identity)
+    def test_rxe_decoder_self_check_and_sixteen_rows(self):
+        """Synthetic decoder tuples, never a real WC or recovery witness."""
+        objects=copy.deepcopy(self.objects);objects['librxe']=objects.pop('libsiw')
+        maps='\n'.join('0-1 r-xp 0000 '+v['dev']+' '+str(v['inode'])+' '+v['path'] for v in objects.values())+'\n'
+        group={'/proc/self/maps':[maps],'process_fd':['fd="3" target=Ok("/dev/infiniband/uverbs0")','fd="4" target=Ok("/dev/infiniband/uverbs1")'],
+               'uverbs_ibdev':['fd="3" sysfs="/sys/class/infiniband_verbs/uverbs0/ibdev" ibdev=Ok("rxe0")','fd="4" sysfs="/sys/class/infiniband_verbs/uverbs1/ibdev" ibdev=Ok("siw0")']}
+        d.provider(group,objects,'rxe0')
+        absent=copy.deepcopy(group);absent['uverbs_ibdev'][0]=absent['uverbs_ibdev'][0].replace('rxe0','siw0')
+        self.reject(lambda:d.provider(absent,objects,'rxe0'),'SELECTED_UVERBS_FD_MISSING')
+        wrong=dict(objects,libsiw=objects['librxe']);self.reject(lambda:d.provider(group,wrong,'rxe0'),'PROVIDER_SET')
+        actors=[dict(self.identity,namespace=1),dict(pid=999,starttime=7,namespace=1)]
+        providers={str(v['pid']):dict(decoder_alias_group=group) for v in actors}
+        gid=dict(device='rxe0',index=1,bytes='00000000000000000000ffffc6336501',type='RoCE v2',netdev='rxeci')
+        rows=[dict(label='initial',rdma_device='rxe0',gid_identity=gid,actors=actors,providers=providers,counts=[0]*7)];lines=[]
+        for cycle in range(19):
+            connected=[1,1,1,cycle+1,cycle,0,cycle+1];settled=[0,0,0,cycle+1,cycle+1,0,0]
+            rows.extend([dict(label=f'{cycle}-connected',rdma_device='rxe0',gid_identity=gid,actors=actors,providers=providers,counts=connected),dict(label=f'{cycle}-settled',rdma_device='rxe0',gid_identity=gid,actors=actors,providers=providers,counts=settled)])
+            if 1<=cycle<=17:lines.append(f'R2_TERMINAL cycle={cycle} wr_id={cycle+100} qp_num={cycle+1} status=10 vendor_err=0 retained=true id_matches=true')
+            lines.append(f'R2_CYCLE cycle={cycle} failed={str(1<=cycle<=17).lower()} capacity=32 counts={settled}')
+            if cycle==1:lines.append('R2_INJECTION_SELF_CHECK_PASS cycle=1')
+        lines+=['R2_RECOVERY_PASS cycles=16 controls=2 same_process=123 remote_landing=NOT_CLAIMED','test result: ok. 1 passed; 0 failed']
+        text='\n'.join(lines);raw=lambda values:('\n'.join(map(json.dumps,values))+'\n').encode()
+        call=lambda records,output:d.recovery(raw(records),output,objects,self.identity,'rxe0',gid)
+        result=call(rows,text);self.assertEqual((result['cycles'],result['self_checks'],result['controls']),(16,1,2))
+        smoke=next(line for line in lines if line.startswith('R2_TERMINAL cycle=1 '))
+        for output in (text.replace('R2_INJECTION_SELF_CHECK_PASS cycle=1',''),text.replace(smoke,''),text.replace(smoke,smoke.replace('status=10','status=0')),text.replace(smoke,smoke.replace('qp_num=2','qp_num=99')),text+'\nR2_INJECTION_SELF_CHECK_PASS cycle=1'):
+            self.reject(lambda:call(rows,output),'R2_INJECTION_PRECONDITION_FAILED')
+        for case in ('qualifying-missing','qualifying-success','last-healthy-missing','device-drift','gid-drift','peer-growth','provider-missing'):
+            records=copy.deepcopy(rows);output=text
+            if case=='qualifying-missing':output='\n'.join(line for line in lines if not line.startswith('R2_TERMINAL cycle=17 '))
+            if case=='qualifying-success':output=output.replace('R2_CYCLE cycle=2 failed=true','R2_CYCLE cycle=2 failed=false')
+            if case=='last-healthy-missing':output='\n'.join(line for line in lines if not line.startswith('R2_CYCLE cycle=18 '))
+            if case=='device-drift':records[1]['rdma_device']='siw0'
+            if case=='gid-drift':records[1]['gid_identity']=dict(gid,index=0)
+            if case=='peer-growth':records[6]['counts'][1]=1
+            if case=='provider-missing':records[1]['providers']={}
+            with self.subTest(case=case),self.assertRaises((ValueError,KeyError)):call(records,output)
     def test_default_workflow_projection_is_byte_equal(self):
         workflow=(SCRIPTS.parent/'workflows/rdma-softroce-tests.yml').read_text()
         projected=workflow[:workflow.index('\n  tm-connected-diagnostic:')]
@@ -240,15 +277,21 @@ class Fixture(unittest.TestCase):
                 a.phase_publication(root,dict(TM_PROFILE='r2-recovery-v1',TM_PHASE=phase));public=root/'publication';a.manifest(public,output_receipt=True)
                 self.assertEqual(json.loads((public/'prior-artifacts.json').read_text()),refs);self.assertEqual({p.relative_to(public).as_posix() for p in public.rglob('*') if p.is_file()},{'input/bind.json','prior-artifacts.json','new.json','manifest.sha256'});self.assertTrue((root/'build/elf.raw').exists())
     def test_r2_captured_siw_mac_gid_contract(self):
-        device_fixture=dict(run_id=37458451078,artifact_id=11409957122,sha256='1ddc5e6d4fd7bc6e6fa0dcf1e64b56403d5d66ec3fd483b610a5f9169f2df981',text_b64='aGNhX2lkOglzaXcwCgl0cmFuc3BvcnQ6CQkJaVdBUlAgKDEpCglmd192ZXI6CQkJCTAuMC4wCglub2RlX2d1aWQ6CQkJNzA1YzoxZGZmOmZlOGU6M2I1OAoJc3lzX2ltYWdlX2d1aWQ6CQkJNzA1YzoxZGZmOmZlOGU6M2I1OAoJdmVuZG9yX2lkOgkJCTB4NjI2ZDc0Cgl2ZW5kb3JfcGFydF9pZDoJCQkyCglod192ZXI6CQkJCTB4MAoJcGh5c19wb3J0X2NudDoJCQkxCgltYXhfbXJfc2l6ZToJCQkweGZmZmZmZmZmZmZmZmZmZmYKCXBhZ2Vfc2l6ZV9jYXA6CQkJMHgxMDAwCgltYXhfcXA6CQkJCTEwMjQwMAoJbWF4X3FwX3dyOgkJCTMyNzY4CglkZXZpY2VfY2FwX2ZsYWdzOgkJMHgwMDIwMDAwMAoJCQkJCU1FTV9NR1RfRVhURU5TSU9OUwoJbWF4X3NnZToJCQk2CgltYXhfc2dlX3JkOgkJCTEKCW1heF9jcToJCQkJMTAyNDAwCgltYXhfY3FlOgkJCTMyNzY4MDAKCW1heF9tcjoJCQkJMTAyNDAwMAoJbWF4X3BkOgkJCQkxMDI0MDAKCW1heF9xcF9yZF9hdG9tOgkJCTEyOAoJbWF4X2VlX3JkX2F0b206CQkJMAoJbWF4X3Jlc19yZF9hdG9tOgkJMTMxMDcyMDAKCW1heF9xcF9pbml0X3JkX2F0b206CQkxMjgKCW1heF9lZV9pbml0X3JkX2F0b206CQkwCglhdG9taWNfY2FwOgkJCUFUT01JQ19OT05FICgwKQoJbWF4X2VlOgkJCQkwCgltYXhfcmRkOgkJCTAKCW1heF9tdzoJCQkJMAoJbWF4X3Jhd19pcHY2X3FwOgkJMAoJbWF4X3Jhd19ldGh5X3FwOgkJMAoJbWF4X21jYXN0X2dycDoJCQkwCgltYXhfbWNhc3RfcXBfYXR0YWNoOgkJMAoJbWF4X3RvdGFsX21jYXN0X3FwX2F0dGFjaDoJMAoJbWF4X2FoOgkJCQkwCgltYXhfZm1yOgkJCTAKCW1heF9zcnE6CQkJMTAyNDAwCgltYXhfc3JxX3dyOgkJCTMyNzY4MAoJbWF4X3NycV9zZ2U6CQkJNgoJbWF4X3BrZXlzOgkJCTAKCWxvY2FsX2NhX2Fja19kZWxheToJCTAKCWdlbmVyYWxfb2RwX2NhcHM6CglyY19vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl1Y19vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl1ZF9vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl4cmNfb2RwX2NhcHM6CgkJCQkJTk8gU1VQUE9SVAoJY29tcGxldGlvbl90aW1lc3RhbXBfbWFzayBub3Qgc3VwcG9ydGVkCgljb3JlIGNsb2NrIG5vdCBzdXBwb3J0ZWQKCWRldmljZV9jYXBfZmxhZ3NfZXg6CQkweDIwMDAwMAoJdHNvX2NhcHM6CgkJbWF4X3RzbzoJCQkwCglyc3NfY2FwczoKCQltYXhfcndxX2luZGlyZWN0aW9uX3RhYmxlczoJCQkwCgkJbWF4X3J3cV9pbmRpcmVjdGlvbl90YWJsZV9zaXplOgkJCTAKCQlyeF9oYXNoX2Z1bmN0aW9uOgkJCQkweDAKCQlyeF9oYXNoX2ZpZWxkc19tYXNrOgkJCQkweDAKCW1heF93cV90eXBlX3JxOgkJCTAKCXBhY2tldF9wYWNpbmdfY2FwczoKCQlxcF9yYXRlX2xpbWl0X21pbjoJMGticHMKCQlxcF9yYXRlX2xpbWl0X21heDoJMGticHMKCXRhZyBtYXRjaGluZyBub3Qgc3VwcG9ydGVkCgludW1fY29tcF92ZWN0b3JzOgkJMTYKCQlwb3J0OgkxCgkJCXN0YXRlOgkJCVBPUlRfQUNUSVZFICg0KQoJCQltYXhfbXR1OgkJMjU2ICgxKQoJCQlhY3RpdmVfbXR1OgkJMTAyNCAoMykKCQkJc21fbGlkOgkJCTAKCQkJcG9ydF9saWQ6CQkwCgkJCXBvcnRfbG1jOgkJMHgwMAoJCQlsaW5rX2xheWVyOgkJRXRoZXJuZXQKCQkJbWF4X21zZ19zejoJCTB4ZmZmZmZmZmYKCQkJcG9ydF9jYXBfZmxhZ3M6CQkweDAwMDkwMDAwCgkJCXBvcnRfY2FwX2ZsYWdzMjoJMHgwMDAwCgkJCW1heF92bF9udW06CQlpbnZhbGlkIHZhbHVlICgwKQoJCQliYWRfcGtleV9jbnRyOgkJMHgwCgkJCXFrZXlfdmlvbF9jbnRyOgkJMHgwCgkJCXNtX3NsOgkJCTAKCQkJcGtleV90YmxfbGVuOgkJMAoJCQlnaWRfdGJsX2xlbjoJCTEKCQkJc3VibmV0X3RpbWVvdXQ6CQkwCgkJCWluaXRfdHlwZV9yZXBseToJMAoJCQlhY3RpdmVfd2lkdGg6CQkxWCAoMSkKCQkJYWN0aXZlX3NwZWVkOgkJMi41IEdicHMgKDEpCgo=');device_raw=base64.b64decode(device_fixture['text_b64'],validate=True);self.assertEqual(hashlib.sha256(device_raw).hexdigest(),device_fixture['sha256']);a.probe_module.device_info(a,device_raw.decode(),{},True)
-        for before,after in [('siw0','foreign'),('iWARP','InfiniBand'),('PORT_ACTIVE','PORT_DOWN'),('port:\t1','port:\t2')]:self.reject(lambda:a.probe_module.device_info(a,device_raw.decode().replace(before,after,1),{},True),'PROBE_DEVICE_GID')
+        device_fixture=dict(run_id=37458451078,artifact_id=11409957122,sha256='1ddc5e6d4fd7bc6e6fa0dcf1e64b56403d5d66ec3fd483b610a5f9169f2df981',text_b64='aGNhX2lkOglzaXcwCgl0cmFuc3BvcnQ6CQkJaVdBUlAgKDEpCglmd192ZXI6CQkJCTAuMC4wCglub2RlX2d1aWQ6CQkJNzA1YzoxZGZmOmZlOGU6M2I1OAoJc3lzX2ltYWdlX2d1aWQ6CQkJNzA1YzoxZGZmOmZlOGU6M2I1OAoJdmVuZG9yX2lkOgkJCTB4NjI2ZDc0Cgl2ZW5kb3JfcGFydF9pZDoJCQkyCglod192ZXI6CQkJCTB4MAoJcGh5c19wb3J0X2NudDoJCQkxCgltYXhfbXJfc2l6ZToJCQkweGZmZmZmZmZmZmZmZmZmZmYKCXBhZ2Vfc2l6ZV9jYXA6CQkJMHgxMDAwCgltYXhfcXA6CQkJCTEwMjQwMAoJbWF4X3FwX3dyOgkJCTMyNzY4CglkZXZpY2VfY2FwX2ZsYWdzOgkJMHgwMDIwMDAwMAoJCQkJCU1FTV9NR1RfRVhURU5TSU9OUwoJbWF4X3NnZToJCQk2CgltYXhfc2dlX3JkOgkJCTEKCW1heF9jcToJCQkJMTAyNDAwCgltYXhfY3FlOgkJCTMyNzY4MDAKCW1heF9tcjoJCQkJMTAyNDAwMAoJbWF4X3BkOgkJCQkxMDI0MDAKCW1heF9xcF9yZF9hdG9tOgkJCTEyOAoJbWF4X2VlX3JkX2F0b206CQkJMAoJbWF4X3Jlc19yZF9hdG9tOgkJMTMxMDcyMDAKCW1heF9xcF9pbml0X3JkX2F0b206CQkxMjgKCW1heF9lZV9pbml0X3JkX2F0b206CQkwCglhdG9taWNfY2FwOgkJCUFUT01JQ19OT05FICgwKQoJbWF4X2VlOgkJCQkwCgltYXhfcmRkOgkJCTAKCW1heF9tdzoJCQkJMAoJbWF4X3Jhd19pcHY2X3FwOgkJMAoJbWF4X3Jhd19ldGh5X3FwOgkJMAoJbWF4X21jYXN0X2dycDoJCQkwCgltYXhfbWNhc3RfcXBfYXR0YWNoOgkJMAoJbWF4X3RvdGFsX21jYXN0X3FwX2F0dGFjaDoJMAoJbWF4X2FoOgkJCQkwCgltYXhfZm1yOgkJCTAKCW1heF9zcnE6CQkJMTAyNDAwCgltYXhfc3JxX3dyOgkJCTMyNzY4MAoJbWF4X3NycV9zZ2U6CQkJNgoJbWF4X3BrZXlzOgkJCTAKCWxvY2FsX2NhX2Fja19kZWxheToJCTAKCWdlbmVyYWxfb2RwX2NhcHM6CglyY19vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl1Y19vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl1ZF9vZHBfY2FwczoKCQkJCQlOTyBTVVBQT1JUCgl4cmNfb2RwX2NhcHM6CgkJCQkJTk8gU1VQUE9SVAoJY29tcGxldGlvbl90aW1lc3RhbXBfbWFzayBub3Qgc3VwcG9ydGVkCgljb3JlIGNsb2NrIG5vdCBzdXBwb3J0ZWQKCWRldmljZV9jYXBfZmxhZ3NfZXg6CQkweDIwMDAwMAoJdHNvX2NhcHM6CgkJbWF4X3RzbzoJCQkwCglyc3NfY2FwczoKCQltYXhfcndxX2luZGlyZWN0aW9uX3RhYmxlczoJCQkwCgkJbWF4X3J3cV9pbmRpcmVjdGlvbl90YWJsZV9zaXplOgkJCTAKCQlyeF9oYXNoX2Z1bmN0aW9uOgkJCQkweDAKCQlyeF9oYXNoX2ZpZWxkc19tYXNrOgkJCQkweDAKCW1heF93cV90eXBlX3JxOgkJCTAKCXBhY2tldF9wYWNpbmdfY2FwczoKCQlxcF9yYXRlX2xpbWl0X21pbjoJMGticHMKCQlxcF9yYXRlX2xpbWl0X21heDoJMGticHMKCXRhZyBtYXRjaGluZyBub3Qgc3VwcG9ydGVkCgludW1fY29tcF92ZWN0b3JzOgkJMTYKCQlwb3J0OgkxCgkJCXN0YXRlOgkJCVBPUlRfQUNUSVZFICg0KQoJCQltYXhfbXR1OgkJMjU2ICgxKQoJCQlhY3RpdmVfbXR1OgkJMTAyNCAoMykKCQkJc21fbGlkOgkJCTAKCQkJcG9ydF9saWQ6CQkwCgkJCXBvcnRfbG1jOgkJMHgwMAoJCQlsaW5rX2xheWVyOgkJRXRoZXJuZXQKCQkJbWF4X21zZ19zejoJCTB4ZmZmZmZmZmYKCQkJcG9ydF9jYXBfZmxhZ3M6CQkweDAwMDkwMDAwCgkJCXBvcnRfY2FwX2ZsYWdzMjoJMHgwMDAwCgkJCW1heF92bF9udW06CQlpbnZhbGlkIHZhbHVlICgwKQoJCQliYWRfcGtleV9jbnRyOgkJMHgwCgkJCXFrZXlfdmlvbF9jbnRyOgkJMHgwCgkJCXNtX3NsOgkJCTAKCQkJcGtleV90YmxfbGVuOgkJMAoJCQlnaWRfdGJsX2xlbjoJCTEKCQkJc3VibmV0X3RpbWVvdXQ6CQkwCgkJCWluaXRfdHlwZV9yZXBseToJMAoJCQlhY3RpdmVfd2lkdGg6CQkxWCAoMSkKCQkJYWN0aXZlX3NwZWVkOgkJMi41IEdicHMgKDEpCgo=');device_raw=base64.b64decode(device_fixture['text_b64'],validate=True);self.assertEqual(hashlib.sha256(device_raw).hexdigest(),device_fixture['sha256']);self.reject(lambda:a.probe_module.device_info(a,device_raw.decode(),dict(rdma_device='rxe0'),True),'PROBE_DEVICE_GID')
+        for before,after in [('siw0','foreign'),('iWARP','InfiniBand'),('PORT_ACTIVE','PORT_DOWN'),('port:\t1','port:\t2')]:self.reject(lambda:a.probe_module.device_info(a,device_raw.decode().replace(before,after,1),dict(rdma_device='rxe0'),True),'PROBE_DEVICE_GID')
+        from test_rdma_tm_probe import rxe_raw,rxe_tree
+        captured_root=self.dir/'captured-sysfs';captured_root.mkdir();rxe_tree(captured_root)
+        addresses=json.loads(rxe_raw('ip-j-addr-rxeci.json'));links=rxe_raw('rdma-link-show.txt');network=a.probe_module.network
+        facts=network(a,captured_root,links,addresses,None,'rxe0')
         objects={}
-        for name in ('libsiw','libibverbs','librdmacm'):
+        for name in ('librxe','libibverbs','librdmacm'):
             file=self.dir/name;file.write_bytes(b'inert local identity');objects[name]=a.probe_module.object_identity(a,file)
-        b=dict(profile='r2-recovery-v1',kernel_release='inert',siw_module_required_lines=['srcversion: inert'],gid='UNPRINTED_MAC_GID',netdev='siwci',ip='198.51.100.1',provider_objects=objects)
-        replies={'fresh-kernel':b'inert','fresh-siw-module':b'srcversion: inert','fresh-rdma-link':b'link siw0/1 state ACTIVE netdev siwci','fresh-devices':device_raw,'fresh-memlock':b'unlimited','fresh-IP':b'[{"addr_info":[{"local":"198.51.100.1"}]}]'}
-        with patch.object(a,'command',side_effect=lambda argv,out,label,deadline:replies[label]):
-            a.fresh_host(b,self.dir,time.monotonic()+10);replies['fresh-devices']=device_raw.replace(b'PORT_ACTIVE',b'PORT_DOWN');self.reject(lambda:a.fresh_host(b,self.dir,time.monotonic()+10),'PROBE_DEVICE_GID')
+        b=dict(facts,profile='r2-recovery-v1',kernel_release='inert',rdma_module_required_lines=['srcversion: inert'],provider_objects=objects)
+        replies={'fresh-kernel':b'inert','fresh-siw-module':b'srcversion: inert','fresh-rdma-link':links.encode(),'fresh-devices':rxe_raw('ibv_devinfo-d-rxe0-v.txt').encode(),'fresh-memlock':b'unlimited','fresh-IP':json.dumps(addresses).encode()}
+        with patch.object(a,'command',side_effect=lambda argv,out,label,deadline:replies[label]),patch.object(a.probe_module,'network',side_effect=lambda aa,root,ll,ip,out,dev:network(aa,captured_root,ll,ip,out,dev)):
+            a.fresh_host(b,self.dir,time.monotonic()+10);replies['fresh-devices']=replies['fresh-devices'].replace(b'PORT_ACTIVE (4)',b'PORT_DOWN (1)');self.reject(lambda:a.fresh_host(b,self.dir,time.monotonic()+10),'PROBE_DEVICE_GID')
+            replies['fresh-devices']=rxe_raw('ibv_devinfo-d-rxe0-v.txt').encode();b['gid_index']=0
+            self.reject(lambda:a.fresh_host(b,self.dir,time.monotonic()+10),'FRESH_GID_IDENTITY_DRIFT')
         fixture=dict(run_id=37455370088,artifact_id=11408487891,raw_sha256='2e8a71fdd4b9e849483fd6a4e1e77e91fc81c1c6966498dd400bea35f2724532',sha256='b08f767707cc15d53645fbb714057c403ec356e701204986b6b40c56552c9146',text_b64='eyJyb3dzIjpbeyJnaWRfcGF0aCI6Ii9zeXMvY2xhc3MvaW5maW5pYmFuZC9zaXcwL3BvcnRzLzEvZ2lkcy8wIiwibmV0ZGV2X3BhdGgiOiIvc3lzL2NsYXNzL2luZmluaWJhbmQvc2l3MC9wb3J0cy8xL2dpZF9hdHRycy9uZGV2cy8wIiwiZ2lkIjoiNzI1YzoxZDhlOjNiNTg6MDAwMDowMDAwOjAwMDA6MDAwMDowMDAwIiwibmV0ZGV2Ijoic2l3Y2kifV0sImxpbmtzIjoibGluayBzaXcwLzEgc3RhdGUgQUNUSVZFIHBoeXNpY2FsX3N0YXRlIExJTktfVVAgbmV0ZGV2IHNpd2NpIFxuIiwiYWRkcmVzc2VzIjpbeyJpZmluZGV4Ijo2LCJpZm5hbWUiOiJzaXdjaSIsImZsYWdzIjpbIkJST0FEQ0FTVCIsIk5PQVJQIiwiVVAiLCJMT1dFUl9VUCJdLCJtdHUiOjE1MDAsInFkaXNjIjoibm9xdWV1ZSIsIm9wZXJzdGF0ZSI6IlVOS05PV04iLCJncm91cCI6ImRlZmF1bHQiLCJ0eHFsZW4iOjEwMDAsImxpbmtfdHlwZSI6ImV0aGVyIiwiYWRkcmVzcyI6IjcyOjVjOjFkOjhlOjNiOjU4IiwiYnJvYWRjYXN0IjoiZmY6ZmY6ZmY6ZmY6ZmY6ZmYiLCJhZGRyX2luZm8iOlt7ImZhbWlseSI6ImluZXQiLCJsb2NhbCI6IjE5OC41MS4xMDAuMSIsInByZWZpeGxlbiI6MjQsInNjb3BlIjoiZ2xvYmFsIiwibGFiZWwiOiJzaXdjaSIsInZhbGlkX2xpZmVfdGltZSI6NDI5NDk2NzI5NSwicHJlZmVycmVkX2xpZmVfdGltZSI6NDI5NDk2NzI5NX0seyJmYW1pbHkiOiJpbmV0NiIsImxvY2FsIjoiZmU4MDo6NzA1YzoxZGZmOmZlOGU6M2I1OCIsInByZWZpeGxlbiI6NjQsInNjb3BlIjoibGluayIsInZhbGlkX2xpZmVfdGltZSI6NDI5NDk2NzI5NSwicHJlZmVycmVkX2xpZmVfdGltZSI6NDI5NDk2NzI5NX1dfV19')
         raw=base64.b64decode(fixture['text_b64'],validate=True);self.assertEqual(hashlib.sha256(raw).hexdigest(),fixture['sha256']);observed=json.loads(raw)
         for case in ('positive','wrong-mac','wrong-netdev','unknown-gid','nonzero-tail','missing-ip','ambiguous-ip'):
@@ -265,7 +308,7 @@ class Fixture(unittest.TestCase):
                 if case=='positive':result=call();self.assertEqual(result['ip'],next(v['local'] for v in device['addr_info'] if v['family']=='inet'));self.assertEqual((result['gid'],result['netdev'],result['gid_binding']),(row['gid'],row['netdev'],'SIW_MAC_NETDEV_IPV4'))
                 else:self.reject(call,'PROBE_')
     def test_r2_prepare_runner_pin_refuses_before_artifact(self):
-        bind,request,env=self.authority();bind.update(profile='r2-recovery-v1',runner_name='tp01-2',build_ci_sha=bind['ci_sha'],build_reference=dict(head_sha=bind['ci_sha'],run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')},build_json_sha256='d'*64,list_sha256='e'*64)
+        bind,request,env=self.authority();bind.update(profile='r2-recovery-v1',rdma_device='rxe0',runner_name='tp01-2',build_ci_sha=bind['ci_sha'],build_reference=dict(head_sha=bind['ci_sha'],run_id=37449089123),product_hashes={k:'d'*64 for k in ('loader','server','master')},build_json_sha256='d'*64,list_sha256='e'*64)
         source=self.dir/'canonical';source.mkdir();a.save(source/'bind.json',bind)
         for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):shutil.copyfile(SCRIPTS/name,source/name)
         a.seal(source);request.update(bind_b64=base64.b64encode((source/'bind.json').read_bytes()).decode(),input_manifest=a.sha(source/'manifest.sha256'))
@@ -333,13 +376,19 @@ class Fixture(unittest.TestCase):
             if str(path)=='/proc/'+str(os.getpid())+'/status':raise PermissionError(13,'controlled status refusal')
             return read(path,*args,**kwargs)
         with patch.object(pathlib.Path,'read_text',inaccessible):self.reject(lambda:a.probe_module.qp_owners(a,[rows[0]],actors,self.dir,'unreadable'),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+    def test_rxe_qp_selection_uses_bound_device_not_first_hca(self):
+        rows=[dict(ifname=name,lqpn=number,type='RC',pid=os.getpid()) for name,number in [('siw0',9),('rxe0',10)]]
+        actors=[dict(pid=os.getpid()),dict(pid=-1)]
+        selected=a.probe_module.qp_owners(a,rows,actors,self.dir,'rxe-select','rxe0')
+        self.assertEqual(selected,[[rows[1]],[]])
+        self.assertEqual(json.loads((self.dir/'rxe-select-qp-ownership.json').read_text())['foreign_count'],0)
     def test_r2_public_snapshot_types_unknown_qp_before_metrics(self):
         child=subprocess.Popen([sys.executable,'-c','import socket,time;s=socket.socket();s.bind(("127.0.0.1",0));s.listen();print(s.getsockname()[1],flush=True);time.sleep(10)'],stdout=subprocess.PIPE)
         try:
             port=int(child.stdout.readline());ports=list(a.R2_PORTS);ports[4]=port
             actors=[a.r2_identity(os.getpid()),a.r2_identity(child.pid)];server=self.dir/'server';server.mkdir();(server/'owner.pid').write_text(str(child.pid));(server/'owner.starttime').write_text(str(actors[1]['starttime']))
-            a.save(self.dir/'client.identity.json',dict(pid=os.getpid(),starttime=actors[0]['starttime']));a.save(self.dir/'r2-bind.json',dict(profile='r2-recovery-v1',ports=ports,provider_objects={}));a.save(self.dir/'clock.json',dict(body_deadline=time.monotonic()+5))
-            qp=dict(ifname='siw0',lqpn=123,type='RC')
+            a.save(self.dir/'client.identity.json',dict(pid=os.getpid(),starttime=actors[0]['starttime']));a.save(self.dir/'r2-bind.json',dict(profile='r2-recovery-v1',rdma_device='rxe0',ports=ports,provider_objects={}));a.save(self.dir/'clock.json',dict(body_deadline=time.monotonic()+5))
+            qp=dict(ifname='rxe0',lqpn=123,type='RC')
             with patch.object(a,'command',return_value=json.dumps([qp]).encode()),patch.object(a,'r2_provider') as provider:
                 self.reject(lambda:a.probe_module.snapshot(a,self.dir,os.getpid(),'initial'),'R2_QP_FOREIGN_OR_UNATTRIBUTED');provider.assert_not_called()
             records=list(self.dir.glob('*-qp-ownership.json'));self.assertEqual(len(records),1);self.assertEqual(json.loads(records[0].read_text())['foreign_count'],1)
@@ -370,10 +419,10 @@ class Fixture(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):a.probe_module.read_lock(b,a.require)
     def test_r2_run_admit_model_identity_and_root_refusals(self):
         """Inert admission model, not a host-fact fixture or real PROBE PASS."""
-        for case in ('positive','alias','retarget','ports','range','live-range','inode','device','runner','host','uid','root','gid-kind','build-ref','lock-unreadable','workspace-unwritable'):
+        for case in ('positive','alias','retarget','ports','range','live-range','inode','device','runner','host','uid','root','gid-kind','gid-type','gid-index','bound-device','module','build-ref','lock-unreadable','workspace-unwritable'):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as td:
                 out=pathlib.Path(td);lock=out/'siw-lab.lock';lock.touch();st=lock.stat();build_ref=dict(run_id=37449089123,artifact_id=11406265930,digest='sha256:'+'a'*64)
-                row=dict(state='PASS_FACTS_PLANS_NOT_RUN',ci_sha='1'*40,source_sha='2'*40,build_ci_sha='3'*40,run_id=10,attempt=1,job='tm-connected-diagnostic',runner='tp01-2',hostname=a.probe_module.socket.gethostname(),uid=os.getuid(),kernel_release='INERT',siw_module_required_lines=[],gid='INERT',gid_index=0,netdev='INERT',ip='198.51.100.1',gid_binding='SIW_MAC_NETDEV_IPV4',provider_objects={},runner_names=['tp01','tp01-2'],runtime_access=dict(base=str(out),lock=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid)),plans={k:[] for k in ('setup','down','probes','r2_services','test_env')})
+                row=dict(state='PASS_FACTS_PLANS_NOT_RUN',ci_sha='1'*40,source_sha='2'*40,build_ci_sha='3'*40,run_id=10,attempt=1,job='tm-connected-diagnostic',runner='tp01-2',hostname=a.probe_module.socket.gethostname(),uid=os.getuid(),kernel_release='INERT',rdma_device='rxe0',rdma_module_required_lines=[],gid='INERT',gid_index=1,gid_type='RoCE v2',netdev='INERT',ip='198.51.101.1',gid_binding='ROCE_V2_IPV4_NETDEV',provider_objects={},runner_names=['tp01','tp01-2'],runtime_access=dict(base=str(out),lock=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid)),plans={k:[] for k in ('setup','down','probes','r2_services','test_env')})
                 row.update(ports_observed_free_not_reserved=a.R2_PORTS,ephemeral_range=[32768,60999]);b=dict(row,ports=a.R2_PORTS,profile='r2-recovery-v1',root=str(out/'codex03-tm-model'),lock_path=str(lock),probe_reference={},build_reference=build_ref,plans_status='REVIEWED_RENDERED_OWNED_WRAPPERS',**row['plans']);env=dict(RUNNER_NAME='tp01-2',TM_SOURCE_SHA='2'*40)
                 lexical='/opt/work/siw-lab.lock';canonical='/data/nvme/relocated/opt/work/siw-lab.lock';resolve=pathlib.Path.resolve;stat=pathlib.Path.stat
                 if case in ('alias','retarget'):
@@ -391,6 +440,10 @@ class Fixture(unittest.TestCase):
                 if case in ('ports','range'):b['ports' if case=='ports' else 'ephemeral_range']=[1,2]
                 if case in ('inode','device'):row['runtime_access']['lock_identity']['inode' if case=='inode' else 'dev']+=1
                 if case=='gid-kind':b['gid_binding']='foreign'
+                if case=='gid-type':b['gid_type']='RoCE v1'
+                if case=='gid-index':b['gid_index']=0
+                if case=='bound-device':b['rdma_device']='siw0'
+                if case=='module':b['rdma_module_required_lines']=['foreign']
                 expected=out/'expected';expected.mkdir();a.save(expected/'probe.json',row);b.update(probe_json_sha256=a.sha(expected/'probe.json'),probe_plan_source_sha256=a.sha(expected/'probe.json'))
                 def artifact(reference,dest,deadline):
                     dest.mkdir();a.save(dest/'probe.json',row);a.save(dest/'prior-artifacts.json',dict(build_reference={} if case=='build-ref' else build_ref));a.seal(dest);return dict(head_sha='1'*40,id=10,run_attempt=1),None
@@ -401,10 +454,30 @@ class Fixture(unittest.TestCase):
                     self.assertEqual(pathlib.Path(path),out);self.assertEqual(mode,os.W_OK);return case!='workspace-unwritable'
                 with patch.object(os,'access',side_effect=access),patch.object(pathlib.Path,'resolve',resolve_control),patch.object(pathlib.Path,'stat',stat_control),patch.object(a,'ports_free',return_value=dict(ephemeral_range=[32000,60999] if case=='live-range' else [32768,60999])):
                     if case in ('positive','alias'):call()
-                    else:self.reject(call,{'ports':'R2_PORT_BIND','range':'R2_PORT_BIND','live-range':'PROBE_EPHEMERAL_RANGE_DRIFT','inode':'PROBE_LOCK_IDENTITY_DRIFT','device':'PROBE_LOCK_IDENTITY_DRIFT','retarget':'PROBE_RUN_ROOT_DRIFT','runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
+                    else:self.reject(call,{'ports':'R2_PORT_BIND','range':'R2_PORT_BIND','live-range':'PROBE_EPHEMERAL_RANGE_DRIFT','inode':'PROBE_LOCK_IDENTITY_DRIFT','device':'PROBE_LOCK_IDENTITY_DRIFT','retarget':'PROBE_RUN_ROOT_DRIFT','runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','gid-type':'PROBE_BIND_FACT_DRIFT_gid_type','gid-index':'PROBE_BIND_FACT_DRIFT_gid_index','bound-device':'R2_DEVICE_BIND','module':'PROBE_BIND_FACT_DRIFT_rdma_module_required_lines','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
                 if case in ('positive','alias','retarget','root'):
                     operands=json.loads((out/'run-admission-operands.json').read_text());self.assertEqual(operands['run_parent'],str(pathlib.Path(b['root']).parent));self.assertEqual(operands['probe_parent'],str(out))
                     if case in ('alias','retarget'):self.assertEqual(operands['lock_lexical'],lexical);self.assertEqual(operands['probe_lock'],canonical);self.assertEqual(operands['lock_identity'],row['runtime_access']['lock_identity']);self.assertEqual(operands['lock_canonical'],canonical if case=='alias' else '/foreign/siw-lab.lock')
+    def test_r2_post_end_release_observation_real_wait_and_flock(self):
+        lock=self.dir/'release.lock';lock.touch();st=lock.stat();b=dict(lock_path=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino))
+        root=self.dir/'run-root';root.mkdir()
+        child=subprocess.Popen([sys.executable,'-c','import sys,fcntl;f=open(sys.argv[1],"rb");fcntl.flock(f,fcntl.LOCK_EX);print("ready",flush=True);sys.stdin.readline();f.close()',str(lock)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(),'ready');owner=a.proc(child.pid);terminal=dict(owners=[owner])
+            self.reject(lambda:a.release_observation(b,root,terminal,None,time.monotonic()+5),'R2_RELEASE_WAIT_OR_DEADLINE')
+            with self.assertRaises(BlockingIOError):a.release_observation(b,root,dict(owners=[]),0,time.monotonic()+5)
+            child.stdin.write('finish\n');child.stdin.flush();rc=child.wait(timeout=5)
+            result=a.release_observation(b,root,terminal,rc,time.monotonic()+5)
+            self.assertEqual((result['state'],result['dev'],result['inode'],result['wait_code']),('AVAILABLE',st.st_dev,st.st_ino,0))
+            self.reject(lambda:a.release_observation(b,root,terminal,None,time.monotonic()+5),'R2_RELEASE_WAIT_OR_DEADLINE')
+            self.reject(lambda:a.release_observation(b,root,terminal,rc,time.monotonic()-1),'R2_RELEASE_WAIT_OR_DEADLINE')
+            closed=[False];close=os.close;now=time.monotonic;end=now()+5
+            def late_close(fd):close(fd);closed[0]=True
+            with patch.object(os,'close',side_effect=late_close),patch.object(a.time,'monotonic',side_effect=lambda:end+1 if closed[0] else now()):
+                self.reject(lambda:a.release_observation(b,root,terminal,rc,end),'R2_RELEASE_DEADLINE')
+        finally:
+            if child.poll() is None:child.terminate();child.wait(timeout=5)
+            child.stdin.close();child.stdout.close()
     def test_r2_guardian_actual_lock_open_boundary(self):
         lock=self.dir/'guard.lock';lock.touch();st=lock.stat();bundle=dict(profile='r2-recovery-v1',root=str(self.dir/'guard-root'),lock_path=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino));handles=[];fdopen=os.fdopen;open_fd=os.open
         def observe_open(path,flags,*args):

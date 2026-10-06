@@ -8,6 +8,23 @@ PRODUCTS=dict(loader='28bf1741053ada3f64b8fef74cd33bb1cf5501ff1cd1a2a11e25b14f32
 BUILD_JSON='9bded3c5422e6e03e1a6d128879bf105752c6ad5b769a8c7f81af3016bb311af'
 LIST_SHA='656ff488ae363a21a4473ed87509381a6a7a7c565a14b8698121a32adf4db226'
 
+def device_policy(bind):
+    if bind.get('profile')=='r2-recovery-v1':
+        if bind.get('rdma_device')!='rxe0':raise ValueError('R2_DEVICE_BIND')
+        return dict(name='rxe0',module='rdma_rxe',provider='librxe',module_field='rdma_module_required_lines')
+    return dict(name='siw0',module='siw',provider='libsiw',module_field='siw_module_required_lines')
+
+def bound_gid_identity(bind):
+    address=ipaddress.IPv6Address(bind['gid'])
+    if str(address.ipv4_mapped)!=bind['ip'] or bind['gid_type']!='RoCE v2':raise ValueError('R2_GID_BIND')
+    return dict(device=device_policy(bind)['name'],index=bind['gid_index'],bytes=address.packed.hex(),type=bind['gid_type'],netdev=bind['netdev'])
+
+def observed_gid_identity(bind,sysfs=pathlib.Path('/sys/class/infiniband')):
+    expected=bound_gid_identity(bind);base=sysfs/expected['device']/'ports/1';index=str(expected['index'])
+    actual=dict(expected,bytes=ipaddress.IPv6Address((base/'gids'/index).read_text().strip()).packed.hex(),type=(base/'gid_attrs/types'/index).read_text().strip(),netdev=(base/'gid_attrs/ndevs'/index).read_text().strip())
+    if actual!=expected:raise ValueError('R2_OBSERVED_GID_DRIFT')
+    return actual
+
 def exact_build(a,bind,env):
     if bind.get('profile')=='r2-recovery-v1':
         a.require(bind['source_sha']==env['TM_SOURCE_SHA'] and bind['ci_sha']==env['GITHUB_SHA'] and bind['build_ci_sha']==bind['build_reference']['head_sha']==bind['ci_sha'] and type(bind['build_reference']['run_id']) is int and bind['build_reference']['run_id']>0,'R2_BUILD_BIND_DRIFT')
@@ -27,7 +44,7 @@ def prepare(a,out,env):
     else:api.artifact(request['input'],out/'input',deadline);a.manifest(out/'input',request['input_manifest'])
     bind=json.loads((out/'input/bind.json').read_text());a.require('local_inert_fixture' not in bind,'PRIVATE_FIXTURE_FORBIDDEN');exact_build(a,bind,env)
     r2=bind.get('profile')=='r2-recovery-v1';mono=env['TM_SOURCE_SHA'] if r2 else MONO_SHA;products=bind['product_hashes'] if r2 else PRODUCTS;build_json=bind['build_json_sha256'] if r2 else BUILD_JSON;listing=bind['list_sha256'] if r2 else LIST_SHA
-    if r2:a.require(env['RUNNER_NAME']==bind.get('runner_name')=='tp01-2','R2_RUNNER_PIN');bind['root']=str(pathlib.Path(env['GITHUB_WORKSPACE']).resolve()/('codex03-tm-r2-'+bind['run_id']))
+    if r2:device_policy(bind);a.require(env['RUNNER_NAME']==bind.get('runner_name')=='tp01-2','R2_RUNNER_PIN');bind['root']=str(pathlib.Path(env['GITHUB_WORKSPACE']).resolve()/('codex03-tm-r2-'+bind['run_id']))
     a.require(bind['phase']==env['TM_PHASE'] and bind['phase'] in ('probe','run'),'PHASE_BIND_DRIFT')
     for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):a.require(a.sha(out/'input'/name)==a.sha(a.HERE/name),'ADAPTER_DRIFT')
     a.authorize(bind,request,env,event['sender']['id']);a.save(out/'authority-association.json',dict(launch_id=request['launch_id'],input_digest=request['input_manifest'],actor_id=event['sender']['id'],ci_sha=env['GITHUB_SHA'],source_sha=env['TM_SOURCE_SHA'],run_id=bind['run_id']))
@@ -49,18 +66,24 @@ def object_identity(a,path):
     a.require((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns),'PROBE_OBJECT_DRIFT')
     return dict(path=str(p),dev=f'{os.major(before.st_dev):02x}:{os.minor(before.st_dev):02x}',inode=before.st_ino,sha256=digest)
 
-def network(a,sysfs,links,addresses,out=None):
-    matches=re.findall(r'\bsiw0/1\s+[^\n]*?\bnetdev\s+(\S+)',links);a.require(len(set(matches))==1,'PROBE_NETDEV_AMBIGUOUS')
+def network(a,sysfs,links,addresses,out=None,device='siw0'):
+    a.require(device in ('siw0','rxe0'),'PROBE_DEVICE_UNSUPPORTED');rxe=device=='rxe0'
+    matches=re.findall(r'\b'+re.escape(device)+r'/1\s+[^\n]*?\bnetdev\s+(\S+)',links);a.require(len(set(matches))==1,'PROBE_NETDEV_AMBIGUOUS')
     netdev=matches[0];ips={v['local'] for row in addresses if row['ifname']==netdev for v in row.get('addr_info',[]) if v['family']=='inet'}
     r2=a.recovery(os.environ);devices=[row for row in addresses if row['ifname']==netdev];mac=devices[0].get('address','') if len(devices)==1 else ''
-    if r2:a.require(len(devices)==1 and len(ips)==1 and re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}',mac),'PROBE_SIW_NETDEV_IP_OR_MAC')
+    if rxe:a.require(len(devices)==1 and len(ips)==1,'PROBE_RXE_NETDEV_IP')
+    elif r2:a.require(len(devices)==1 and len(ips)==1 and re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}',mac),'PROBE_SIW_NETDEV_IP_OR_MAC')
     candidates=[];raw_rows=[]
     try:
-        for f in sorted((sysfs/'siw0/ports/1/gids').iterdir()):
-            row=dict(gid_path=str(f),netdev_path=str(sysfs/'siw0/ports/1/gid_attrs/ndevs'/f.name));raw_rows.append(row)
-            row['gid']=gid=f.read_text().strip();row['netdev']=ndev=pathlib.Path(row['netdev_path']).read_text().strip()
-            address=ipaddress.IPv6Address(gid);mapped=address.ipv4_mapped
-            if r2:
+        for f in sorted((sysfs/device/'ports/1/gids').iterdir()):
+            row=dict(gid_path=str(f),netdev_path=str(sysfs/device/'ports/1/gid_attrs/ndevs'/f.name));raw_rows.append(row)
+            row['gid']=gid=f.read_text().strip();address=ipaddress.IPv6Address(gid)
+            if rxe and address.is_unspecified:row['state']='UNASSIGNED_GID';continue
+            row['netdev']=ndev=pathlib.Path(row['netdev_path']).read_text().strip();mapped=address.ipv4_mapped
+            if rxe:
+                row['gid_type']=kind=(sysfs/device/'ports/1/gid_attrs/types'/f.name).read_text().strip()
+                if mapped and str(mapped) in ips and ndev==netdev and kind=='RoCE v2':candidates.append(dict(gid=str(address),gid_index=int(f.name),netdev=netdev,ip=str(mapped),gid_binding='ROCE_V2_IPV4_NETDEV',gid_type=kind,rdma_device=device))
+            elif r2:
                 if f.name=='0' and ndev==netdev and address.packed==bytes.fromhex(mac.replace(':',''))+bytes(10):candidates.append(dict(gid=gid,gid_index=0,netdev=netdev,ip=str(ipaddress.IPv4Address(next(iter(ips)))),gid_binding='SIW_MAC_NETDEV_IPV4'))
             elif mapped and str(mapped) in ips and ndev==netdev:candidates.append(dict(gid=gid,gid_index=int(f.name),netdev=netdev,ip=str(mapped)))
         a.require(len(candidates)==1,'PROBE_GID_MAPPING_MISSING_OR_AMBIGUOUS');return dict(candidates[0],gid_rows=raw_rows)
@@ -131,9 +154,12 @@ def plans(a,build,bind,facts):
     return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',producer_hashes={name:a.sha(build/name) for name in ('server-help.stdout.raw','server-help.stderr.raw','master-help.stdout.raw')},setup=[dict(role='master',binary_hash=PRODUCTS['master'],argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-mdir=${ROOT}/master'],flag_help='probe-master-flags.stdout.raw + stderr.raw'),dict(role='server',binary_hash=PRODUCTS['server'],argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242'])],down=[dict(role=role,argv=['kill','-TERM','--','-${ENROLLED_'+role.upper()+'_SID}'],identity='RUN PID/starttime enrollment mandatory; checked guardian census/reap required') for role in ('server','master')],probes=[dict(role='master',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46243/dir/status']),dict(role='server',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46240/status'])],runtime_renderer='NOT_RUN: direct spawn/owned SID plans require reviewed existing guardian enrollment wrapper before RUN INPUT; no plan is an observed service success')
 
 def device_info(a,text,facts,r2):
-    a.require((re.findall(r'^hca_id:\s*(\S+)',text,re.M)==['siw0'] and re.findall(r'^\s*transport:\s*(\w+)',text,re.M)==['iWARP'] and re.findall(r'^\s*port:\s*(\d+)',text,re.M)==['1'] and re.findall(r'^\s*state:\s*(\S+)',text,re.M)==['PORT_ACTIVE']) if r2 else 'siw0' in text and facts['gid'] in text,'PROBE_DEVICE_GID')
+    if not r2:a.require('siw0' in text and facts['gid'] in text,'PROBE_DEVICE_GID');return
+    a.require(facts.get('rdma_device')=='rxe0','R2_DEVICE_BIND')
+    a.require(re.findall(r'^hca_id:\s*(\S+)',text,re.M)==['rxe0'] and re.findall(r'^\s*transport:\s*(\w+)',text,re.M)==['InfiniBand'] and re.findall(r'^\s*port:\s*(\d+)',text,re.M)==['1'] and re.findall(r'^\s*state:\s*(\S+)',text,re.M)==['PORT_ACTIVE'] and re.findall(r'^\s*link_layer:\s*(\S+)',text,re.M)==['Ethernet'],'PROBE_DEVICE_GID')
 
 def produce(a,bind,out,env,api):
+    policy=device_policy(bind)
     start=time.monotonic();deadline=start+20;previous=signal.getsignal(signal.SIGALRM)
     def expired(signum,frame):raise ValueError('PROBE_PRODUCER_DEADLINE')
     signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,20)
@@ -141,19 +167,19 @@ def produce(a,bind,out,env,api):
     def run(label,argv):return a.command(argv,out,'probe-'+label,deadline).decode()
     try:
         record['kernel_release']=run('kernel',['uname','-r']).strip();record['loaded_modules']=pathlib.Path('/proc/modules').read_text()
-        a.require(re.search(r'^siw\s',record['loaded_modules'],re.M),'PROBE_SIW_NOT_LOADED')
-        module=run('siw-module',['modinfo','siw']);record['siw_module_required_lines']=[line for line in module.splitlines() if line.split(':',1)[0] in ('filename','version','srcversion','vermagic')]
-        a.require(any(line.startswith('srcversion:') for line in record['siw_module_required_lines']),'PROBE_MODULE_IDENTITY_MISSING')
+        a.require(re.search(r'^'+re.escape(policy['module'])+r'\s',record['loaded_modules'],re.M),'PROBE_RDMA_MODULE_NOT_LOADED' if r2 else 'PROBE_SIW_NOT_LOADED')
+        module=run('rdma-module' if r2 else 'siw-module',['modinfo',policy['module']]);record[policy['module_field']]=[line for line in module.splitlines() if line.split(':',1)[0] in ('filename','version','srcversion','vermagic')]
+        a.require(any(line.startswith('srcversion:') for line in record[policy['module_field']]),'PROBE_MODULE_IDENTITY_MISSING')
         links=run('rdma-link',['rdma','link','show']);addresses=json.loads(run('IP',['ip','-j','addr','show']))
-        facts=network(a,pathlib.Path('/sys/class/infiniband'),links,addresses,out);record.update(facts)
+        facts=network(a,pathlib.Path('/sys/class/infiniband'),links,addresses,out,policy['name']);record.update(facts)
         a.require(run('memlock',['bash','-c','ulimit -l']).strip()=='unlimited','PROBE_MEMLOCK')
-        devices=run('devices',['ibv_devinfo',*(['-d','siw0'] if r2 else []),'-v']);device_info(a,devices,facts,r2)
+        devices=run('devices',['ibv_devinfo',*(['-d',policy['name']] if r2 else []),'-v']);device_info(a,devices,facts,r2)
         ld=run('ldconfig',['ldconfig','-p']);objects={}
         for library in ('libibverbs','librdmacm'):
             paths={str(pathlib.Path(v).resolve()) for v in re.findall(r'\b'+library+r'\.so(?:\.\d+)*\s+[^\n]*=>\s+(\S+)',ld)}
             a.require(len(paths)==1,'PROBE_PROVIDER_AMBIGUOUS_'+library);objects[library]=object_identity(a,next(iter(paths)))
-        candidates={str(f.resolve()) for directory in {pathlib.Path(objects['libibverbs']['path']).parent/'libibverbs',pathlib.Path('/usr/lib64/libibverbs')} for f in directory.glob('libsiw*.so*')}
-        a.require(len(candidates)==1,'PROBE_PROVIDER_AMBIGUOUS_libsiw');objects['libsiw']=object_identity(a,next(iter(candidates)));record['provider_objects']=objects
+        candidates={str(f.resolve()) for directory in {pathlib.Path(objects['libibverbs']['path']).parent/'libibverbs',pathlib.Path('/usr/lib64/libibverbs')} for f in directory.glob(policy['provider']+'*.so*')}
+        a.require(len(candidates)==1,'PROBE_PROVIDER_AMBIGUOUS_'+policy['provider']);objects[policy['provider']]=object_identity(a,next(iter(candidates)));record['provider_objects']=objects
         prefix='/repos/'+api.repository+'/actions/';inventory_start=time.monotonic();recent=dict(workflow_runs=[dict(id=int(env['GITHUB_RUN_ID']))]) if r2 else api.get(prefix+'runs?per_page=10',deadline);inventory=[]
         for row in recent['workflow_runs']:
             jobs=api.get(prefix+'runs/'+str(row['id'])+('/attempts/'+env['GITHUB_RUN_ATTEMPT'] if r2 else '')+'/jobs?per_page=100',deadline);a.require(jobs['total_count']<100,'PROBE_JOB_INVENTORY_TRUNCATED');inventory.extend(jobs['jobs'])
@@ -191,7 +217,8 @@ def run_admit(a,bind,out,env,api,deadline):
     a.require(p['runner']==env['RUNNER_NAME'] and p['hostname']==socket.gethostname() and p['uid']==os.getuid(),'PROBE_FOREIGN_RUNNER')
     jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(run['id'])+'/attempts/'+str(run['run_attempt'])+'/jobs?per_page=100',deadline)
     a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==p['job'] and j['runner_name']==p['runner'] and j['conclusion']=='success'])==1,'PROBE_RUNNER_ASSOCIATION')
-    for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names')+(('gid_binding',) if r2 else ()):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
+    policy=device_policy(bind)
+    for key in ('kernel_release',policy['module_field'],'gid','gid_index','netdev','ip','provider_objects','runner_names')+(('gid_binding','gid_type','rdma_device') if r2 else ()):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
     if r2:
         a.require(bind['ports']==p['ports_observed_free_not_reserved']==a.R2_PORTS and bind['ephemeral_range']==p['ephemeral_range'],'R2_PORT_BIND')
         a.require(a.ports_free(bind['ports'],out,True)['ephemeral_range']==p['ephemeral_range'],'PROBE_EPHEMERAL_RANGE_DRIFT')
@@ -232,11 +259,11 @@ def wait_registered(a,root,deadline,master='127.0.0.1:46243',expected='127.0.0.1
     except ValueError as error:report['error_code']=str(error);raise
     finally:report['ended']=time.monotonic();a.save(root/'registration.json',report)
 
-def qp_owners(a,qps,actors,root,tag):
+def qp_owners(a,qps,actors,root,tag,device='siw0'):
     owned=[[],[]];foreign=[];seen=set()
     for qp in qps:
         a.require(isinstance(qp,dict) and 'ifname' in qp,'R2_QP_DEVICE_MISSING')
-        if qp['ifname']!='siw0':continue
+        if qp['ifname']!=device:continue
         qpn=qp.get('lqpn');a.require(type(qpn) is int and qpn>0 and qpn not in seen,'R2_QP_OWNER_OR_ID_MISSING');seen.add(qpn)
         pid=qp.get('pid')
         if type(pid) is not int or pid<=0:foreign.append(dict(qp=qp,reason='UNATTRIBUTED_MISSING_PID'));continue
@@ -253,15 +280,15 @@ def qp_owners(a,qps,actors,root,tag):
     return owned
 
 def snapshot(a,root,client,label):
-    a.require(re.fullmatch(r'initial|(?:[0-9]|1[0-7])-(?:connected|settled)',label),'R2_SNAPSHOT_LABEL');client=int(client)
+    a.require(re.fullmatch(r'initial|(?:[0-9]|1[0-8])-(?:connected|settled)',label),'R2_SNAPSHOT_LABEL');client=int(client)
     bind=json.loads((root/'r2-bind.json').read_text());expected=json.loads((root/'client.identity.json').read_text());server=int((root/'server/owner.pid').read_text())
     a.require(bind['profile']=='r2-recovery-v1' and expected['pid']==client,'R2_CLIENT_BIND');deadline=min(json.loads((root/'clock.json').read_text())['body_deadline'],time.monotonic()+2)
     actors=[a.r2_identity(pid) for pid in (client,server)];a.require(actors[0]['starttime']==expected['starttime'] and actors[1]['starttime']==int((root/'server/owner.starttime').read_text()),'R2_ACTOR_DRIFT')
     a.require(len({v['namespace'] for v in actors} | {pathlib.Path('/proc/self/ns/net').stat().st_ino})==1,'R2_NAMESPACE_DRIFT');tag='r2-'+str(time.monotonic_ns())
-    qps=json.loads(a.command(['rdma','-j','resource','show','qp'],root,tag+'-qp',deadline,limit=1048576));a.require(isinstance(qps,list),'R2_QP_TABLE_SCHEMA');owned=qp_owners(a,qps,actors,root,tag)
+    device=device_policy(bind)['name'];qps=json.loads(a.command(['rdma','-j','resource','show','qp'],root,tag+'-qp',deadline,limit=1048576).decode().strip() or '[]');a.require(isinstance(qps,list),'R2_QP_TABLE_SCHEMA');owned=qp_owners(a,qps,actors,root,tag,device)
     groups={}
     for i,pid in enumerate((client,server)):
-        if i==1 or owned[i]:groups[str(pid)]=a.r2_provider(pid,bind['provider_objects'])
+        if i==1 or owned[i]:groups[str(pid)]=a.r2_provider(pid,bind['provider_objects'],device)
     metrics_port=bind['ports'][4];tcp=pathlib.Path('/proc/net/tcp').read_text().splitlines()[1:];listeners=[line.split()[9] for line in tcp if line.split()[1]==f'0100007F:{metrics_port:04X}' and line.split()[3]=='0A']
     a.require(len(listeners)==1 and 'socket:['+listeners[0]+']' in groups[str(server)]['fd_targets'],'R2_METRICS_OWNER_UNPROVEN')
     connection=http.client.HTTPConnection('127.0.0.1',metrics_port,timeout=max(.01,deadline-time.monotonic()));connection.sock=socket.create_connection(('127.0.0.1',metrics_port),timeout=max(.01,deadline-time.monotonic()))
@@ -271,6 +298,7 @@ def snapshot(a,root,client,label):
         counts.extend(r2_metrics(a,metrics))
     finally:connection.close()
     counts.append(owned[0][0]['lqpn'] if len(owned[0])==1 else 0);a.require([a.r2_identity(v['pid']) for v in actors]==actors and time.monotonic()<deadline,'R2_OBSERVATION_DRIFT_OR_LATE')
-    record=dict(label=label,actors=actors,counts=counts,qp_table=qps,providers=groups,metrics_file=tag+'-metrics.raw',actual_counter_scope='OWNED_TGID_NETNS_SIW_QP_AND_VOLUME_PERMITS')
+    gid_identity=observed_gid_identity(bind);a.require(time.monotonic()<deadline,'R2_OBSERVATION_DRIFT_OR_LATE')
+    record=dict(label=label,actors=actors,counts=counts,qp_table=qps,providers=groups,metrics_file=tag+'-metrics.raw',rdma_device=device,gid_identity=gid_identity,actual_counter_scope='OWNED_TGID_NETNS_BOUND_DEVICE_QP_AND_VOLUME_PERMITS')
     with (root/'r2-observations.jsonl').open('a') as f:f.write(json.dumps(record)+'\n')
     print('R2_COUNTS',' '.join(map(str,counts)))

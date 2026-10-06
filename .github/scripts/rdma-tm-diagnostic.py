@@ -450,7 +450,7 @@ def r2_identity(pid):
     require(before and before['state']!='Z' and list(map(int,re.search(r'^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)',status,re.M).groups()))==[os.getuid()]*4,'R2_PROCESS_UID_OR_STATE')
     return dict(pid=pid,starttime=before['starttime'],sid=before['sid'],uid=os.getuid(),namespace=(p/'ns/net').stat().st_ino)
 
-def r2_provider(pid,objects):
+def r2_provider(pid,objects,device='siw0'):
     p=pathlib.Path('/proc')/str(pid);group={'/proc/self/maps':[p.joinpath('maps').read_text()],'process_fd':[],'uverbs_ibdev':[]};targets=[]
     for fd in p.joinpath('fd').iterdir():
         try:target=os.readlink(fd)
@@ -459,7 +459,7 @@ def r2_provider(pid,objects):
         if re.fullmatch('/dev/infiniband/uverbs[0-9]+',target):
             ibdev=pathlib.Path('/sys/class/infiniband_verbs')/pathlib.Path(target).name/'ibdev'
             group['process_fd'].append(f'fd="{fd.name}" target=Ok("{target}")');group['uverbs_ibdev'].append(f'fd="{fd.name}" sysfs="{ibdev}" ibdev=Ok("{ibdev.read_text().strip()}")')
-    decoder.provider(group,objects)
+    decoder.provider(group,objects,device)
     for value in objects.values():require(sha(value['path'])==value['sha256'],'R2_PROVIDER_OBJECT_DRIFT')
     return dict(actual_maps_path=str(p/'maps'),decoder_alias_group=group,fd_targets=targets)
 
@@ -536,20 +536,24 @@ def guardian(bundle, output, replacements):
             while True: time.sleep(1)
 
 def fresh_host(bind, output, deadline):
-    require(bind['kernel_release'] and bind['siw_module_required_lines'] and bind['gid'] and bind['netdev'] and bind['ip'],'HOST_IDENTITY_UNBOUND')
-    for label,args in [('kernel',['uname','-r']),('siw-module',['modinfo','siw']),('rdma-link',['rdma','link','show']),('devices',['ibv_devinfo','-v']),('memlock',['bash','-c','ulimit -l'])]:
+    r2=bind.get('profile')=='r2-recovery-v1';policy=probe_module.device_policy(bind);field=policy['module_field']
+    require(bind['kernel_release'] and bind[field] and bind['gid'] and bind['netdev'] and bind['ip'],'HOST_IDENTITY_UNBOUND')
+    for label,args in [('kernel',['uname','-r']),('siw-module',['modinfo',policy['module']]),('rdma-link',['rdma','link','show']),('devices',['ibv_devinfo',*(['-d',policy['name']] if r2 else []),'-v']),('memlock',['bash','-c','ulimit -l'])]:
         raw=command(args,output,'fresh-'+label,min(deadline,time.monotonic()+15)).decode()
         if label=='kernel': require(raw.strip()==bind['kernel_release'],'KERNEL_IDENTITY')
-        if label=='siw-module': require(all(line in raw for line in bind['siw_module_required_lines']),'SIW_MODULE_IDENTITY')
-        if label=='devices': probe_module.device_info(types.SimpleNamespace(require=require),raw,dict(gid=bind['gid']),True) if bind.get('profile')=='r2-recovery-v1' else require('siw0' in raw and bind['gid'] in raw,'SIW_DEVICE_OR_GID')
+        if label=='siw-module': require(all(line in raw for line in bind[field]),'SIW_MODULE_IDENTITY')
+        if label=='devices': probe_module.device_info(types.SimpleNamespace(require=require),raw,bind,True) if r2 else require('siw0' in raw and bind['gid'] in raw,'SIW_DEVICE_OR_GID')
         if label=='memlock': require(raw.strip()=='unlimited','MEMLOCK')
-        if label=='rdma-link': require(re.search(r'siw0/1 .*netdev '+re.escape(bind['netdev'])+r'(?:\s|$)',raw),'IP_RDMA_NETDEV')
+        if label=='rdma-link': links=raw;require(re.search(re.escape(policy['name'])+r'/1 .*netdev '+re.escape(bind['netdev'])+r'(?:\s|$)',raw),'IP_RDMA_NETDEV')
     addresses=json.loads(command(['ip','-j','addr','show','dev',bind['netdev']],output,'fresh-IP',min(deadline,time.monotonic()+15)))
     require(any(v.get('local')==bind['ip'] for row in addresses for v in row.get('addr_info',[])),'CM_IP_IDENTITY')
+    if r2:
+        observed=probe_module.network(types.SimpleNamespace(**globals()),pathlib.Path('/sys/class/infiniband'),links,addresses,output,policy['name'])
+        require(all(observed[key]==bind[key] for key in ('rdma_device','gid','gid_index','gid_type','gid_binding','netdev','ip')),'FRESH_GID_IDENTITY_DRIFT')
     for library,identity in bind['provider_objects'].items():
         path=pathlib.Path(identity['path']); st=path.stat()
-        require(library in ('libsiw','libibverbs','librdmacm') and sha(path)==identity['sha256'] and st.st_ino==identity['inode'] and f'{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}'==identity['dev'],'FRESH_PROVIDER_IDENTITY')
-    require(set(bind['provider_objects'])=={'libsiw','libibverbs','librdmacm'},'PROVIDER_SET')
+        require(library in (policy['provider'],'libibverbs','librdmacm') and sha(path)==identity['sha256'] and st.st_ino==identity['inode'] and f'{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}'==identity['dev'],'FRESH_PROVIDER_IDENTITY')
+    require(set(bind['provider_objects'])=={policy['provider'],'libibverbs','librdmacm'},'PROVIDER_SET')
 
 def wait_ci(api, bind, output, deadline):
     while True:
@@ -576,6 +580,19 @@ def test_environment(bind, root, deadline):
     ms=int((deadline-time.monotonic())*1000)
     require(0 < ms <= 540000,'TEST_BODY_BUDGET')
     return service_env({**bind['test_env'],'TM_CHILD_EVIDENCE_FILE':str(root/'tm-child.raw'),'TM_BODY_REMAINING_MS':str(ms)})
+
+def release_observation(bind,root,terminal,wait_code,end):
+    require(wait_code==0 and time.monotonic()<end,'R2_RELEASE_WAIT_OR_DEADLINE')
+    require(not census(root,terminal['owners'],end),'POST_END_CENSUS_UNCERTAIN')
+    require(time.monotonic()<end,'R2_RELEASE_DEADLINE')
+    fd=probe_module.read_lock(bind,require)
+    try:
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);s=os.fstat(fd)
+        require(time.monotonic()<end,'R2_RELEASE_DEADLINE')
+        observed=dict(state='AVAILABLE',wait_code=wait_code,dev=s.st_dev,inode=s.st_ino,canonical_lock=str(pathlib.Path(bind['lock_path']).resolve()),observed_by=os.getpid(),observed_at=time.monotonic(),scope='OWNED_PID_STARTTIME_AND_ROOT_ARGV_CENSUS')
+    finally:os.close(fd)
+    require(time.monotonic()<end,'R2_RELEASE_DEADLINE')
+    return observed
 
 def runtime(bind, input_root, build_root, output, api, private=False):
     r2=bind.get('profile')=='r2-recovery-v1'
@@ -611,7 +628,7 @@ def runtime(bind, input_root, build_root, output, api, private=False):
         for identity in bind['provider_objects'].values():
             path=pathlib.Path(identity['path']); stat=path.stat(); require(sha(path)==identity['sha256'] and stat.st_ino==identity['inode'] and f'{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}'==identity['dev'],'INSTALLED_PROVIDER_DRIFT')
         decode=decoder.recovery if r2 else decoder.decode
-        save(root/'decoded.json',decode((root/('r2-observations.jsonl' if r2 else 'tm-child.raw')).read_bytes(),(root/'test.stdout.raw').read_text(),bind['provider_objects'],json.loads((root/'client.identity.json').read_text())))
+        save(root/'decoded.json',decode((root/('r2-observations.jsonl' if r2 else 'tm-child.raw')).read_bytes(),(root/'test.stdout.raw').read_text(),bind['provider_objects'],json.loads((root/'client.identity.json').read_text()),**(dict(device=probe_module.device_policy(bind)['name'],gid_identity=probe_module.bound_gid_identity(bind)) if r2 else {})))
         require(time.monotonic()<evidence_deadline,'EVIDENCE_DEADLINE')
         status='PASS'
     except BaseException as failure: error=repr(failure)
@@ -629,7 +646,11 @@ def runtime(bind, input_root, build_root, output, api, private=False):
                     dest=output/'runtime-raw'/f.relative_to(root); dest.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(f,dest)
         save(output/'runtime-result.json',dict(status=status,primary_error=error,terminal=terminal,guardian=proc(child.pid),state='RUNTIME_PASS_PUBLICATION_PENDING' if status=='PASS' and terminal and terminal['status']=='PASS' and clean_end else 'FAILED_OR_UNKNOWN',run_root=str(root)))
     require(status=='PASS' and terminal and terminal['status']=='PASS' and clean_end,'RUNTIME_FAILED_OR_UNKNOWN')
-    require(not census(root,terminal['owners']),'POST_END_CENSUS_UNCERTAIN')
+    if r2:
+        try:save(output/'release-observation.json',release_observation(bind,root,terminal,child.returncode,clock['terminal_deadline']))
+        except BaseException as refusal:
+            result=json.loads((output/'runtime-result.json').read_text());result.update(status='FAIL',state='FAILED_OR_UNKNOWN',primary_error=repr(refusal));save(output/'runtime-result.json',result);raise
+    else:require(not census(root,terminal['owners']),'POST_END_CENSUS_UNCERTAIN')
     return 'RUNTIME_PASS_PUBLICATION_PENDING'
 
 def run_phase(out, env):
