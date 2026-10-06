@@ -299,7 +299,7 @@ class Fixture(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):a.probe_module.read_lock(b,a.require)
     def test_r2_run_admit_model_identity_and_root_refusals(self):
         """Inert admission model, not a host-fact fixture or real PROBE PASS."""
-        for case in ('positive','runner','host','uid','root','gid-kind','build-ref'):
+        for case in ('positive','runner','host','uid','root','gid-kind','build-ref','lock-unreadable','workspace-unwritable'):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as td:
                 out=pathlib.Path(td);lock=out/'siw-lab.lock';lock.touch();st=lock.stat();build_ref=dict(run_id=37449089123,artifact_id=11406265930,digest='sha256:'+'a'*64)
                 row=dict(state='PASS_FACTS_PLANS_NOT_RUN',ci_sha='1'*40,source_sha='2'*40,build_ci_sha='3'*40,run_id=10,attempt=1,job='tm-connected-diagnostic',runner='tp01-2',hostname=a.probe_module.socket.gethostname(),uid=os.getuid(),kernel_release='INERT',siw_module_required_lines=[],gid='INERT',gid_index=0,netdev='INERT',ip='198.51.100.1',gid_binding='SIW_MAC_NETDEV_IPV4',provider_objects={},runner_names=['tp01','tp01-2'],runtime_access=dict(base=str(out),lock=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino,uid=st.st_uid)),plans={k:[] for k in ('setup','down','probes','r2_services','test_env')})
@@ -314,8 +314,26 @@ class Fixture(unittest.TestCase):
                     dest.mkdir();a.save(dest/'probe.json',row);a.save(dest/'prior-artifacts.json',dict(build_reference={} if case=='build-ref' else build_ref));a.seal(dest);return dict(head_sha='1'*40,id=10,run_attempt=1),None
                 api=a.types.SimpleNamespace(repository='seaweedfs/artifactory',artifact=artifact,get=lambda url,deadline:dict(total_count=1,jobs=[dict(name=row['job'],runner_name=row['runner'],conclusion='success')]))
                 call=lambda:a.probe_module.run_admit(a,b,out,env,api,time.monotonic()+10)
-                if case=='positive':call()
-                else:self.reject(call,{'runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT'}[case])
+                def access(path,mode):
+                    if pathlib.Path(path)==lock:self.assertEqual(mode,os.R_OK);return case!='lock-unreadable'
+                    self.assertEqual(pathlib.Path(path),out);self.assertEqual(mode,os.W_OK);return case!='workspace-unwritable'
+                with patch.object(os,'access',side_effect=access):
+                    if case=='positive':call()
+                    else:self.reject(call,{'runner':'PROBE_FOREIGN_RUNNER','host':'PROBE_FOREIGN_RUNNER','uid':'PROBE_FOREIGN_RUNNER','root':'PROBE_RUN_ROOT_DRIFT','gid-kind':'PROBE_BIND_FACT_DRIFT_gid_binding','build-ref':'PROBE_BUILD_REFERENCE_DRIFT','lock-unreadable':'PROBE_RUN_PERMISSION_DRIFT','workspace-unwritable':'PROBE_RUN_PERMISSION_DRIFT'}[case])
+    def test_r2_guardian_actual_lock_open_boundary(self):
+        lock=self.dir/'guard.lock';lock.touch();st=lock.stat();bundle=dict(profile='r2-recovery-v1',root=str(self.dir/'guard-root'),lock_path=str(lock),lock_identity=dict(dev=st.st_dev,inode=st.st_ino));handles=[];fdopen=os.fdopen;open_fd=os.open
+        def observe_open(path,flags,*args):
+            self.assertEqual(pathlib.Path(path),lock);self.assertEqual(flags,os.O_RDONLY|os.O_NOFOLLOW);return open_fd(path,flags,*args)
+        def observe_fdopen(fd,mode):
+            self.assertEqual(mode,'rb');handle=fdopen(fd,mode);handles.append(handle);return handle
+        try:
+            with patch.object(os,'open',side_effect=observe_open),patch.object(os,'fdopen',side_effect=observe_fdopen),patch.object(a.ctypes,'CDLL',side_effect=ValueError('AFTER_ACTUAL_LOCK_BOUNDARY')):
+                self.reject(lambda:a.guardian(bundle,self.dir,{}),'AFTER_ACTUAL_LOCK_BOUNDARY')
+            self.assertEqual(len(handles),1)
+            with lock.open('rb') as other:
+                with self.assertRaises(BlockingIOError):fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        finally:
+            for handle in handles:handle.close()
     def test_r2_active_host_job_refuses(self):
         for runner in ('tp01','tp01-2'):
             api=a.types.SimpleNamespace(repository='seaweedfs/artifactory',get=lambda url,deadline:dict(total_count=1,workflow_runs=[dict(id=2)]) if 'runs?' in url else dict(total_count=1,jobs=[dict(status='in_progress',runner_name=runner)]))

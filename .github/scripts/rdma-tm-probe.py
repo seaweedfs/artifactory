@@ -186,7 +186,7 @@ def run_admit(a,bind,out,env,api,deadline):
     for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names')+(('gid_binding',) if r2 else ()):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
     a.require(pathlib.Path(bind['root']).resolve().parent==pathlib.Path(p['runtime_access']['base']) and pathlib.Path(bind['lock_path']).resolve()==pathlib.Path(p['runtime_access']['lock']),'PROBE_RUN_ROOT_DRIFT')
     lock=pathlib.Path(bind['lock_path']);s=lock.stat();a.require(not lock.is_symlink() and dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid)==p['runtime_access']['lock_identity'],'PROBE_LOCK_IDENTITY_DRIFT')
-    a.require(os.access(lock,os.W_OK) and os.access(pathlib.Path(bind['root']).parent if r2 else lock.parent,os.W_OK),'PROBE_RUN_PERMISSION_DRIFT')
+    a.require(os.access(lock,os.R_OK if r2 else os.W_OK) and os.access(pathlib.Path(bind['root']).parent if r2 else lock.parent,os.W_OK),'PROBE_RUN_PERMISSION_DRIFT')
     a.require(bind['probe_plan_source_sha256']==a.sha(out/'probe/probe.json') and bind['plans_status']=='REVIEWED_RENDERED_OWNED_WRAPPERS','PROBE_PLAN_RENDERER_UNREVIEWED')
     if r2:a.require(all(bind[key]==p['plans'][key] for key in ('setup','down','probes','r2_services','test_env')),'R2_PLAN_DRIFT')
     # Existing guardian still checks fresh_host/job/port/flock before any service.

@@ -135,12 +135,15 @@ class ProbeControls(unittest.TestCase):
                         return dict(total_count=1,jobs=[dict(name='foreign' if case=='r2-job' else env['GITHUB_JOB'],runner_name='tp01-2',runner_id=23,status='in_progress')])
                     if path.endswith('runs?per_page=10'):return dict(workflow_runs=[dict(id=1)])
                     return dict(total_count=2,jobs=[dict(runner_name=name,labels=['tp01']) for name in (['foreign','seat2'] if case=='runner-missing' else ['seat1','seat2'])])
-                read=pathlib.Path.read_text;access=p.root_access;owned=a.owned_root
+                read=pathlib.Path.read_text;access=p.root_access;owned=a.owned_root;open_fd=os.open
                 def read_text(file,*args,**kwargs):
                     if str(file)=='/proc/modules':return '' if case=='module-missing' else 'siw 100 0 - Live 0\n'
                     return read(file,*args,**kwargs)
+                def open_control(path,flags,*args):
+                    if r2 and pathlib.Path(path)==pathlib.Path(b['lock_path']):self.assertEqual(flags,os.O_RDONLY|os.O_NOFOLLOW);seen.append('lock-read-only')
+                    return open_fd(path,flags,*args)
                 # Remap only the host lock locator; execute real filesystem validation.
-                with patch.dict(os.environ,TM_PROFILE='r2-recovery-v1' if r2 else 'tm-connected-v1',GITHUB_WORKSPACE=str(base)),patch.object(a,'owned_root',side_effect=lambda rr,ll,ww,bb=None:owned(rr,ll,ww,str(base))),patch.object(p,'device_info') if r2 else patch.object(p,'device_info',wraps=p.device_info),patch.object(a,'command',command),patch.object(pathlib.Path,'read_text',read_text),patch.object(a,'ports_free'),patch.object(p,'network',return_value=dict(gid='fixture-gid',gid_index=0,netdev='fixture-net',ip='198.51.100.1')),patch.object(p,'root_access',side_effect=lambda aa,bb,oo,dd:access(aa,bb,oo,dd,str(base))):
+                with patch.object(os,'open',side_effect=open_control),patch.dict(os.environ,TM_PROFILE='r2-recovery-v1' if r2 else 'tm-connected-v1',GITHUB_WORKSPACE=str(base)),patch.object(a,'owned_root',side_effect=lambda rr,ll,ww,bb=None:owned(rr,ll,ww,str(base))),patch.object(p,'device_info') if r2 else patch.object(p,'device_info',wraps=p.device_info),patch.object(a,'command',command),patch.object(pathlib.Path,'read_text',read_text),patch.object(a,'ports_free'),patch.object(p,'network',return_value=dict(gid='fixture-gid',gid_index=0,netdev='fixture-net',ip='198.51.100.1')),patch.object(p,'root_access',side_effect=lambda aa,bb,oo,dd:access(aa,bb,oo,dd,str(base))):
                     if case in ('positive','r2-positive'):self.assertIn('PLANS_NOT_EXECUTED',p.produce(a,b,out,env,types.SimpleNamespace(repository='fixture/repo',get=jobs)))
                     else:
                         with self.assertRaises((ValueError,FileNotFoundError)):p.produce(a,b,out,env,types.SimpleNamespace(repository='fixture/repo',get=jobs))
