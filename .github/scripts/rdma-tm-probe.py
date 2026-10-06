@@ -118,9 +118,9 @@ def plans(a,build,bind,facts):
     a.require('master' in (build/'master-help.stdout.raw').read_text(),'PROBE_MASTER_PLAN_UNSUPPORTED')
     if bind.get('profile')=='r2-recovery-v1':
         a.require(all(flag in help_raw for flag in ('--metricsPort','--metricsIp')),'R2_METRICS_FLAGS_UNSUPPORTED')
-        rows={'master':dict(argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-volumeSizeLimitMB=64','-mdir=${ROOT}/master/data'],env={}),'server':dict(argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server/data','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242','--metricsPort','46244','--metricsIp','127.0.0.1'],env={})}
+        rows={'master':dict(argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-volumeSizeLimitMB=64','-mdir=${ROOT}/master/data'],env={}),'server':dict(argv=['${BUILD}/server.elf','--ip','127.0.0.1','--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server/data','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242','--metricsPort','46244','--metricsIp','127.0.0.1'],env={})}
         wrapper=lambda role,phase:dict(role=role,argv=['python3','-B','${INPUT}/rdma-tm-diagnostic.py','service','${ROOT}/r2-service-bundle.json',role,phase],env={})
-        probes=[dict(argv=['curl','--fail','--max-time','1',*(['--retry','30','--retry-connrefused','--retry-max-time','14'] if '/vol/grow' not in url else []),url],env={}) for url in ['http://127.0.0.1:46243/dir/status','http://127.0.0.1:46240/status','http://127.0.0.1:46243/vol/grow?count=1&replication=000']]
+        probes=[dict(argv=['curl','--fail','--max-time','1','--retry','30','--retry-connrefused','--retry-max-time','14',url],env={}) for url in ['http://127.0.0.1:46243/dir/status','http://127.0.0.1:46240/status','http://127.0.0.1:46243/vol/grow?count=1&replication=000']]
         return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',r2_services=rows,setup=[wrapper(r,'up') for r in ('master','server')],down=[wrapper(r,'down') for r in ('server','master')],probes=probes,test_env=dict(TM_RDMA_ADDR=facts['ip']+':46242',TM_CONTROL_ADDR='127.0.0.1:46241'))
     return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',producer_hashes={name:a.sha(build/name) for name in ('server-help.stdout.raw','server-help.stderr.raw','master-help.stdout.raw')},setup=[dict(role='master',binary_hash=PRODUCTS['master'],argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-mdir=${ROOT}/master'],flag_help='probe-master-flags.stdout.raw + stderr.raw'),dict(role='server',binary_hash=PRODUCTS['server'],argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242'])],down=[dict(role=role,argv=['kill','-TERM','--','-${ENROLLED_'+role.upper()+'_SID}'],identity='RUN PID/starttime enrollment mandatory; checked guardian census/reap required') for role in ('server','master')],probes=[dict(role='master',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46243/dir/status']),dict(role='server',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46240/status'])],runtime_renderer='NOT_RUN: direct spawn/owned SID plans require reviewed existing guardian enrollment wrapper before RUN INPUT; no plan is an observed service success')
 
@@ -197,20 +197,33 @@ def r2_metrics(a,metrics):
         matches=re.findall(r'^SeaweedFS_rdma_connections_'+key+r' ([0-9]+)$',metrics,re.M);a.require(len(matches)==1,'R2_METRIC_MISSING_OR_DUPLICATE');counts.append(int(matches[0]))
     return counts
 
+def qp_owners(a,qps,actors,root,tag):
+    owned=[[],[]];foreign=[];seen=set()
+    for qp in qps:
+        a.require(isinstance(qp,dict) and 'ifname' in qp,'R2_QP_DEVICE_MISSING')
+        if qp['ifname']!='siw0':continue
+        qpn=qp.get('lqpn');a.require(type(qpn) is int and qpn>0 and qpn not in seen,'R2_QP_OWNER_OR_ID_MISSING');seen.add(qpn)
+        pid=qp.get('pid')
+        if type(pid) is not int or pid<=0:foreign.append(dict(qp=qp,reason='UNATTRIBUTED_MISSING_PID'));continue
+        try:
+            raw=pathlib.Path('/proc',str(pid),'status').read_text();match=re.search(r'^Tgid:\s+(\d+)',raw,re.M)
+            a.require(match is not None,'R2_QP_STATUS_SCHEMA');tgid=int(match[1])
+        except (FileNotFoundError,PermissionError) as error:
+            foreign.append(dict(qp=qp,reason='STATUS_UNOBSERVED',errno=error.errno));continue
+        owners=[i for i,actor in enumerate(actors) if actor['pid']==tgid]
+        if not owners:foreign.append(dict(qp=qp,reason='FOREIGN_OWNER',tgid=tgid));continue
+        a.require(qp.get('type')=='RC','R2_WRONG_QP_TYPE');owned[owners[0]].append(qp)
+    a.save(root/(tag+'-qp-ownership.json'),dict(actors=actors,owned=owned,foreign=foreign,foreign_count=len(foreign)))
+    a.require(not foreign,'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+    return owned
+
 def snapshot(a,root,client,label):
     a.require(re.fullmatch(r'initial|(?:[0-9]|1[0-7])-(?:connected|settled)',label),'R2_SNAPSHOT_LABEL');client=int(client)
     bind=json.loads((root/'r2-bind.json').read_text());expected=json.loads((root/'client.identity.json').read_text());server=int((root/'server/owner.pid').read_text())
     a.require(bind['profile']=='r2-recovery-v1' and expected['pid']==client,'R2_CLIENT_BIND');deadline=min(json.loads((root/'clock.json').read_text())['body_deadline'],time.monotonic()+2)
     actors=[a.r2_identity(pid) for pid in (client,server)];a.require(actors[0]['starttime']==expected['starttime'] and actors[1]['starttime']==int((root/'server/owner.starttime').read_text()),'R2_ACTOR_DRIFT')
     a.require(len({v['namespace'] for v in actors} | {pathlib.Path('/proc/self/ns/net').stat().st_ino})==1,'R2_NAMESPACE_DRIFT');tag='r2-'+str(time.monotonic_ns())
-    qps=json.loads(a.command(['rdma','-j','resource','show','qp'],root,tag+'-qp',deadline,limit=1048576));a.require(isinstance(qps,list),'R2_QP_TABLE_SCHEMA');owned=[[],[]];seen=set()
-    for qp in qps:
-        a.require('ifname' in qp,'R2_QP_DEVICE_MISSING')
-        if qp['ifname']!='siw0':continue
-        a.require(type(qp.get('pid')) is int and qp['pid']>0 and type(qp.get('lqpn')) is int and qp['lqpn']>0 and qp['lqpn'] not in seen,'R2_QP_OWNER_OR_ID_MISSING');seen.add(qp['lqpn'])
-        status=pathlib.Path('/proc')/str(qp['pid'])/'status';tgid=int(re.search(r'^Tgid:\s+(\d+)',status.read_text(),re.M)[1])
-        for i,pid in enumerate((client,server)):
-            if tgid==pid:a.require(qp.get('type')=='RC','R2_WRONG_QP_TYPE');owned[i].append(qp)
+    qps=json.loads(a.command(['rdma','-j','resource','show','qp'],root,tag+'-qp',deadline,limit=1048576));a.require(isinstance(qps,list),'R2_QP_TABLE_SCHEMA');owned=qp_owners(a,qps,actors,root,tag)
     groups={}
     for i,pid in enumerate((client,server)):
         if i==1 or owned[i]:groups[str(pid)]=a.r2_provider(pid,bind['provider_objects'])

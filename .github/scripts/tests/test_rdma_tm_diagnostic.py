@@ -277,6 +277,34 @@ class Fixture(unittest.TestCase):
         for field,value in [('name','foreign'),('runner_name','tp01'),('runner_id',22),('status','completed')]:
             wrong=dict(job,**{field:value});self.reject(lambda:a.probe_module.job_identity(a,[wrong],env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
         for jobs in ([],[job,job]):self.reject(lambda:a.probe_module.job_identity(a,jobs,env,bind,record),'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED')
+    def test_r2_qp_metadata_model_with_real_process_status(self):
+        child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);actors=[dict(pid=os.getpid()),dict(pid=child.pid)]
+        rows=[dict(ifname='siw0',pid=actor['pid'],lqpn=i+1,type='RC') for i,actor in enumerate(actors)]
+        try:
+            self.assertEqual(a.probe_module.qp_owners(a,rows,actors,self.dir,'owned'),[[rows[0]],[rows[1]]])
+            for case,qp,owners in [('missing-pid',{k:v for k,v in rows[0].items() if k!='pid'},actors),('kernel-owned',dict(rows[0],pid=0),actors),('foreign',rows[1],[actors[0],dict(pid=-1)])]:
+                self.reject(lambda:a.probe_module.qp_owners(a,[qp],owners,self.dir,case),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+                record=json.loads((self.dir/(case+'-qp-ownership.json')).read_text());self.assertEqual(record['foreign_count'],1);self.assertEqual(record['foreign'][0]['qp']['lqpn'],qp['lqpn'])
+            self.reject(lambda:a.probe_module.qp_owners(a,[dict(rows[0],type='DC')],actors,self.dir,'wrong-type'),'R2_WRONG_QP_TYPE')
+            self.reject(lambda:a.probe_module.qp_owners(a,[rows[0],rows[0]],actors,self.dir,'duplicate'),'R2_QP_OWNER_OR_ID_MISSING')
+        finally:child.terminate();child.wait(timeout=2)
+        self.reject(lambda:a.probe_module.qp_owners(a,[rows[1]],[actors[0],dict(pid=-1)],self.dir,'vanished'),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+        vanished=json.loads((self.dir/'vanished-qp-ownership.json').read_text());self.assertEqual(vanished['foreign_count'],1);self.assertEqual(vanished['foreign'][0]['reason'],'STATUS_UNOBSERVED');self.assertEqual(vanished['foreign'][0]['errno'],2)
+        read=pathlib.Path.read_text
+        def inaccessible(path,*args,**kwargs):
+            if str(path)=='/proc/'+str(os.getpid())+'/status':raise PermissionError(13,'controlled status refusal')
+            return read(path,*args,**kwargs)
+        with patch.object(pathlib.Path,'read_text',inaccessible):self.reject(lambda:a.probe_module.qp_owners(a,[rows[0]],actors,self.dir,'unreadable'),'R2_QP_FOREIGN_OR_UNATTRIBUTED')
+    def test_r2_public_snapshot_types_unknown_qp_before_metrics(self):
+        child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'])
+        try:
+            actors=[a.r2_identity(os.getpid()),a.r2_identity(child.pid)];server=self.dir/'server';server.mkdir();(server/'owner.pid').write_text(str(child.pid));(server/'owner.starttime').write_text(str(actors[1]['starttime']))
+            a.save(self.dir/'client.identity.json',dict(pid=os.getpid(),starttime=actors[0]['starttime']));a.save(self.dir/'r2-bind.json',dict(profile='r2-recovery-v1'));a.save(self.dir/'clock.json',dict(body_deadline=time.monotonic()+5))
+            qp=dict(ifname='siw0',lqpn=123,type='RC')
+            with patch.object(a,'command',return_value=json.dumps([qp]).encode()),patch.object(a,'r2_provider') as provider:
+                self.reject(lambda:a.probe_module.snapshot(a,self.dir,os.getpid(),'initial'),'R2_QP_FOREIGN_OR_UNATTRIBUTED');provider.assert_not_called()
+            records=list(self.dir.glob('*-qp-ownership.json'));self.assertEqual(len(records),1);self.assertEqual(json.loads(records[0].read_text())['foreign_count'],1)
+        finally:child.terminate();child.wait(timeout=2)
     def test_r2_qp_empty_success_and_failed_command(self):
         spawn=subprocess.Popen
         for rc in (0,1):
