@@ -73,7 +73,7 @@ def root_access(a,bind,out,deadline,work='/opt/work'):
     lock=pathlib.Path(bind['lock_path']) if r2 else base/'siw-lab.lock';fd=None;made=False;created=False;primary=None;cleanup_errors=[];record=dict(base=str(base),root=str(target),lock=str(lock),uid=os.getuid(),free_bytes=os.statvfs(base).f_bavail*os.statvfs(base).f_frsize)
     try:
         a.require(not lock.is_symlink(),'PROBE_LOCK_ALIAS');created=not lock.exists()
-        fd=os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600);s=os.fstat(fd)
+        fd=read_lock(bind,a.require) if r2 else os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600);s=os.fstat(fd)
         a.require((s.st_uid==os.getuid() or r2) and (s.st_dev,s.st_ino)==(lock.stat().st_dev,lock.stat().st_ino),'PROBE_LOCK_OWNER_OR_DRIFT')
         record['lock_identity']=dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid);target.mkdir(mode=0o700);made=True
         f=target/'admission';probe=os.open(f,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
@@ -102,6 +102,14 @@ def root_access(a,bind,out,deadline,work='/opt/work'):
         signal.setitimer(signal.ITIMER_REAL,max(.000001,deadline-time.monotonic()))
         if primary is None:a.require(not made and not target.exists(),'PROBE_SCRATCH_CLEANUP_UNPROVEN')
     return record
+
+def read_lock(bind,require):
+    path=pathlib.Path(bind['lock_path']);require(not path.is_symlink(),'PROBE_LOCK_ALIAS')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        s=os.fstat(fd);require(dict(dev=s.st_dev,inode=s.st_ino)==bind['lock_identity'] and (s.st_dev,s.st_ino)==(path.stat().st_dev,path.stat().st_ino),'PROBE_LOCK_IDENTITY_DRIFT')
+    except BaseException:os.close(fd);raise
+    return fd
 
 def plans(a,build,bind,facts):
     help_raw=(build/'server-help.stdout.raw').read_text()+(build/'server-help.stderr.raw').read_text()
@@ -150,7 +158,7 @@ def produce(a,bind,out,env,api):
         a.ports_free();record['ports_observed_free_not_reserved']=a.PORTS
         if r2:record['qp_access']=qp_access(a,out,deadline);record['qp_owner_schema']='RUN_CONNECTED_SNAPSHOT_REQUIRED'
         record['runtime_access']=root_access(a,bind,out,deadline)
-        help_raw=run('master-flags',[str(out/'build/master.elf'),'master','-h'])
+        help_raw=run('master-flags',[str(out/'build/master.elf'),'help','master'])
         help_raw+=(out/'probe-master-flags.stderr.raw').read_text()
         a.require(all(re.search(r'-'+re.escape(name)+r'(?:\s|=)',help_raw) for name in ('ip','port','port.grpc','mdir')),'PROBE_MASTER_FLAGS_UNSUPPORTED')
         record['plans']=plans(a,out/'build',bind,facts)

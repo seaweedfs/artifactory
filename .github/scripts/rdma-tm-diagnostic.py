@@ -445,7 +445,7 @@ def r2_provider(pid,objects):
 
 def guardian(bundle, output, replacements):
     root = pathlib.Path(bundle['root']); root.mkdir(mode=0o700)
-    lock = open(bundle['lock_path'],'a'); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    lock = os.fdopen(probe_module.read_lock(bundle,require),'rb') if bundle.get('profile')=='r2-recovery-v1' else open(bundle['lock_path'],'a'); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     ctypes.CDLL(None).prctl(36,1,0,0,0)
     origin = time.monotonic(); end = origin+bundle.get('whole_seconds',600); body = end-bundle.get('reserve_seconds',60); setup_deadline=min(body,origin+90)
     save(root/'clock.json',dict(origin=origin,body_deadline=body,terminal_deadline=end))
@@ -521,7 +521,7 @@ def fresh_host(bind, output, deadline):
         raw=command(args,output,'fresh-'+label,min(deadline,time.monotonic()+15)).decode()
         if label=='kernel': require(raw.strip()==bind['kernel_release'],'KERNEL_IDENTITY')
         if label=='siw-module': require(all(line in raw for line in bind['siw_module_required_lines']),'SIW_MODULE_IDENTITY')
-        if label=='devices': require('siw0' in raw and bind['gid'] in raw,'SIW_DEVICE_OR_GID')
+        if label=='devices': probe_module.device_info(types.SimpleNamespace(require=require),raw,dict(gid=bind['gid']),True) if bind.get('profile')=='r2-recovery-v1' else require('siw0' in raw and bind['gid'] in raw,'SIW_DEVICE_OR_GID')
         if label=='memlock': require(raw.strip()=='unlimited','MEMLOCK')
         if label=='rdma-link': require(re.search(r'siw0/1 .*netdev '+re.escape(bind['netdev'])+r'(?:\s|$)',raw),'IP_RDMA_NETDEV')
     addresses=json.loads(command(['ip','-j','addr','show','dev',bind['netdev']],output,'fresh-IP',min(deadline,time.monotonic()+15)))
