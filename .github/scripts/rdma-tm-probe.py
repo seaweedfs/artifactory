@@ -52,13 +52,17 @@ def object_identity(a,path):
 def network(a,sysfs,links,addresses,out=None):
     matches=re.findall(r'\bsiw0/1\s+[^\n]*?\bnetdev\s+(\S+)',links);a.require(len(set(matches))==1,'PROBE_NETDEV_AMBIGUOUS')
     netdev=matches[0];ips={v['local'] for row in addresses if row['ifname']==netdev for v in row.get('addr_info',[]) if v['family']=='inet'}
+    r2=a.recovery(os.environ);devices=[row for row in addresses if row['ifname']==netdev];mac=devices[0].get('address','') if len(devices)==1 else ''
+    if r2:a.require(len(devices)==1 and len(ips)==1 and re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}',mac),'PROBE_SIW_NETDEV_IP_OR_MAC')
     candidates=[];raw_rows=[]
     try:
         for f in sorted((sysfs/'siw0/ports/1/gids').iterdir()):
             row=dict(gid_path=str(f),netdev_path=str(sysfs/'siw0/ports/1/gid_attrs/ndevs'/f.name));raw_rows.append(row)
             row['gid']=gid=f.read_text().strip();row['netdev']=ndev=pathlib.Path(row['netdev_path']).read_text().strip()
-            mapped=ipaddress.IPv6Address(gid).ipv4_mapped
-            if mapped and str(mapped) in ips and ndev==netdev:candidates.append(dict(gid=gid,gid_index=int(f.name),netdev=netdev,ip=str(mapped)))
+            address=ipaddress.IPv6Address(gid);mapped=address.ipv4_mapped
+            if r2:
+                if f.name=='0' and ndev==netdev and address.packed==bytes.fromhex(mac.replace(':',''))+bytes(10):candidates.append(dict(gid=gid,gid_index=0,netdev=netdev,ip=str(ipaddress.IPv4Address(next(iter(ips)))),gid_binding='SIW_MAC_NETDEV_IPV4'))
+            elif mapped and str(mapped) in ips and ndev==netdev:candidates.append(dict(gid=gid,gid_index=int(f.name),netdev=netdev,ip=str(mapped)))
         a.require(len(candidates)==1,'PROBE_GID_MAPPING_MISSING_OR_AMBIGUOUS');return dict(candidates[0],gid_rows=raw_rows)
     finally:
         if out is not None:a.save(out/'sysfs-gid-observations.json',dict(rows=raw_rows,links=links,addresses=addresses))
@@ -161,7 +165,7 @@ def run_admit(a,bind,out,env,api,deadline):
     a.require(p['runner']==env['RUNNER_NAME'] and p['hostname']==socket.gethostname() and p['uid']==os.getuid(),'PROBE_FOREIGN_RUNNER')
     jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(run['id'])+'/attempts/'+str(run['run_attempt'])+'/jobs?per_page=100',deadline)
     a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==p['job'] and j['runner_name']==p['runner'] and j['conclusion']=='success'])==1,'PROBE_RUNNER_ASSOCIATION')
-    for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names'):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
+    for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names')+(('gid_binding',) if r2 else ()):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
     a.require(pathlib.Path(bind['root']).resolve().parent==pathlib.Path(p['runtime_access']['base']) and pathlib.Path(bind['lock_path']).resolve()==pathlib.Path(p['runtime_access']['lock']),'PROBE_RUN_ROOT_DRIFT')
     lock=pathlib.Path(bind['lock_path']);s=lock.stat();a.require(not lock.is_symlink() and dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid)==p['runtime_access']['lock_identity'],'PROBE_LOCK_IDENTITY_DRIFT')
     a.require(os.access(lock,os.W_OK) and os.access(pathlib.Path(bind['root']).parent if r2 else lock.parent,os.W_OK),'PROBE_RUN_PERMISSION_DRIFT')

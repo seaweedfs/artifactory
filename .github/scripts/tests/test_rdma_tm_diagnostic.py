@@ -233,6 +233,21 @@ class Fixture(unittest.TestCase):
                     with p.open('wb') as f:f.truncate(size)
                 a.phase_publication(root,dict(TM_PROFILE='r2-recovery-v1',TM_PHASE=phase));public=root/'publication';a.manifest(public,output_receipt=True)
                 self.assertEqual(json.loads((public/'prior-artifacts.json').read_text()),refs);self.assertEqual({p.relative_to(public).as_posix() for p in public.rglob('*') if p.is_file()},{'input/bind.json','prior-artifacts.json','new.json','manifest.sha256'});self.assertTrue((root/'build/elf.raw').exists())
+    def test_r2_captured_siw_mac_gid_contract(self):
+        fixture=dict(run_id=37455370088,artifact_id=11408487891,raw_sha256='2e8a71fdd4b9e849483fd6a4e1e77e91fc81c1c6966498dd400bea35f2724532',sha256='b08f767707cc15d53645fbb714057c403ec356e701204986b6b40c56552c9146',text_b64='eyJyb3dzIjpbeyJnaWRfcGF0aCI6Ii9zeXMvY2xhc3MvaW5maW5pYmFuZC9zaXcwL3BvcnRzLzEvZ2lkcy8wIiwibmV0ZGV2X3BhdGgiOiIvc3lzL2NsYXNzL2luZmluaWJhbmQvc2l3MC9wb3J0cy8xL2dpZF9hdHRycy9uZGV2cy8wIiwiZ2lkIjoiNzI1YzoxZDhlOjNiNTg6MDAwMDowMDAwOjAwMDA6MDAwMDowMDAwIiwibmV0ZGV2Ijoic2l3Y2kifV0sImxpbmtzIjoibGluayBzaXcwLzEgc3RhdGUgQUNUSVZFIHBoeXNpY2FsX3N0YXRlIExJTktfVVAgbmV0ZGV2IHNpd2NpIFxuIiwiYWRkcmVzc2VzIjpbeyJpZmluZGV4Ijo2LCJpZm5hbWUiOiJzaXdjaSIsImZsYWdzIjpbIkJST0FEQ0FTVCIsIk5PQVJQIiwiVVAiLCJMT1dFUl9VUCJdLCJtdHUiOjE1MDAsInFkaXNjIjoibm9xdWV1ZSIsIm9wZXJzdGF0ZSI6IlVOS05PV04iLCJncm91cCI6ImRlZmF1bHQiLCJ0eHFsZW4iOjEwMDAsImxpbmtfdHlwZSI6ImV0aGVyIiwiYWRkcmVzcyI6IjcyOjVjOjFkOjhlOjNiOjU4IiwiYnJvYWRjYXN0IjoiZmY6ZmY6ZmY6ZmY6ZmY6ZmYiLCJhZGRyX2luZm8iOlt7ImZhbWlseSI6ImluZXQiLCJsb2NhbCI6IjE5OC41MS4xMDAuMSIsInByZWZpeGxlbiI6MjQsInNjb3BlIjoiZ2xvYmFsIiwibGFiZWwiOiJzaXdjaSIsInZhbGlkX2xpZmVfdGltZSI6NDI5NDk2NzI5NSwicHJlZmVycmVkX2xpZmVfdGltZSI6NDI5NDk2NzI5NX0seyJmYW1pbHkiOiJpbmV0NiIsImxvY2FsIjoiZmU4MDo6NzA1YzoxZGZmOmZlOGU6M2I1OCIsInByZWZpeGxlbiI6NjQsInNjb3BlIjoibGluayIsInZhbGlkX2xpZmVfdGltZSI6NDI5NDk2NzI5NSwicHJlZmVycmVkX2xpZmVfdGltZSI6NDI5NDk2NzI5NX1dfV19')
+        raw=base64.b64decode(fixture['text_b64'],validate=True);self.assertEqual(hashlib.sha256(raw).hexdigest(),fixture['sha256']);observed=json.loads(raw)
+        for case in ('positive','wrong-mac','wrong-netdev','unknown-gid','missing-ip','ambiguous-ip'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as td,patch.dict(os.environ,TM_PROFILE='r2-recovery-v1'):
+                data=copy.deepcopy(observed);device=data['addresses'][0];row=data['rows'][0]
+                if case=='wrong-mac':device['address']='00:'+device['address'][3:]
+                if case=='wrong-netdev':row['netdev']+='-foreign'
+                if case=='unknown-gid':row['gid']='::1'
+                if case=='missing-ip':device['addr_info']=[v for v in device['addr_info'] if v['family']!='inet']
+                if case=='ambiguous-ip':extra=copy.deepcopy(next(v for v in device['addr_info'] if v['family']=='inet'));extra['local']=str(a.probe_module.ipaddress.IPv4Address(int(a.probe_module.ipaddress.IPv4Address(extra['local']))+1));device['addr_info'].append(extra)
+                root=pathlib.Path(td);g=root/'siw0/ports/1/gids';n=root/'siw0/ports/1/gid_attrs/ndevs';g.mkdir(parents=True);n.mkdir(parents=True);(g/'0').write_text(row['gid']);(n/'0').write_text(row['netdev'])
+                call=lambda:a.probe_module.network(a,root,data['links'],data['addresses'])
+                if case=='positive':result=call();self.assertEqual(result['ip'],next(v['local'] for v in device['addr_info'] if v['family']=='inet'));self.assertEqual((result['gid'],result['netdev'],result['gid_binding']),(row['gid'],row['netdev'],'SIW_MAC_NETDEV_IPV4'))
+                else:self.reject(call,'PROBE_')
     def test_r2_real_service_body_and_role_port_scope(self):
         root=self.dir/'lease';root.mkdir();now=time.monotonic();a.save(root/'clock.json',dict(origin=now,body_deadline=now+20,terminal_deadline=now+30))
         file=self.dir/'bundle.json';a.save(file,dict(bind=dict(profile='r2-recovery-v1',root=str(root),r2_services=dict(master=dict(argv=[sys.executable,'-c','import time;time.sleep(20)',str(root)],env={}))),replacements=dict(ROOT=str(root))))
