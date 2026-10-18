@@ -41,20 +41,28 @@ MAIN_LOOKBACK=30
 mono_api() { GH_TOKEN="$MONO_TOKEN" gh api -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
 art_api()  { GH_TOKEN="$DISPATCH_TOKEN" gh api -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
 
-# SHAs that already have an artifactory dispatch run (any state), newest 300 runs.
-seen_runs=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
-  -f event=repository_dispatch -f per_page=100 \
-  --jq '.workflow_runs[].display_title' 2>/dev/null \
-  | grep -oE 'mono:[0-9a-f]{40}' | cut -d: -f2 | sort -u | head -n 2000 || true)
+# SHAs that already have an artifactory dispatch run (any state). A failed
+# listing fails the run: without it this dedupe layer would silently vanish.
+if ! run_titles=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
+    -f event=repository_dispatch -f per_page=100 --jq '.workflow_runs[].display_title'); then
+  echo "cannot list ${ART_REPO} dispatch runs; refusing to dispatch without dedupe" >&2
+  exit 1
+fi
+seen_runs=$(printf '%s\n' "$run_titles" | { grep -oE 'mono:[0-9a-f]{40}' || true; } | cut -d: -f2 | sort -u)
 
+# Returns 0 handled (prints why), 1 not handled, 2 when the statuses cannot be
+# read. Callers treat 2 as fatal: an unreadable status must never look unhandled.
 handled() {
   local sha=$1 n
   if printf '%s\n' "$seen_runs" | grep -qx "$sha"; then
     echo "run"; return 0
   fi
-  n=$(mono_api "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
-    --jq "[.[] | select((.context | startswith(\"artifactory / \"))
-                        and ((.context == \"${MARK_CONTEXT}\" and .state == \"error\") | not))] | length")
+  if ! n=$(mono_api "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
+      --jq "[.[] | select((.context | startswith(\"artifactory / \"))
+                          and ((.context == \"${MARK_CONTEXT}\" and .state == \"error\") | not))] | length"); then
+    echo "cannot read ${MONO_REPO} statuses for ${sha}" >&2
+    return 2
+  fi
   if [ "${n:-0}" -gt 0 ]; then
     echo "status"; return 0
   fi
@@ -95,7 +103,10 @@ EOF
 dispatched=0
 consider() {
   local kind=$1 ref=$2 sha=$3 base=$4 pr=$5 why flags enterprise vfs push_ev vfs_ev
-  if why=$(handled "$sha"); then
+  local rc=0
+  why=$(handled "$sha") || rc=$?
+  if [ "$rc" -eq 2 ]; then exit 1; fi
+  if [ "$rc" -eq 0 ]; then
     echo "skip ${kind} ${ref}@${sha:0:12}: already handled (${why})"
     return
   fi
@@ -127,7 +138,9 @@ main_shas=$(mono_api "repos/${MONO_REPO}/commits?sha=main&per_page=${MAIN_LOOKBA
 main_head=$(printf '%s\n' "$main_shas" | head -n1)
 main_base=""
 for s in $(printf '%s\n' "$main_shas" | tail -n +2); do
-  if handled "$s" >/dev/null; then main_base=$s; break; fi
+  rc=0; handled "$s" >/dev/null || rc=$?
+  if [ "$rc" -eq 2 ]; then exit 1; fi
+  if [ "$rc" -eq 0 ]; then main_base=$s; break; fi
 done
 consider main main "$main_head" "$main_base" ""
 
