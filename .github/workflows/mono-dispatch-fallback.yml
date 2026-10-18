@@ -19,6 +19,14 @@ name: "Mono dispatch fallback"
 # then it also tolerates both running (a SHA with an artifactory run is skipped).
 
 on:
+  # GitHub does not honour a */10 cron on this repository (runner-watchdog.yml
+  # measured a 159-minute median gap). The watchdog itself is dispatched every
+  # 10 minutes by an external cron, so this poller follows each watchdog run.
+  # The schedule stays as a fallback; the concurrency group below prevents
+  # overlapping polls.
+  workflow_run:
+    workflows: ["runner watchdog: rescue jobs stuck on tp01"]
+    types: [completed]
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
