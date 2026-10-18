@@ -1,0 +1,183 @@
+name: "mono .github sweeper"
+
+# seaweed-mono is private: every hosted job there bills minutes, so its
+# .github must stay exactly two files — notify-artifactory.yml (dispatches the
+# mono-push / mono-merge-request / mono-vfs-* events this repo's suites listen
+# on) and deploy-customer-portal.yml. Foreign workflows arrive via merges:
+# upstream seaweedfs syncs carry upstream's .github, and the rdma-era branches
+# carried this repo's own .github. 2026-10-12: one sync landed 74 upstream
+# workflows, stacked PRs fanned out ~15 hosted suites each, and the month's
+# quota (~2.4k minutes) drained overnight.
+#
+# Disabling cannot cover a NEWLY-NAMED upstream workflow — a workflow has to
+# register before it can be disabled — so this sweeper watches the file SET,
+# not names: only .github/workflows/* entries can trigger billed runs, so a
+# branch is contaminated exactly when that directory holds anything but the
+# pair. A stale CONTENT of the pair is not contamination — it still just
+# dispatches — and a branch with no .github at all is inert, not dirty.
+#   1. every contaminated mono branch gets a fix PR (sweeper/gha-<branch>
+#      -> <branch>) resetting .github to the pair;
+#   2. foreign workflow names not already ported here are collected into one
+#      rolling PR on this repo under .github/suite-candidates/ — an inert
+#      directory, so nothing runs until a human ports it onto the
+#      repository_dispatch pattern;
+#   3. any mono workflow registered outside the pair is disabled outright.
+#
+# Requires secret MONO_TOKEN: a PAT on seaweedfs/seaweed-mono with repo,
+# workflow, and actions write — the fix PRs delete .github/workflows files
+# and the disable step calls the actions API; plain contents write is not
+# enough for either.
+
+on:
+  # Best-effort like every schedule on GitHub, but the exposure that matters
+  # is minutes burned per incident, not detection lag: a contamination that
+  # sits one interval costs at most one fan-out wave before the fix PR lands.
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: mono-github-sweeper
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MONO: seaweedfs/seaweed-mono
+      PAIR: .github/workflows/deploy-customer-portal.yml .github/workflows/notify-artifactory.yml
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          git clone --filter=blob:none --quiet \
+            "https://x-access-token:${MONO_TOKEN}@github.com/${MONO}.git" /tmp/mono
+
+      - name: Fix contaminated branches and open PRs
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          GH_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd /tmp/mono
+          : > /tmp/foreign_names.txt
+          git for-each-ref --format='%(refname:short)' refs/remotes/origin \
+            | sed 's|^origin/||; /^HEAD$/d' | while read -r b; do
+            foreign="$(git ls-tree -r --name-only "origin/$b" .github/workflows/ 2>/dev/null \
+              | sed 's|.github/workflows/||' \
+              | grep -vxF -e notify-artifactory.yml -e deploy-customer-portal.yml || true)"
+            [ -z "$foreign" ] && continue
+            printf '%s\n' "$foreign" >> /tmp/foreign_names.txt
+
+            sweep="sweeper/gha-$(printf '%s' "$b" | tr '/ ' '--')"
+            open="$(gh api "repos/$MONO/pulls?state=open&head=seaweedfs:$sweep&base=$b" --jq length)"
+            [ "$open" -gt 0 ] && { echo "PR already open for $b"; continue; }
+
+            git checkout -qf --detach "origin/$b"
+            git rm -rfq --ignore-unmatch .github
+            git checkout origin/main -- .github
+            git checkout -B "$sweep"
+            removed="$(git status --porcelain -- .github | awk '$1=="D"{print $2}' | tr '\n' ' ')"
+            git diff --cached --quiet && { echo "$b clean after reset; skipping"; continue; }
+            git commit -qm "ci: reset .github to mono's dispatch pair (remove foreign workflows)"
+            git push -qf origin "HEAD:refs/heads/$sweep"
+            body="This branch's \`.github/\` does not match mono's own pair \
+            (see \`AGENTS.md\`): hosted jobs here bill minutes, and foreign \
+            workflows fanning out on PR events drained the monthly quota on \
+            2026-10-12. This PR resets \`.github/\` to \
+            \`notify-artifactory.yml\` + \`deploy-customer-portal.yml\`.
+            Removed: $removed"
+            gh api -X POST "repos/$MONO/pulls" \
+              -f title="ci: reset .github to mono's dispatch pair (remove foreign workflows)" \
+              -f head="$sweep" -f base="$b" -f body="$body" --jq '.html_url' \
+              | sed 's/^/opened /'
+          done
+
+      - name: Disable registered foreign workflows on seaweed-mono
+        env:
+          GH_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$MONO/actions/workflows?per_page=100" --paginate \
+            --jq '.workflows[] | select(.state=="active") | "\(.id)\t\(.path)"' \
+            | while IFS=$'\t' read -r id path; do
+              case "$path" in
+                .github/workflows/notify-artifactory.yml) continue ;;
+                .github/workflows/deploy-customer-portal.yml) continue ;;
+                .github/workflows/*) ;;
+                *) continue ;;   # e.g. dynamic/agents/* (Copilot) — not ours to police
+              esac
+              gh api -X PUT "repos/$MONO/actions/workflows/$id/disable" >/dev/null \
+                && echo "disabled $path"
+            done
+
+      - name: Open suite-candidates PR on this repo for unported names
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          sort -u /tmp/foreign_names.txt -o /tmp/foreign_names.txt
+          new=""
+          while read -r n; do
+            [ -n "$n" ] || continue
+            [ -f ".github/workflows/$n" ] && continue   # already ported
+            [ -f ".github/workflows/${n%.yml}.yaml" ] && continue
+            new="$new $n"
+          done < /tmp/foreign_names.txt
+          [ -z "$new" ] && { echo "no unported suites"; exit 0; }
+
+          # keep earlier candidates: build on the branch's remote tip when it
+          # exists so a re-run appends instead of rewriting the open PR
+          git fetch -q origin sweeper/new-suites 2>/dev/null || true
+          git checkout -B sweeper/new-suites origin/sweeper/new-suites 2>/dev/null \
+            || git checkout -B sweeper/new-suites
+          mkdir -p .github/suite-candidates
+          for n in $new; do
+            [ -f ".github/suite-candidates/$n" ] && continue
+            # pull the suite definition from upstream master; the mono copy may
+            # be an older sync. MONO_TOKEN because GITHUB_TOKEN reads only
+            # this repo.
+            if GH_TOKEN="$MONO_TOKEN" gh api \
+                 "repos/seaweedfs/seaweedfs/contents/.github/workflows/$n" \
+                 --jq '.content' 2>/dev/null | base64 -d > ".github/suite-candidates/$n"; then
+              echo "staged $n"
+            else
+              rm -f ".github/suite-candidates/$n"
+              echo "skipped $n (not on upstream master)"
+            fi
+          done
+          git status --porcelain .github/suite-candidates | grep -q . || { echo "nothing new to file"; exit 0; }
+          cat > .github/suite-candidates/README.md <<'EOF'
+          Foreign workflow files swept from seaweedfs/seaweed-mono, kept here
+          for porting. They DO NOT RUN from this directory. To port one, move
+          it into .github/workflows/ and rewire it to the repo's dispatch
+          pattern: `on: repository_dispatch` types mono-push /
+          mono-merge-request (plus workflow_dispatch), the run-name convention
+          `mono:<sha> · branch:<ref> · runner:<tp01|hosted>`, the
+          clone-mono-source action, and the tp01/hosted runner inputs. Suites
+          nobody ports should be deleted rather than parked forever.
+          EOF
+          git add .github/suite-candidates
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "ci: stage foreign mono workflows for porting ($new)"
+          git push -qf origin sweeper/new-suites
+          open="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:sweeper/new-suites" --jq length)"
+          if [ "$open" -eq 0 ]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" \
+              -f title="ci: port candidates — foreign workflows swept from seaweed-mono" \
+              -f head="sweeper/new-suites" -f base="main" \
+              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches. They live under \`.github/suite-candidates/\`, so nothing runs. Port the ones worth keeping onto this repo's \`repository_dispatch\` pattern and delete the rest. Untouched candidates:$new" \
+              --jq '.html_url' | sed 's/^/opened /'
+          else
+            echo "sweeper/new-suites PR already open; candidates added"
+          fi
