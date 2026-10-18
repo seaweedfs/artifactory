@@ -78,9 +78,17 @@ jobs:
           : > /tmp/foreign_names.txt
           git for-each-ref --format='%(refname:short)' refs/remotes/origin \
             | sed 's|^origin/||; /^HEAD$/d' | while read -r b; do
-            foreign="$(git ls-tree -r --name-only "origin/$b" .github/workflows/ 2>/dev/null \
+            # ls-tree failing is not "no workflows" — a partial-clone fetch
+            # error must abort the run, not silently skip a dirty branch.
+            # Only an empty tree or grep's no-match may produce empty foreign.
+            tree="$(git ls-tree -r --name-only "origin/$b" .github/workflows/)" || {
+              echo "git ls-tree failed for origin/$b" >&2
+              exit 1
+            }
+            foreign="$(printf '%s' "$tree" \
               | grep -vxF -e .github/workflows/notify-artifactory.yml \
-                         -e .github/workflows/deploy-customer-portal.yml || true)"
+                         -e .github/workflows/deploy-customer-portal.yml \
+              || test "$?" -eq 1)"
             [ -z "$foreign" ] && continue
             printf '%s\n' "$foreign" | sed 's|.*/||' >> /tmp/foreign_names.txt
 
@@ -170,12 +178,19 @@ jobs:
           [ -z "$new" ] && { echo "no unported suites"; exit 0; }
 
           # keep earlier candidates: build on the branch's remote tip when it
-          # exists so a re-run appends instead of rewriting the open PR — an
-          # explicit refspec, because a bare `git fetch <name>` only leaves
-          # FETCH_HEAD and the checkout below would silently fall back to main
-          git fetch -q origin "+refs/heads/sweeper/new-suites:refs/remotes/origin/sweeper/new-suites" 2>/dev/null || true
-          git checkout -B sweeper/new-suites origin/sweeper/new-suites 2>/dev/null \
-            || git checkout -B sweeper/new-suites
+          # exists so a re-run appends instead of rewriting the open PR. Fall
+          # back to the local checkout ONLY when the remote branch provably
+          # does not exist (ls-remote exits 2) — a failed fetch must not turn
+          # into a force-push that drops earlier candidates.
+          candidate_ref=refs/heads/sweeper/new-suites
+          if git ls-remote --exit-code --quiet origin "$candidate_ref" >/dev/null 2>&1; then
+            git fetch -q origin "+$candidate_ref:refs/remotes/origin/sweeper/new-suites"
+            git checkout -B sweeper/new-suites origin/sweeper/new-suites
+          else
+            status=$?
+            [ "$status" -eq 2 ] || { echo "cannot inspect $candidate_ref" >&2; exit "$status"; }
+            git checkout -B sweeper/new-suites
+          fi
           mkdir -p .github/suite-candidates
           for n in $new; do
             [ -f ".github/suite-candidates/$n" ] && continue
