@@ -132,11 +132,18 @@ done
 consider main main "$main_head" "$main_base" ""
 
 # open, non-draft, same-repo PRs; base = the PR's base commit.
-# (process substitution, not a pipe, so the per-run cap counter is shared)
+# Read the list into a variable first: a failed listing (for example a token
+# without pull-request read access) must fail this run, not be skipped silently.
+if ! prs=$(mono_api --paginate "repos/${MONO_REPO}/pulls?state=open&per_page=100" \
+    --jq ".[] | select(.draft == false and .head.repo.full_name == \"${MONO_REPO}\")
+          | [.number, .head.ref, .head.sha, .base.sha] | @tsv"); then
+  echo "cannot list ${MONO_REPO} pull requests; MONO_TOKEN needs pull-request read access" >&2
+  exit 1
+fi
+# (a here-string, not a pipe, so the per-run cap counter is shared)
 while IFS=$'\t' read -r number ref sha base; do
+  [ -n "$number" ] || continue
   consider pr "$ref" "$sha" "$base" "$number"
-done < <(mono_api --paginate "repos/${MONO_REPO}/pulls?state=open&per_page=100" \
-  --jq ".[] | select(.draft == false and .head.repo.full_name == \"${MONO_REPO}\")
-        | [.number, .head.ref, .head.sha, .base.sha] | @tsv")
+done <<<"$prs"
 
 echo "done (dry_run=${DRY_RUN})"
