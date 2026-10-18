@@ -16,17 +16,20 @@ name: "mono .github sweeper"
 # pair. A stale CONTENT of the pair is not contamination — it still just
 # dispatches — and a branch with no .github at all is inert, not dirty.
 #   1. every contaminated mono branch gets a fix PR (sweeper/gha-<branch>
-#      -> <branch>) resetting .github to the pair;
+#      -> <branch>) deleting its foreign workflow files — never a wholesale
+#      .github restore from main, so a contaminated main is fixed the same
+#      way and cannot feed foreign files into other PRs;
 #   2. foreign workflow names not already ported here are collected into one
 #      rolling PR on this repo under .github/suite-candidates/ — an inert
 #      directory, so nothing runs until a human ports it onto the
 #      repository_dispatch pattern;
 #   3. any mono workflow registered outside the pair is disabled outright.
 #
-# Requires secret MONO_TOKEN: a PAT on seaweedfs/seaweed-mono with repo,
-# workflow, and actions write — the fix PRs delete .github/workflows files
-# and the disable step calls the actions API; plain contents write is not
-# enough for either.
+# Requires secret MONO_TOKEN: a PAT with repo + workflow scope on
+# seaweedfs/seaweed-mono — the fix PRs delete .github/workflows files and the
+# disable step calls the actions API; plain contents write is not enough for
+# either. It also opens the suite-candidates PR here, since this repo forbids
+# GITHUB_TOKEN-created PRs (can_approve_pull_request_reviews=false).
 
 on:
   # Best-effort like every schedule on GitHub, but the exposure that matters
@@ -51,6 +54,10 @@ jobs:
     env:
       MONO: seaweedfs/seaweed-mono
       PAIR: .github/workflows/deploy-customer-portal.yml .github/workflows/notify-artifactory.yml
+      # Pinned commit whose .github/workflows pair is known good — used to
+      # restore the pair on branches missing it, so a contaminated main can
+      # never be the restore source.
+      PAIR_REF: e15afcd0bfa887f7e60155a3254ca0918484bb26
     steps:
       - uses: actions/checkout@v6
 
@@ -72,36 +79,53 @@ jobs:
           git for-each-ref --format='%(refname:short)' refs/remotes/origin \
             | sed 's|^origin/||; /^HEAD$/d' | while read -r b; do
             foreign="$(git ls-tree -r --name-only "origin/$b" .github/workflows/ 2>/dev/null \
-              | sed 's|.github/workflows/||' \
-              | grep -vxF -e notify-artifactory.yml -e deploy-customer-portal.yml || true)"
+              | grep -vxF -e .github/workflows/notify-artifactory.yml \
+                         -e .github/workflows/deploy-customer-portal.yml || true)"
             [ -z "$foreign" ] && continue
-            printf '%s\n' "$foreign" >> /tmp/foreign_names.txt
+            printf '%s\n' "$foreign" | sed 's|.*/||' >> /tmp/foreign_names.txt
 
             sweep="sweeper/gha-$(printf '%s' "$b" | tr '/ ' '--')"
             open="$(gh api "repos/$MONO/pulls?state=open&head=seaweedfs:$sweep&base=$b" --jq length)"
             [ "$open" -gt 0 ] && { echo "PR already open for $b"; continue; }
 
             git checkout -qf --detach "origin/$b"
-            git rm -rfq --ignore-unmatch .github
-            git checkout origin/main -- .github
+            # Delete ONLY the foreign files. Restoring .github wholesale from
+            # origin/main would re-add a foreign file when main itself is
+            # contaminated — and would leave main looking clean.
+            printf '%s\n' "$foreign" \
+              | while IFS= read -r p; do git rm -q --ignore-unmatch -- "$p"; done
+            # The branch still needs the pair for its dispatch to work; when
+            # either file is absent, restore it from a pinned known-good commit
+            # (bump PAIR_REF if the pair changes on main) rather than whatever
+            # origin/main happens to hold.
+            for f in notify-artifactory.yml deploy-customer-portal.yml; do
+              git cat-file -e "HEAD:.github/workflows/$f" 2>/dev/null \
+                || git checkout "$PAIR_REF" -- ".github/workflows/$f"
+            done
             git checkout -B "$sweep"
-            removed="$(git status --porcelain -- .github | awk '$1=="D"{print $2}' | tr '\n' ' ')"
-            git diff --cached --quiet && { echo "$b clean after reset; skipping"; continue; }
-            git commit -qm "ci: reset .github to mono's dispatch pair (remove foreign workflows)"
+            removed="$(printf '%s\n' "$foreign" | tr '\n' ' ')"
+            git diff --cached --quiet && { echo "$b clean; skipping"; continue; }
+            git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -qm "ci: remove foreign workflows from .github/workflows"
             git push -qf origin "HEAD:refs/heads/$sweep"
-            body="This branch's \`.github/\` does not match mono's own pair \
-            (see \`AGENTS.md\`): hosted jobs here bill minutes, and foreign \
-            workflows fanning out on PR events drained the monthly quota on \
-            2026-10-12. This PR resets \`.github/\` to \
-            \`notify-artifactory.yml\` + \`deploy-customer-portal.yml\`.
+            body="This branch's \`.github/workflows/\` holds files outside \
+            mono's own pair (see \`AGENTS.md\`): hosted jobs here bill minutes, \
+            and foreign workflows fanning out on PR events drained the monthly \
+            quota on 2026-10-12. This PR removes the foreign files and restores \
+            \`notify-artifactory.yml\` / \`deploy-customer-portal.yml\` if \
+            missing.
             Removed: $removed"
             gh api -X POST "repos/$MONO/pulls" \
-              -f title="ci: reset .github to mono's dispatch pair (remove foreign workflows)" \
+              -f title="ci: remove foreign workflows from .github/workflows" \
               -f head="$sweep" -f base="$b" -f body="$body" --jq '.html_url' \
               | sed 's/^/opened /'
           done
 
+      # Disable is the control on billed runs — it must run even when the
+      # fix step dies on the first bad branch.
       - name: Disable registered foreign workflows on seaweed-mono
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
@@ -120,16 +144,25 @@ jobs:
             done
 
       - name: Open suite-candidates PR on this repo for unported names
+        if: ${{ always() }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          # MONO_TOKEN everywhere in this step: this repo has
+          # can_approve_pull_request_reviews=false, so GITHUB_TOKEN cannot
+          # open the candidates PR.
+          GH_TOKEN: ${{ secrets.MONO_TOKEN }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
+          touch /tmp/foreign_names.txt
           sort -u /tmp/foreign_names.txt -o /tmp/foreign_names.txt
           new=""
           while read -r n; do
-            [ -n "$n" ] || continue
+            # only flat, safe basenames ever become write targets — a foreign
+            # path that dodges this could redirect the write outside
+            # .github/suite-candidates/
+            case "$n" in
+              ""|*/*|*..*|.*|*[!A-Za-z0-9._-]*) echo "skipping unsafe name: $n"; continue ;;
+            esac
             [ -f ".github/workflows/$n" ] && continue   # already ported
             [ -f ".github/workflows/${n%.yml}.yaml" ] && continue
             new="$new $n"
@@ -137,18 +170,18 @@ jobs:
           [ -z "$new" ] && { echo "no unported suites"; exit 0; }
 
           # keep earlier candidates: build on the branch's remote tip when it
-          # exists so a re-run appends instead of rewriting the open PR
-          git fetch -q origin sweeper/new-suites 2>/dev/null || true
+          # exists so a re-run appends instead of rewriting the open PR — an
+          # explicit refspec, because a bare `git fetch <name>` only leaves
+          # FETCH_HEAD and the checkout below would silently fall back to main
+          git fetch -q origin "+refs/heads/sweeper/new-suites:refs/remotes/origin/sweeper/new-suites" 2>/dev/null || true
           git checkout -B sweeper/new-suites origin/sweeper/new-suites 2>/dev/null \
             || git checkout -B sweeper/new-suites
           mkdir -p .github/suite-candidates
           for n in $new; do
             [ -f ".github/suite-candidates/$n" ] && continue
             # pull the suite definition from upstream master; the mono copy may
-            # be an older sync. MONO_TOKEN because GITHUB_TOKEN reads only
-            # this repo.
-            if GH_TOKEN="$MONO_TOKEN" gh api \
-                 "repos/seaweedfs/seaweedfs/contents/.github/workflows/$n" \
+            # be an older sync
+            if gh api "repos/seaweedfs/seaweedfs/contents/.github/workflows/$n" \
                  --jq '.content' 2>/dev/null | base64 -d > ".github/suite-candidates/$n"; then
               echo "staged $n"
             else
