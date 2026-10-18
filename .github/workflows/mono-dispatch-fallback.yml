@@ -1,0 +1,54 @@
+name: "Mono dispatch fallback"
+
+# While seaweed-mono cannot start GitHub-hosted jobs, its "Notify artifactory CI"
+# workflow never runs and no mono PR or main push reaches these suites. This
+# poller sends the same repository_dispatch for mono heads that never reached
+# artifactory. Logic and dedupe rules: .github/scripts/mono-dispatch-fallback.sh.
+#
+# It runs on a GitHub-hosted runner: this repository is public, so its hosted
+# jobs are not affected by mono's billing block, and the poller never queues
+# behind production jobs on tp01. It checks out nothing from seaweed-mono and
+# runs no mono code; it only reads mono metadata through the API.
+#
+# Secrets: MONO_TOKEN must allow reading seaweed-mono contents and pull requests
+# and writing commit statuses (the last is already required by
+# report-pr-status.yml). The dispatch uses this workflow's own GITHUB_TOKEN;
+# repository_dispatch events created with it do start workflow runs.
+#
+# Remove this workflow once seaweed-mono's notify workflow runs again; until
+# then it also tolerates both running (a SHA with an artifactory run is skipped).
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print decisions only; send no dispatch and write no status"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # create repository_dispatch on this repository
+  actions: read     # list this repository's runs for dedupe
+
+concurrency:
+  group: mono-dispatch-fallback
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+      - name: Dispatch mono heads that never reached artifactory
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          DISPATCH_TOKEN: ${{ github.token }}
+          ART_REPO: ${{ github.repository }}
+          MAX_DISPATCH: "6"
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        run: bash .github/scripts/mono-dispatch-fallback.sh
