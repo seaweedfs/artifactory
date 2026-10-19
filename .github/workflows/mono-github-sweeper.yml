@@ -76,8 +76,13 @@ jobs:
           set -euo pipefail
           cd /tmp/mono
           : > /tmp/foreign_names.txt
-          git for-each-ref --format='%(refname:short)' refs/remotes/origin \
-            | sed 's|^origin/||; /^HEAD$/d' | while read -r b; do
+          # full refname, not %(refname:short): the short name of
+          # refs/remotes/origin/HEAD is "origin" (the shortest unambiguous
+          # spelling), which sed would pass through and then ls-tree
+          # origin/origin dies. The glob also excludes a bare
+          # refs/remotes/origin ref, which packed-refs can hold.
+          git for-each-ref --format='%(refname)' 'refs/remotes/origin/*' \
+            | sed 's|^refs/remotes/origin/||; /^HEAD$/d' | while read -r b; do
             # ls-tree failing is not "no workflows" — a partial-clone fetch
             # error must abort the run, not silently skip a dirty branch.
             # Only an empty tree or grep's no-match may produce empty foreign.
