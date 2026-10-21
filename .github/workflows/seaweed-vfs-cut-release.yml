@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   cut:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       V: ${{ github.event.inputs.version }}

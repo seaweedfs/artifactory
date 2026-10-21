@@ -16,9 +16,9 @@ on:
         required: false
         default: 'main'
       runner:
-        description: "Runner label: ubuntu-22.04 (hosted, default) or tp01 (self-hosted; siw link and device access are pre-provisioned, no sudo)"
+        description: "Runner label: ubuntu-24.04 (hosted, default) or tp01 (self-hosted; siw link and device access are pre-provisioned, no sudo)"
         required: false
-        default: 'ubuntu-22.04'
+        default: 'ubuntu-24.04'
 
 concurrency:
   # `inputs.*` is empty in the workflow-level concurrency context; read the dispatch
@@ -50,7 +50,7 @@ jobs:
   # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
   rdma-off-build:
     name: RDMA-off build + unit tests
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 20
 
     steps:
@@ -105,7 +105,7 @@ jobs:
   # module and root for verbs/rdma_cm.
   rdma-softroce-e2e:
     name: software RDMA e2e (read + staged write)
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 40
 
     steps:

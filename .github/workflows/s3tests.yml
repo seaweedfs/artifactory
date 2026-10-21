@@ -55,7 +55,7 @@ jobs:
     concurrency:
       group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 'basic-s3-tests', strategy.job-index) }}
       cancel-in-progress: false
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout artifactory repo
@@ -393,7 +393,7 @@ jobs:
     concurrency:
       group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 'versioning-tests', strategy.job-index) }}
       cancel-in-progress: false
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout artifactory repo
@@ -590,7 +590,7 @@ jobs:
     concurrency:
       group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 'cors-tests', strategy.job-index) }}
       cancel-in-progress: false
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
       - name: Checkout artifactory repo
@@ -742,7 +742,7 @@ jobs:
     concurrency:
       group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 'copy-tests', strategy.job-index) }}
       cancel-in-progress: false
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
       - name: Checkout artifactory repo
@@ -864,7 +864,7 @@ jobs:
     concurrency:
       group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 'sql-store-tests', strategy.job-index) }}
       cancel-in-progress: false
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout artifactory repo

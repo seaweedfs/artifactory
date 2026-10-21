@@ -102,7 +102,7 @@ permissions:
 jobs:
   s3tables-tests:
     name: S3 Tables (${{ matrix.suite }})
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 40
     strategy:
       # Report each suite independently; one failing must not hide the others.

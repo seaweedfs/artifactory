@@ -20,7 +20,7 @@ jobs:
   # constants in seaweed-mono, so a stale (unsynced) enterprise build never
   # ships under a newer tag.
   verify-version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -33,7 +33,7 @@ jobs:
 
   build-enterprise-rocksdb-9-3:
     needs: [verify-version]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout artifactory repo

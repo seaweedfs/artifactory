@@ -50,7 +50,7 @@ env:
 jobs:
   fuse-integration:
     name: FUSE Integration Testing
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 50
 
     steps:
