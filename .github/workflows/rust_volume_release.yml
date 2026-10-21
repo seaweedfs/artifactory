@@ -25,7 +25,7 @@ jobs:
   # constants in seaweed-mono, so a stale (unsynced) enterprise build never
   # ships under a newer tag.
   verify-version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -40,7 +40,7 @@ jobs:
     needs: [verify-version]
     permissions:
       contents: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       # One architecture failing must not cancel the other's upload.
       fail-fast: false

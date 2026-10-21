@@ -47,7 +47,7 @@ permissions:
 jobs:
   ec-integration-tests:
     name: EC Integration Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
@@ -159,7 +159,7 @@ jobs:
   # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
   ec-custom-ratio-tests:
     name: EC Custom Ratio Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 45
     steps:
     - name: Checkout artifactory repo
@@ -251,7 +251,7 @@ jobs:
   # Regression test job
   ec-regression-tests:
     name: EC Regression Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 20
     steps:
     - name: Checkout artifactory repo
@@ -313,7 +313,7 @@ jobs:
   #     TeardownEmptyVolume callback cluster-wide.
   ec-vacuum-2pc-tests:
     name: EC Vacuum 2PC Switch Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 30
     steps:
     - name: Checkout artifactory repo
@@ -397,7 +397,7 @@ jobs:
   # filer, admin and workers stay Go — they are the orchestrators.
   ec-vacuum-2pc-rust-tests:
     name: EC Vacuum 2PC Switch Tests (Rust volumes)
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     # A cold cargo cache means a full release build of the crate before the
     # test starts, on top of the test's own 35m budget.
     timeout-minutes: 55
@@ -471,7 +471,7 @@ jobs:
   # before it — which would push the main EC integration job over budget.
   ec-2pc-interruption-tests:
     name: EC 2PC Interruption Tests
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-22.04"]') }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 70
     steps:
     - name: Checkout artifactory repo

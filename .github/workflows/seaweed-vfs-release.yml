@@ -55,7 +55,7 @@ jobs:
   # dkms-package job in seaweed-vfs.yml, but as a required release gate.
   verify:
     name: "verify DKMS source compiles (${{ matrix.label }})"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     continue-on-error: ${{ matrix.optional || false }}   # rawhide = non-blocking canary
     strategy:
@@ -124,7 +124,7 @@ jobs:
     name: "daemon package (${{ matrix.asset }})"
     permissions:
       contents: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         include:
@@ -214,7 +214,7 @@ jobs:
     name: "dkms source package"
     permissions:
       contents: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -269,7 +269,7 @@ jobs:
     permissions:
       contents: write
       packages: write     # also bake the .ko into a node image + push to ghcr
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     # Entries flagged `optional` (best-effort distros like rhel10) don't fail the
     # run; the golden-image / debian entry stays required.
     continue-on-error: ${{ matrix.optional || false }}
@@ -420,7 +420,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out the git retry helper
         uses: actions/checkout@v6
@@ -484,7 +484,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       # Pin to the pkgs tag for your target Talos release — see
       # https://github.com/siderolabs/talos/blob/<talos ver>/pkg/machinery/gendata/data/pkgs
