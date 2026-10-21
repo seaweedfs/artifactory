@@ -54,7 +54,9 @@ seen_runs=$(printf '%s\n' "$run_titles" | { grep -oE 'mono:[0-9a-f]{40}' || true
 # read. Callers treat 2 as fatal: an unreadable status must never look unhandled.
 handled() {
   local sha=$1 n
-  if printf '%s\n' "$seen_runs" | grep -qx "$sha"; then
+  # A here-string, not a pipe: under pipefail, grep -q exiting on a match
+  # near the top of a long list SIGPIPEs printf and the test reads as a miss.
+  if grep -qxF -- "$sha" <<<"$seen_runs"; then
     echo "run"; return 0
   fi
   if ! n=$(mono_api "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
@@ -77,10 +79,10 @@ scope() {
       --jq 'if (.files | length) >= 300 then "TRUNCATED" else .files[].filename end'); then
     echo "true true"; return
   fi
-  if printf '%s\n' "$files" | grep -qx TRUNCATED; then echo "true true"; return; fi
+  if grep -qx TRUNCATED <<<"$files"; then echo "true true"; return; fi
   enterprise=false; vfs=false
-  printf '%s\n' "$files" | grep -q '^enterprise/'  && enterprise=true
-  printf '%s\n' "$files" | grep -q '^seaweed-vfs/' && vfs=true
+  grep -q '^enterprise/'  <<<"$files" && enterprise=true
+  grep -q '^seaweed-vfs/' <<<"$files" && vfs=true
   echo "$enterprise $vfs"
 }
 
