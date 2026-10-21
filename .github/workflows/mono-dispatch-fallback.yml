@@ -46,6 +46,13 @@ concurrency:
 
 jobs:
   poll:
+    # Follow only watchdog runs that were themselves started by schedule or
+    # by hand, so a future trigger change on the watchdog cannot open a path
+    # into this job.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.event == 'schedule' ||
+      github.event.workflow_run.event == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
