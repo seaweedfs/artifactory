@@ -276,6 +276,10 @@ jobs:
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
 
+      - name: Download Go modules (retried)
+        working-directory: seaweedfs-source/enterprise/weed
+        run: "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
+
       - name: Build weed
         run: |
           # Build the enterprise weed from the checked-out source rather than
@@ -387,6 +391,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+
+      - name: Download Go modules (retried)
+        working-directory: seaweedfs-source/enterprise/weed
+        run: "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
 
       - name: Build weed
         run: |

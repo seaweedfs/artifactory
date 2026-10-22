@@ -98,7 +98,7 @@ jobs:
     - name: Get dependencies
       working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
-        go mod download
+        "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
         go mod tidy
 
     - name: Run Kafka Gateway Unit Tests
@@ -155,7 +155,7 @@ jobs:
     - name: Get dependencies
       working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
-        go mod download
+        "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
         go mod tidy
 
     - name: Run Integration Tests
@@ -856,7 +856,7 @@ jobs:
     - name: Get dependencies
       working-directory: seaweedfs-source/enterprise/test/kafka
       run: |
-        go mod download
+        "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
         go mod tidy
 
     - name: Run Protocol Tests

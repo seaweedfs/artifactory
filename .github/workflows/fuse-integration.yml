@@ -120,7 +120,7 @@ jobs:
     - name: Install test dependencies
       working-directory: seaweedfs-source/enterprise/test/fuse_integration
       run: |
-        go mod download
+        "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
 
     - name: Run FUSE Integration Tests
       working-directory: seaweedfs-source/enterprise/test/fuse_integration
