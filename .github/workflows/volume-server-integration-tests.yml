@@ -82,6 +82,10 @@ jobs:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
+    - name: Download Go modules (retried)
+      working-directory: seaweedfs-source/enterprise/weed
+      run: "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
+
     - name: Build SeaweedFS binary
       working-directory: seaweedfs-source/enterprise/weed
       run: |
