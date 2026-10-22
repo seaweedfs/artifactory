@@ -192,6 +192,15 @@ jobs:
       if: steps.check.outputs.present == 'true'
       timeout-minutes: 35
       working-directory: seaweedfs-source/enterprise/test/s3tables/${{ matrix.dir }}
+      env:
+        # Only the lifecycle suite reads this, and it has to be set: without it
+        # that suite's Lance half cold-builds the lance crate, which needs protoc
+        # and fails on a runner that does not carry it. Upstream's own
+        # table-lifecycle-tests job sets the same value for the same reason --
+        # the Rust worker's own tests cover its handlers, so a cold lance build
+        # costs more here than the layer it would be checking. Harmless on the
+        # other three legs, which never touch the lance path.
+        WEED_LANCE_MAINTENANCE: library
       run: |
         set -o pipefail
         echo "=== System information ==="
