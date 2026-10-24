@@ -77,6 +77,27 @@ wait_for_http() {
     return 1
 }
 
+# put_job_config <job_type> <json>: PUT a plugin job-type config through the
+# admin. A fresh filer registers with the master only after its empty-
+# membership confirm window (about 10 s), and until then the admin answers
+# 5xx ("no filer available"). Retry 5xx and connection failures for up to
+# 60 s; a 4xx is a real request error and fails at once.
+put_job_config() {
+    local job=$1 body=$2 code=""
+    for i in $(seq 1 60); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+            "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/${job}/config" \
+            -H "Content-Type: application/json" -d "$body") || code=000
+        case "$code" in
+            2??) return 0 ;;
+            4??) fail "PUT ${job} config refused with HTTP ${code}"; return 1 ;;
+        esac
+        sleep 1
+    done
+    fail "PUT ${job} config still failing after 60 s (last HTTP ${code})"
+    return 1
+}
+
 # ── Setup ──────────────────────────────────────────────────────────────
 
 info "Creating data directories"
@@ -143,15 +164,13 @@ info "Plugin workers registered (erasure_coding + ec_repair)"
 # keeps the worker from skipping back-to-back scripted detections.
 info "Disabling background plugin scheduling (test drives runs explicitly)"
 for JOB_TYPE in erasure_coding ec_repair; do
-    curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/${JOB_TYPE}/config" \
-        -H "Content-Type: application/json" \
-        -d "{
+    put_job_config "$JOB_TYPE" "{
             \"jobType\": \"${JOB_TYPE}\",
             \"adminRuntime\": {\"enabled\": false},
             \"workerConfigValues\": {
                 \"min_interval_seconds\": {\"int64Value\": \"0\"}
             }
-        }" > /dev/null
+        }"
 done
 
 info "Starting $NUM_EXTRA_VOLUMES additional volume servers"
@@ -274,9 +293,7 @@ fi
 
 # Configure erasure_coding plugin worker for CI: no quiet period, low thresholds
 info "Configuring erasure_coding plugin worker for CI"
-curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_coding/config" \
-    -H "Content-Type: application/json" \
-    -d '{
+put_job_config erasure_coding '{
         "jobType": "erasure_coding",
         "adminRuntime": {"enabled": false},
         "workerConfigValues": {
@@ -288,7 +305,7 @@ curl -sf -X PUT "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/erasure_
         "adminConfigValues": {
             "collection_filter": {"stringValue": "ectest"}
         }
-    }' > /dev/null
+    }'
 
 # Run erasure_coding detection + execution via plugin API
 info "Running erasure_coding plugin worker to EC-encode volumes"
