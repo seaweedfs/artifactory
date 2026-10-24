@@ -16,9 +16,9 @@ on:
         required: false
         default: 'main'
       runner:
-        description: "Runner label: ubuntu-24.04 (hosted, default) or tp01 (self-hosted; siw link and device access are pre-provisioned, no sudo)"
+        description: "tp01 (self-hosted, default; siw link and device access are pre-provisioned, no sudo) or ubuntu-24.04 (hosted)"
         required: false
-        default: 'ubuntu-24.04'
+        default: 'tp01'
 
 concurrency:
   # `inputs.*` is empty in the workflow-level concurrency context; read the dispatch
@@ -36,7 +36,7 @@ concurrency:
   # registration-only mode, so an ordinary read returns zero bytes. Control on one
   # runner, strictly sequential: candidate 3/3 red, tip 3/3 byte-exact. Concurrency was
   # never involved, so self-hosted runs group per dispatched ref like hosted ones.
-  group: ${{ format('{0}/rdma-softroce-tests/{1}', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main', github.event.inputs.runner || 'hosted') }}
+  group: ${{ format('{0}/rdma-softroce-tests/{1}', github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main', github.event.inputs.runner || 'tp01') }}
   # Never cancel: with a self-hosted runner the group is shared across branches and an
   # expression here still cancelled the previous run (2026-09-18, runs 35308538083 and
   # 35308730850). Superseded hosted runs of one branch now queue instead of cancelling.
@@ -46,11 +46,18 @@ permissions:
   contents: read
 
 jobs:
+  # Routing (2026-10-24): both jobs default to tp01 and require the `siw` label,
+  # which only the tp01 runners registered to this repo carry. Plain
+  # `ubuntu-24.04` is also carried by org-level self-hosted runners that have no
+  # siw0, and `tp01` alone could match another runner on the same host, so the
+  # dispatched (repository_dispatch) runs failed preflight there. The runner
+  # watchdog does not rescue this workflow to hosted on purpose (it is not in
+  # its WORKFLOWS list); a manual ubuntu-24.04 dispatch remains possible.
   # Fast gate: the enterprise/rust workspace builds and its unit tests pass with
   # RDMA OFF (the default, macOS-buildable path). No SoftRoCE required.
   rdma-off-build:
     name: RDMA-off build + unit tests
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event.inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01","siw"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 20
 
     steps:
@@ -105,7 +112,7 @@ jobs:
   # module and root for verbs/rdma_cm.
   rdma-softroce-e2e:
     name: software RDMA e2e (read + staged write)
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event.inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01","siw"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 40
 
     steps:
