@@ -1,0 +1,63 @@
+name: tp01 host-port lock
+description: >
+  Serialize port-binding jobs on the shared tp01 host with a flock, instead of a
+  GitHub concurrency group. A GitHub group keeps at most one pending job and
+  cancels every other pending one, whatever cancel-in-progress says, so a suite
+  with several port-binding jobs ran only one or two of them on tp01. A flock
+  makes the others wait.
+
+  acquire: a background holder takes the lock on a file in the runner user's
+  HOME (both tp01 runners run as the same user and share it; /tmp is private
+  per runner) and keeps it until release. release: ends the holder. If the job
+  dies first, the runner's orphan-process cleanup at job end ends it, which
+  frees the lock. A hosted runner is a fresh VM per job, so both are no-ops
+  there.
+
+inputs:
+  mode:
+    description: acquire or release
+    required: true
+  wait-minutes:
+    description: How long acquire waits for the lock before failing the job
+    required: false
+    default: '45'
+
+runs:
+  using: composite
+  steps:
+    - name: tp01 host lock (${{ inputs.mode }})
+      if: runner.environment != 'github-hosted'
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
+      run: |
+        set -euo pipefail
+        lock="$HOME/.tp01-host-ports.lock"
+        held="$RUNNER_TEMP/tp01-host-lock.held"
+        pidf="$RUNNER_TEMP/tp01-host-lock.pid"
+        case "$MODE" in
+        acquire)
+          rm -f "$held"
+          # fd 9 is inherited by the sleep, which holds the lock until killed.
+          # Its stdio is detached so the step's output pipe can close.
+          ( flock -w $((WAIT_MINUTES * 60)) 9 || exit 1; echo held > "$held"; exec sleep 86400 ) 9>>"$lock" </dev/null >/dev/null 2>&1 &
+          echo $! > "$pidf"
+          start=$(date +%s)
+          until [ -f "$held" ]; do
+            kill -0 "$(cat "$pidf")" 2>/dev/null || { echo "::error::tp01 host lock not acquired within ${WAIT_MINUTES} min"; exit 1; }
+            sleep 2
+          done
+          echo "tp01 host lock acquired after $(( $(date +%s) - start )) s"
+          ;;
+        release)
+          if [ -f "$pidf" ]; then
+            kill "$(cat "$pidf")" 2>/dev/null || true
+            rm -f "$pidf" "$held"
+            echo "tp01 host lock released"
+          else
+            echo "tp01 host lock was not held by this job"
+          fi
+          ;;
+        *) echo "::error::mode must be acquire or release"; exit 1 ;;
+        esac
