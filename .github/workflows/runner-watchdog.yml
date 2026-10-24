@@ -72,6 +72,8 @@ jobs:
       PROBE_WINDOW_MIN: ${{ inputs.probe_window_minutes || '120' }}
       # Every workflow that can land on a self-hosted label. A workflow missing
       # from this list queues on an offline tp01 until it times out after 24 h.
+      # rdma-softroce-tests.yml is left out on purpose: its siw jobs need the
+      # tp01 siw link, and a hosted re-dispatch can land on a runner without it.
       WORKFLOWS: >-
         kvcache-preview.yml
         e2e.yml
