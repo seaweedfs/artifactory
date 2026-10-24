@@ -42,6 +42,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweed-mono/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweed-mono/enterprise/go.sum'
 
       - name: Check for new subscriptions

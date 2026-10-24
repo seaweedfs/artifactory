@@ -87,6 +87,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
       id: go
 
     # Hosted-only: this rewrites the daemon config and restarts Docker, which on

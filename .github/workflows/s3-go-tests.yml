@@ -83,6 +83,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -223,6 +224,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -342,6 +344,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -413,6 +416,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -523,6 +527,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -588,6 +593,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -666,6 +672,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -750,6 +757,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -819,6 +827,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -907,6 +916,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 
@@ -982,6 +992,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
         id: go
 

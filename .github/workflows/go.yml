@@ -72,6 +72,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Get dependencies
@@ -109,6 +110,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Go Vet linux/386 (type-checks for 32-bit int overflows)
@@ -139,6 +141,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     - name: Build
@@ -205,6 +208,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     # -timeout 20m: the weed/storage suite (TestMemIndexCompaction +
@@ -240,6 +244,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
         cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
 
     # 386 test binaries run natively on the amd64 runner. This catches what vet
