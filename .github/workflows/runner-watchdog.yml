@@ -116,6 +116,11 @@ jobs:
           # proves it is alive however deep the queue is; only silence means
           # offline. runner_name is reported by the jobs API without admin, and
           # the prefix match covers additional instances (tp01-2, tp01-3, ...).
+          # A tp01 job that is still IN PROGRESS counts as "started now": with
+          # port-binding jobs serialized on the host flock, one long job can
+          # hold the host for over 10 min while others queue. Judged by starts
+          # alone that looked like an outage, and the rescue cancelled healthy
+          # runs twice on 2026-10-24/25 (#819, #827).
           since=$(date -u -d "-${PROBE_WINDOW_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ)
           newest=0
           # Scan runs that actually STARTED jobs (in_progress or completed), 200
@@ -128,7 +133,7 @@ jobs:
           for rid in $(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq "$probe_jq"; \
                        gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=completed&per_page=100" --jq "$probe_jq"); do
             started=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | .started_at | fromdate] | max // 0')
+              --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | if .status == "in_progress" then (now | floor) else (.started_at | fromdate) end] | max // 0')
             if [ "$started" -gt "$newest" ]; then newest=$started; fi
           done
           if [ "$newest" -eq 0 ]; then
