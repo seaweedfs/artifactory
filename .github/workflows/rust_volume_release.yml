@@ -74,9 +74,13 @@ jobs:
         if: matrix.cross
         run: |
           sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          # ubuntu-24.04 keeps apt sources in deb822 ubuntu.sources, not
+          # sources.list — pin them to amd64 so apt does not probe arm64
+          # indexes on archive/security.ubuntu.com (they 404).
+          sudo sed -i '/^Types: deb$/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          for suite in noble noble-updates noble-security; do
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $suite main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          done
           $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
           $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y gcc-aarch64-linux-gnu libssl-dev:arm64
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
