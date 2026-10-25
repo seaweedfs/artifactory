@@ -89,12 +89,30 @@ jobs:
           $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
           $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          # C deps (aws-lc-sys) compile against the gnu toolchain's glibc
-          # headers. Disable fortify (__memcpy_chk etc.) and alias the C23
-          # redirects — glibc's sscanf/strtol names — back to the musl symbols
-          # that actually exist.
+          # Disable glibc fortify source — its __memcpy_chk etc. symbols don't exist in musl
           echo "CFLAGS_aarch64_unknown_linux_musl=-U_FORTIFY_SOURCE" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-Clink-arg=-Wl,--defsym,__isoc23_sscanf=sscanf -Clink-arg=-Wl,--defsym,__isoc23_strtol=strtol" >> "$GITHUB_ENV"
+          # aws-lc-sys compiles against glibc headers, which redirect
+          # sscanf/strtol to C23 __isoc23_* symbols musl does not provide.
+          # Link a tiny forwarding shim so those references resolve to the
+          # musl implementations. Prototypes are declared manually: including
+          # glibc headers here would re-redirect the calls back to __isoc23_*.
+          cat > /tmp/isoc23-shim.c <<'SHIM'
+          #include <stdarg.h>
+          extern int vsscanf(const char *s, const char *fmt, va_list ap);
+          extern long strtol(const char *nptr, char **endptr, int base);
+          int __isoc23_sscanf(const char *s, const char *fmt, ...) {
+              va_list ap;
+              va_start(ap, fmt);
+              int r = vsscanf(s, fmt, ap);
+              va_end(ap);
+              return r;
+          }
+          long __isoc23_strtol(const char *nptr, char **endptr, int base) {
+              return strtol(nptr, endptr, base);
+          }
+          SHIM
+          aarch64-linux-gnu-gcc -O2 -c /tmp/isoc23-shim.c -o /tmp/isoc23-shim.o
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-Clink-arg=/tmp/isoc23-shim.o" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry and target
         uses: actions/cache@v5
