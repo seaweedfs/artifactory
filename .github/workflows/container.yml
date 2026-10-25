@@ -90,7 +90,12 @@ jobs:
           # A real musl cross toolchain: gcc-aarch64-linux-gnu compiles C deps
           # against glibc headers, which emit __isoc23_* / __*_chk calls musl
           # cannot link.
-          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar xz -C /opt
+          for i in 1 2 3 4 5; do
+            curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/aarch64-linux-musl-cross.tgz && break
+            sleep 10
+          done
+          test -s /tmp/aarch64-linux-musl-cross.tgz
+          sudo tar xzf /tmp/aarch64-linux-musl-cross.tgz -C /opt
           echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
           echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
           echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar" >> "$GITHUB_ENV"
