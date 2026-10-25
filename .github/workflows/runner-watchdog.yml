@@ -136,14 +136,38 @@ jobs:
           # "no job start in 120 min" while both tp01 workers were busy and
           # evacuated four queued builds to hosted (run 34509663939).
           probe_jq=".workflow_runs[] | select(.updated_at >= \"$since\") | select(.name | test(\"^(runner watchdog|Report status)\") | not) | .id"
-          for rid in $(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq "$probe_jq"; \
-                       gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=queued&per_page=100" --jq "$probe_jq"; \
-                       gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=completed&per_page=100" --jq "$probe_jq"); do
-            started=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | if .status == "in_progress" then (now | floor) else (.started_at | fromdate) end] | max // 0')
-            if [ "$started" -gt "$newest" ]; then newest=$started; fi
+          # Every list and every per-run jobs call is checked on its own. A call
+          # that fails after retries makes the evidence INCOMPLETE, and incomplete
+          # evidence skips the rescue this round; it never counts as "offline".
+          # Before, the three lists ran inside one unchecked `for ... in $(a; b; c)`,
+          # so a failed list silently dropped its runs, and if the only healthy
+          # tp01 job was among them the probe again saw silence.
+          probe_complete=1
+          rids=""
+          for st in in_progress queued completed; do
+            if out=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$st&per_page=100" --jq "$probe_jq"); then
+              rids="$rids $out"
+            else
+              probe_complete=0
+              echo "tp01 liveness: the $st run list is unreadable after retries"
+            fi
           done
-          if [ "$newest" -eq 0 ]; then
+          for rid in $rids; do
+            if started=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | if .status == "in_progress" then (now | floor) else (.started_at | fromdate) end] | max // 0'); then
+              if [ "${started:-0}" -gt "$newest" ]; then newest=$started; fi
+            else
+              probe_complete=0
+              echo "tp01 liveness: the jobs of run $rid are unreadable after retries"
+            fi
+          done
+          # Declared limits (no --paginate): the first 100 runs per status and the
+          # first 100 jobs per run are seen; a stale in_progress job can still mask
+          # a dead runner; these calls spend part of the job's time budget.
+          if [ "$probe_complete" -eq 0 ]; then
+            TP01_LAST_START=-1
+            echo "tp01 liveness: INCOMPLETE evidence - no rescue this round"
+          elif [ "$newest" -eq 0 ]; then
             TP01_LAST_START=99999
             echo "tp01 liveness: no job start seen in the last ${PROBE_WINDOW_MIN}m"
           else
@@ -170,6 +194,10 @@ jobs:
               # Busy is not offline. One runner serialises a whole mono push, so a
               # deep queue is the healthy state; evacuating it to hosted would
               # defeat the runner. Only silence on tp01 counts as an outage.
+              if [ "$TP01_LAST_START" -lt 0 ]; then
+                echo "run $id: queued ${age}m, but the tp01 liveness evidence is incomplete - not rescuing this round"
+                continue
+              fi
               if [ "$TP01_LAST_START" -lt "$MAX_MIN" ]; then
                 echo "run $id: queued ${age}m, but tp01 started a job ${TP01_LAST_START}m ago - busy, not offline; leaving it"
                 continue
