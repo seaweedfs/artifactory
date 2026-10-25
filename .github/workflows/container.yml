@@ -113,8 +113,9 @@ jobs:
           SHIM
           aarch64-linux-gnu-gcc -O2 -c /tmp/isoc23-shim.c -o /tmp/isoc23-shim.o
           # link-args land after libc on the link line; rescan musl libc so
-          # the shim's own vsscanf/strtol references resolve.
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-Clink-arg=/tmp/isoc23-shim.o -Clink-arg=-lc" >> "$GITHUB_ENV"
+          # the shim's own vsscanf/strtol references resolve, and libgcc for
+          # the fp128 builtins musl's vfscanf/floatscan pull in on aarch64.
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-Clink-arg=/tmp/isoc23-shim.o -Clink-arg=-lc -Clink-arg=-lgcc" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry and target
         uses: actions/cache@v5
