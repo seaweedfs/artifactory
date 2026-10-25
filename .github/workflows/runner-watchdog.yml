@@ -123,14 +123,21 @@ jobs:
           # runs twice on 2026-10-24/25 (#819, #827).
           since=$(date -u -d "-${PROBE_WINDOW_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ)
           newest=0
-          # Scan runs that actually STARTED jobs (in_progress or completed), 200
-          # of them, and skip this watchdog's own runs and the status mirror.
+          # Scan runs that may have STARTED jobs (in_progress, completed, and
+          # queued), and skip this watchdog's own runs and the status mirror.
+          # QUEUED runs are included because a run whose jobs are partly still
+          # waiting for a runner can report the run-level status "queued" while
+          # its other jobs are already running on tp01. Those jobs were invisible
+          # to the probe, so a busy tp01 looked silent and the watchdog cancelled
+          # a healthy run (2026-10-25 20:06Z: run 40227844222, with jobs started
+          # 20:01 and 20:05 on tp01, was "rescued" as "last job started 20m ago").
           # The old probe looked at the newest 50 runs of any state; on
           # 2026-09-10 those were all watchdog/mirror/cancelled runs, so it saw
           # "no job start in 120 min" while both tp01 workers were busy and
           # evacuated four queued builds to hosted (run 34509663939).
           probe_jq=".workflow_runs[] | select(.updated_at >= \"$since\") | select(.name | test(\"^(runner watchdog|Report status)\") | not) | .id"
           for rid in $(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq "$probe_jq"; \
+                       gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=queued&per_page=100" --jq "$probe_jq"; \
                        gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=completed&per_page=100" --jq "$probe_jq"); do
             started=$(gh_retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" \
               --jq '[.jobs[] | select(.runner_name != null and (.runner_name | startswith("tp01")) and .started_at != null) | if .status == "in_progress" then (now | floor) else (.started_at | fromdate) end] | max // 0')
