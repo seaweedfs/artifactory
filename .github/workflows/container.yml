@@ -76,16 +76,25 @@ jobs:
       # whatever index the image shipped with.
       - name: Install musl tools (amd64)
         if: ${{ !matrix.cross }}
-        run: $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y musl-tools
+        run: |
+          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update && $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y musl-tools
+          # C deps (aws-lc-sys) must compile against musl headers, not the host
+          # gcc's glibc headers — glibc's C23 redirects (__isoc23_sscanf,
+          # __isoc23_strtol) don't exist in musl and fail the link.
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
 
       - name: Install cross-compilation tools (arm64)
         if: matrix.cross
         run: |
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh update
-          $GITHUB_WORKSPACE/.github/scripts/apt-retry.sh install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          # Disable glibc fortify source — its __memcpy_chk etc. symbols don't exist in musl
-          echo "CFLAGS_aarch64_unknown_linux_musl=-U_FORTIFY_SOURCE" >> "$GITHUB_ENV"
+          # A real musl cross toolchain: gcc-aarch64-linux-gnu compiles C deps
+          # against glibc headers, which emit __isoc23_* / __*_chk calls musl
+          # cannot link.
+          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar xz -C /opt
+          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry and target
         uses: actions/cache@v5
