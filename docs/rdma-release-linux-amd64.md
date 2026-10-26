@@ -12,15 +12,21 @@ Each archive includes this README and its full mono `source-commit.txt`.
 MD5 sidecars follow the existing release convention; SHA-256 sidecars are also
 published for these assets. The object service is a separate executable, not
 embedded in the volume server. S3 RDMA also requires a matching RDMA-aware Go
-S3 gateway, its explicit opt-in configuration, and the client buffer/token
-contract. Installing either archive alone does not enable S3 RDMA or KV RDMA.
+S3 gateway (`weed-enterprise-linux_amd64` or the
+`weed-enterprise-linux_amd64_large_disk` release asset), its explicit opt-in
+configuration, and the client buffer/token contract. Use the gateway, volume and
+object service from the same source/release; older gateways are not implied to
+support these wire contracts. See the [S3 DC GET setup and compatibility guide](https://github.com/seaweedfs/seaweed-mono/blob/2485b898923d40300bfe42c4b9f84cdba03a5436/docs/s3-over-rdma.md). Installing either archive alone does not enable S3 RDMA or KV RDMA.
 The `kvcache` feature includes the slab engine; it does not enable it at runtime.
 
 ## Build
 
 The workflow uses an Ubuntu 24.04 x86_64 runner and stable Rust, and builds both
 binaries from one enterprise checkout. The default 5-byte volume offsets are
-retained. From that checkout:
+retained. Before building, the new job independently checks a numeric release
+tag against the version constants in this exact checkout (including after an
+earlier main-based check); `latest` keeps the existing nonnumeric skip.
+From that checkout:
 
 ```sh
 cd enterprise/seaweed-volume
@@ -32,11 +38,13 @@ cargo build --locked --release --target x86_64-unknown-linux-gnu -p seaweedfs-sw
 Build dependencies on Ubuntu 24.04:
 
 ```sh
-sudo apt-get install build-essential pkg-config clang libclang-dev libibverbs-dev librdmacm-dev libssl-dev
+sudo apt-get install build-essential pkg-config clang libclang-dev libibverbs-dev librdmacm-dev libssl-dev protobuf-compiler
 ```
 
 `libibverbs-dev` includes the mlx5 headers/linker/pkg-config files on this
-Ubuntu release. EFA/libfabric is not enabled by this variant.
+Ubuntu release. `protobuf-compiler` supplies `protoc` to dependency build scripts
+(`sw-client` and `sw-rdma-vfs`); the volume's vendored compiler is not inherited
+by those scripts. EFA/libfabric is not enabled by this variant.
 
 ## Customer runtime prerequisites
 

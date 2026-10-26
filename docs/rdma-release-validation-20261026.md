@@ -49,3 +49,44 @@ was needed. Final logs record that successful rerun.
 This proves local build, packaging, linkage and CLI startup only. No devices were
 opened, servers started, hardware transfer tested, workflow dispatched, or release
 published. The Draft PR uses a `[skip ci]` commit so push/PR workflows do not run.
+
+## Review amendment: protobuf and exact-checkout version admission
+
+The new job now explicitly installs `protobuf-compiler` for dependency build
+scripts. A separate check of the actual cloned source runs before the new job's
+builds. Numeric tags must match that checkout's MAJOR/MINOR; patch tags use the
+same MAJOR/MINOR rule as the existing action, and `latest` retains its skip.
+No existing job or shared verification action was changed.
+
+Controls: matching 4.51/v4.51.2 pass; after a simulated main bump to 4.52 the
+4.51 tag refuses; the new matching 4.52 tag passes. Missing/malformed constants
+refuse. The mismatch-check-removal mutant is RED; production controls are GREEN.
+The real pinned source's constants also pass 4.51 and refuse 4.52.
+
+A clean Ubuntu 24.04 container was built on M02 without RDMA devices passed in.
+It first proved `protoc` absent on PATH (`INITIAL_PROTOC_ABSENT`), installed the
+workflow's declared dependency list plus CA certificates, and observed
+`libprotoc 3.21.12`. Both exact workflow cargo commands then passed from fresh
+source and empty target directories: volume 2m 46s, object service 31.46s.
+Rust 1.93.0 was mounted read-only; only the downloaded Cargo registry cache was
+reused, not compiled artifacts. The driver exited 0 with
+`CLEAN_CONTAINER_BUILD_PASS`. Image: `ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316`.
+
+Both clean-container outputs also pass packaging, ldd with no missing libraries
+(including ibverbs/rdmacm/mlx5), and the same help expectations (volume 0,
+object-service 1). These are separate build outputs, not a bit-reproducibility
+claim:
+
+| Clean-container binary | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `weed-volume` | 50,917,280 | `d1b8cb8f2229b7b903dee7fb2e70637cdbca5743eb88b1182ddf4b9790b11c88` |
+| `sw-rdma-object-service` | 3,788,200 | `c62142aec9fab421c915ee998ceffd5cc2b98f9691de5687b15c7c988594b22a` |
+
+The README now names `weed-enterprise-linux_amd64` and
+`weed-enterprise-linux_amd64_large_disk`, requires compatible source/release,
+and links the pinned `docs/s3-over-rdma.md` setup reference.
+
+New raw logs, exact container/package/smoke scripts, red/green controls, archive
+copies and checksums are in the original evidence directory's `amendment-1/`.
+The original evidence and manifest remain intact. No workflow dispatch,
+publication, merge or hardware transfer was performed.

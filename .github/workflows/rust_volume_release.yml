@@ -164,6 +164,11 @@ jobs:
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
           git rev-parse HEAD > ../source-commit.txt
 
+      - name: Verify release tag against the cloned source
+        env:
+          TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: python3 .github/scripts/verify-enterprise-checkout.py "$TAG" seaweedfs-enterprise-source
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -172,7 +177,7 @@ jobs:
       - name: Install RDMA build dependencies
         run: |
           .github/scripts/apt-retry.sh update
-          .github/scripts/apt-retry.sh install -y build-essential pkg-config clang libclang-dev libibverbs-dev librdmacm-dev libssl-dev
+          .github/scripts/apt-retry.sh install -y build-essential pkg-config clang libclang-dev libibverbs-dev librdmacm-dev libssl-dev protobuf-compiler
 
       - name: Build RDMA volume server (large disk and KV slab)
         env:
