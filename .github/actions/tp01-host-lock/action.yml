@@ -62,6 +62,20 @@ runs:
           theirs=$(stat -L -c '%d:%i' "/run/netns/$TP01_NETNS" 2>/dev/null) || return 1
           [ -n "$mine" ] && [ "$mine" = "$theirs" ]
         }
+        # Isolation window: while root holds the window marker open, only audited
+        # (netns-safe) jobs may proceed. Every other job waits here, before the lock and
+        # before any of its own steps, because an unaudited job (pkill -f weed, docker)
+        # could kill or collide with an unlocked audited job in a namespace.
+        window=/run/tp01-netns/window
+        if [ "$MODE" = acquire ] && [ "$NETNS_SAFE" != true ] && [ -e "$window" ]; then
+          echo "tp01 isolation window open: waiting (only audited netns-safe jobs run during it)"
+          deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          while [ -e "$window" ]; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::tp01 isolation window still open after ${WAIT_MINUTES} min"; exit 1; }
+            sleep 10
+          done
+          echo "tp01 isolation window closed; continuing"
+        fi
         if [ "$MODE" = acquire ] && [ "$NETNS_SAFE" = true ] && own_netns; then
           echo "tp01 host lock skipped: audited job, runner verified in network namespace ${TP01_NETNS}"
           exit 0

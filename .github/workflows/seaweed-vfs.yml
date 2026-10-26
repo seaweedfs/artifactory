@@ -3,7 +3,7 @@ name: "seaweed-vfs (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}${{ (inputs.measurement || inputs.only_job) && format(' · measure{0}', inputs.only_job && format(' only:{0}', inputs.only_job) || '') || '' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -51,13 +51,29 @@ on:
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
-  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/seaweed-vfs
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ (inputs.measurement || inputs.only_job) && '/measure' || '' }}/seaweed-vfs
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  only-job-check:
+    # A measurement run that names a job id this workflow does not have would
+    # otherwise skip every job and finish green with zero work.
+    if: ${{ inputs.only_job }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 2
+    steps:
+      - name: only_job must name a job of this workflow
+        env:
+          ONLY_JOB: ${{ inputs.only_job }}
+        run: |
+          case "$ONLY_JOB" in
+            rust|kernel|dkms-package|fuse-smoke|pjdfstest) echo "only_job=$ONLY_JOB: runs alone, measurement concurrency group" ;;
+            *) echo "::error::only_job=$ONLY_JOB is not a job of this workflow (rust kernel dkms-package fuse-smoke pjdfstest)"; exit 1 ;;
+          esac
+
   # Build the Rust workspace (sw-client, sw-fuse, sw-kd) and run unit tests.
   rust:
     if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'rust' }}
