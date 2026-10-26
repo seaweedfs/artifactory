@@ -57,7 +57,7 @@ jobs:
   go-degraded-read-tests:
     name: EC Degraded Read (Go volume server)
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 40
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 85 || 40 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -66,6 +66,13 @@ jobs:
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -132,13 +139,19 @@ jobs:
         if-no-files-found: warn
         retention-days: 7
 
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
+
   # The primary guard: the same test driven against the Rust weed-volume
   # server, whose distributed reconstruct-on-read path
   # (read_ec_shard_needle_distributed) had returned empty after disk loss.
   rust-degraded-read-tests:
     name: EC Degraded Read (Rust volume server)
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 45 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -147,6 +160,13 @@ jobs:
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -229,6 +249,12 @@ jobs:
         path: /tmp/ec-degraded-read-logs/
         if-no-files-found: warn
         retention-days: 7
+
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
 
   ec-degraded-read-summary:
     name: EC Degraded Read Summary
