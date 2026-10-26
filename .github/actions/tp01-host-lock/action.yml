@@ -18,9 +18,12 @@ inputs:
     description: acquire or release
     required: true
   wait-minutes:
-    description: How long acquire waits for the lock before failing the job
+    description: >
+      How long acquire waits for the lock before failing the job. 80 covers the
+      longest observed hold (EC Integration, 59 min); a caller's self-hosted
+      timeout-minutes must be its hosted value + this wait.
     required: false
-    default: '45'
+    default: '80'
 
 runs:
   using: composite

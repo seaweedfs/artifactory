@@ -56,7 +56,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'postgres-basic-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 60 || 15 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 95 || 15 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
