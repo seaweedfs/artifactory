@@ -48,13 +48,20 @@ jobs:
   ec-integration-tests:
     name: EC Integration Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 45 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -160,18 +167,31 @@ jobs:
         echo "- ✅ **Disk Type Filtering**: SSD/HDD-aware EC placement" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ **Rack-Aware Placement**: Cross-rack fault tolerance" >> $GITHUB_STEP_SUMMARY
 
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
+
   # End-to-end test for custom EC ratio support (Enterprise feature)
   # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
   ec-custom-ratio-tests:
     name: EC Custom Ratio Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 45 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -258,17 +278,30 @@ jobs:
         echo "- A merge reverting per-volume ratio handling back to the hardcoded 10+4 default" >> $GITHUB_STEP_SUMMARY
         echo "- Data corruption or read failures after custom-ratio EC encoding" >> $GITHUB_STEP_SUMMARY
 
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
+
   # Regression test job
   ec-regression-tests:
     name: EC Regression Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -313,6 +346,12 @@ jobs:
         echo "- 🐛 **Silent Failure Bug**: Functions return proper errors" >> $GITHUB_STEP_SUMMARY
         echo "- 🐛 **Cleanup Race Condition**: Pre-collected locations used for cleanup" >> $GITHUB_STEP_SUMMARY
 
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
+
   # End-to-end test for the versioned-EC vacuum 2PC switch protocol.
   # Drives a real local cluster (master + 14 volume servers + filer +
   # 2 workers + admin, all `weed` subprocesses on localhost ports) through
@@ -325,13 +364,20 @@ jobs:
   ec-vacuum-2pc-tests:
     name: EC Vacuum 2PC Switch Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 75 || 30 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -400,6 +446,12 @@ jobs:
         echo "- Worker \`cleanupEcVacuumShards\` deleting freshly-committed \`.v<N>\` files because \`KeepVersion=0\`" >> $GITHUB_STEP_SUMMARY
         echo "- \`TeardownEmptyVolume\` not wired through the volume server's commit-ordering deps" >> $GITHUB_STEP_SUMMARY
 
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
+
   # The same versioned-switch scenario against RUST shard holders
   # (seaweed-volume crate) instead of the Go `weed volume` binary.
   #
@@ -412,7 +464,7 @@ jobs:
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     # A cold cargo cache means a full release build of the crate before the
     # test starts, on top of the test's own 35m budget.
-    timeout-minutes: 55
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 55 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -421,6 +473,13 @@ jobs:
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -477,6 +536,12 @@ jobs:
         if-no-files-found: ignore
         retention-days: 7
 
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
+
   # Kills a shard holder inside the 2PC switch and requires the cluster to
   # come back consistent. These live in their own job because most of their
   # wall time is spent waiting out the switch's own 2-minute deadline —
@@ -485,7 +550,7 @@ jobs:
   ec-2pc-interruption-tests:
     name: EC 2PC Interruption Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 70
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 115 || 70 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -494,6 +559,13 @@ jobs:
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
+
+    - name: Take the tp01 host lock (fixed ports 9333/8888/9338 are shared by every EC job on the host)
+      if: (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: acquire
+        wait-minutes: '50'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -559,3 +631,9 @@ jobs:
           seaweedfs-source/enterprise/test/erasure_coding/*.log
         if-no-files-found: ignore
         retention-days: 7
+
+    - name: Release the tp01 host lock
+      if: always() && (inputs.runner || 'hosted') == 'tp01'
+      uses: ./.github/actions/tp01-host-lock
+      with:
+        mode: release
