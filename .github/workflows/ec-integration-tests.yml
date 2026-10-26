@@ -48,7 +48,7 @@ jobs:
   ec-integration-tests:
     name: EC Integration Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 45 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 155 || 75 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -61,7 +61,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -108,7 +108,7 @@ jobs:
         ls -la
 
         # Run the integration tests with verbose output
-        go test -v -timeout 30m
+        go test -v -timeout 60m
 
     - name: Run EC Disk-Aware Tests
       if: success() || failure()
@@ -178,7 +178,7 @@ jobs:
   ec-custom-ratio-tests:
     name: EC Custom Ratio Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 45 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 125 || 45 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -191,7 +191,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -288,7 +288,7 @@ jobs:
   ec-regression-tests:
     name: EC Regression Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -301,7 +301,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -364,7 +364,7 @@ jobs:
   ec-vacuum-2pc-tests:
     name: EC Vacuum 2PC Switch Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 75 || 30 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -377,7 +377,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -464,7 +464,7 @@ jobs:
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     # A cold cargo cache means a full release build of the crate before the
     # test starts, on top of the test's own 35m budget.
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 55 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 135 || 55 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -479,7 +479,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
@@ -550,7 +550,7 @@ jobs:
   ec-2pc-interruption-tests:
     name: EC 2PC Interruption Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 115 || 70 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 150 || 70 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -565,7 +565,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source

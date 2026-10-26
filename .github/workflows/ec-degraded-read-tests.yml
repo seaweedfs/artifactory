@@ -57,7 +57,7 @@ jobs:
   go-degraded-read-tests:
     name: EC Degraded Read (Go volume server)
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 85 || 40 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 120 || 40 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -72,7 +72,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
@@ -151,7 +151,7 @@ jobs:
   rust-degraded-read-tests:
     name: EC Degraded Read (Rust volume server)
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 45 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 125 || 45 }}
     steps:
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
@@ -166,7 +166,7 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
-        wait-minutes: '50'
+        wait-minutes: '80'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source
