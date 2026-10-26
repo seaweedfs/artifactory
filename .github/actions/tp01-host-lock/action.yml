@@ -13,18 +13,6 @@ description: >
   frees the lock. A hosted runner is a fresh VM per job, so both are no-ops
   there.
 
-  netns-safe: a runner started inside its own network namespace has its own
-  loopback, so fixed ports cannot collide with jobs on other runners. A job
-  may skip the lock there only if it opts in with netns-safe: 'true', which is
-  for audited jobs alone: no global pkill/killall (teardown by owned PID), no
-  docker, nothing else shared outside the namespace. Every other job, and
-  every job on a runner that is not verifiably in its own namespace, takes the
-  lock as before. "Verifiably" means the job's own network namespace is the
-  one root provisioned for the runner: /proc/self/ns/net and
-  /run/netns/$TP01_NETNS must be the same namespace (device and inode); the
-  variable alone is not trusted. During a root-held isolation window (see the
-  step) an audited job also skips the lock, because root holds it.
-
 inputs:
   mode:
     description: acquire or release
@@ -36,13 +24,6 @@ inputs:
       timeout-minutes must be its hosted value + this wait.
     required: false
     default: '80'
-  netns-safe:
-    description: >
-      'true' only for an audited job (see above); it then skips the lock on a
-      runner verified to be in its own network namespace. Default 'false':
-      the lock is always taken.
-    required: false
-    default: 'false'
 
 runs:
   using: composite
@@ -53,38 +34,9 @@ runs:
       env:
         MODE: ${{ inputs.mode }}
         WAIT_MINUTES: ${{ inputs.wait-minutes }}
-        NETNS_SAFE: ${{ inputs.netns-safe }}
       run: |
         set -euo pipefail
-        own_netns() {
-          [[ "${TP01_NETNS:-}" =~ ^ghr[0-9]+$ ]] || return 1
-          local mine theirs
-          mine=$(stat -L -c '%d:%i' /proc/self/ns/net 2>/dev/null) || return 1
-          theirs=$(stat -L -c '%d:%i' "/run/netns/$TP01_NETNS" 2>/dev/null) || return 1
-          [ -n "$mine" ] && [ "$mine" = "$theirs" ]
-        }
         lock="$HOME/.tp01-host-ports.lock"
-        # Isolation window: root takes THIS flock itself and holds it for the whole window,
-        # after draining the runners, and only then writes a root-owned marker. Every job
-        # that is not netns-safe - with this action version or any older one - therefore
-        # blocks on the flock for the whole window, so no unaudited job (pkill -f weed,
-        # docker) runs beside an unlocked audited job. An audited job sees the window only
-        # if the marker is root's AND the flock is really held at that moment.
-        in_window() {
-          local f=/run/tp01-netns/window
-          [ -f "$f" ] && [ "$(stat -c %u "$f" 2>/dev/null)" = 0 ] || return 1
-          [ -e "$lock" ] && ! flock -n "$lock" true 2>/dev/null
-        }
-        if [ "$MODE" = acquire ] && [ "$NETNS_SAFE" = true ]; then
-          if own_netns; then
-            echo "tp01 host lock skipped: audited job, runner verified in network namespace ${TP01_NETNS}"
-            exit 0
-          fi
-          if in_window; then
-            echo "tp01 host lock skipped: audited job inside the isolation window (root holds the lock)"
-            exit 0
-          fi
-        fi
         held="$RUNNER_TEMP/tp01-host-lock.held"
         pidf="$RUNNER_TEMP/tp01-host-lock.pid"
         case "$MODE" in

@@ -325,9 +325,6 @@ jobs:
       with:
         mode: acquire
         wait-minutes: '80'
-        # Audited for netns: the go harness kills only the weed processes it
-        # started (cmd.Process.Kill); no Makefile pkill, no docker.
-        netns-safe: 'true'
 
     - name: Clone seaweed-mono (enterprise) source
       uses: ./.github/actions/clone-mono-source

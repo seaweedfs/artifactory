@@ -315,9 +315,6 @@ jobs:
         uses: ./.github/actions/tp01-host-lock
         with:
           mode: acquire
-          # Audited for netns: teardown signals only owned PID+start-time pairs
-          # and unmounts its own FUSE mountpoint; no pkill, no docker in this job.
-          netns-safe: 'true'
 
       - name: Clone seaweed-mono source
         uses: ./.github/actions/clone-mono-source
