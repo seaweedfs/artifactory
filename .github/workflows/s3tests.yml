@@ -146,7 +146,7 @@ jobs:
             --s3-port 8000 \
             --with-s3 \
             --s3-config "$S3_CONFIG_FILE" \
-            --volume-max 100 \
+            --volume-max 1000 \
             --volume-size-limit 100 \
             --filer-max-mb 64 \
             --no-cleanup-trap
@@ -470,6 +470,11 @@ jobs:
           go install -buildvcs=false
           set -x
           # Create clean data directory for this test run
+          # -volume.max=1000 (was 100): every bucket is a collection and its first write grows 7
+          # volumes, so 100 slots held ~14 live buckets. s3tests creates and deletes buckets
+          # continuously and the freed volumes return asynchronously; on tp01 the master ran out
+          # ("Not enough data nodes", 56 lines) and Object Lock PUTs failed with InternalError.
+          # Volumes are allocated as written, so the higher cap costs no disk.
           export WEED_DATA_DIR="/tmp/seaweedfs-objectlock-versioning-$(date +%s)"
           mkdir -p "$WEED_DATA_DIR"
 
@@ -479,7 +484,7 @@ jobs:
           weed -v 0 server -filer -filer.maxMB=64 -s3 -ip.bind 0.0.0.0 \
             -dir="$WEED_DATA_DIR" \
             -master.raftHashicorp -master.electionTimeout 1s -master.volumeSizeLimitMB=100 \
-            -volume.max=100 -volume.preStopSeconds=1 \
+            -volume.max=1000 -volume.preStopSeconds=1 \
             -master.port=9334 -volume.port=8081 -filer.port=8889 -s3.port=8001 -metricsPort=9325 \
             -s3.allowDeleteBucketNotEmpty=true -s3.config="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3.json" -master.peers=none &
           pid=$!
