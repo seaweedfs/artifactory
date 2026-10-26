@@ -143,3 +143,72 @@ jobs:
             weed-volume-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Native RC + mlx5 DC and the KV slab are opt-in assets. Keep the existing
+  # normal/large-disk downloads and their ARM64 builds unchanged.
+  build-rust-rdma-enterprise-linux-amd64:
+    needs: [verify-version]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone seaweed-mono (enterprise) source
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          .github/scripts/git-retry.sh clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          cd seaweedfs-enterprise-source
+          echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
+          git rev-parse HEAD > ../source-commit.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install RDMA build dependencies
+        run: |
+          .github/scripts/apt-retry.sh update
+          .github/scripts/apt-retry.sh install -y build-essential pkg-config clang libclang-dev libibverbs-dev librdmacm-dev libssl-dev
+
+      - name: Build RDMA volume server (large disk and KV slab)
+        env:
+          SEAWEEDFS_COMMIT: ${{ env.COMMIT_SHA }}
+        run: |
+          cd seaweedfs-enterprise-source/enterprise/seaweed-volume
+          cargo build --locked --release --target x86_64-unknown-linux-gnu --features rdma,rdma-dc,kvcache --bin weed-volume --target-dir target/rdma
+
+      - name: Build S3 RDMA object service
+        run: |
+          cd seaweedfs-enterprise-source/enterprise/rust
+          cargo build --locked --release --target x86_64-unknown-linux-gnu -p seaweedfs-sw-rdma-object --features mlx5-dc --bin sw-rdma-object-service --target-dir target/rdma
+
+      - name: Package RDMA assets
+        run: |
+          mkdir -p rdma-volume rdma-object
+          cp seaweedfs-enterprise-source/enterprise/seaweed-volume/target/rdma/x86_64-unknown-linux-gnu/release/weed-volume rdma-volume/
+          cp seaweedfs-enterprise-source/enterprise/rust/target/rdma/x86_64-unknown-linux-gnu/release/sw-rdma-object-service rdma-object/
+          cp source-commit.txt rdma-volume/
+          cp source-commit.txt rdma-object/
+          cp docs/rdma-release-linux-amd64.md rdma-volume/README.md
+          cp docs/rdma-release-linux-amd64.md rdma-object/README.md
+          tar czf weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz -C rdma-volume .
+          tar czf sw-rdma-object-service-enterprise_linux_amd64.tar.gz -C rdma-object .
+          for f in weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz sw-rdma-object-service-enterprise_linux_amd64.tar.gz; do
+            md5sum "$f" > "$f.md5"
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Upload RDMA release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz*
+            sw-rdma-object-service-enterprise_linux_amd64.tar.gz*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
