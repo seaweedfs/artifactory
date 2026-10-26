@@ -13,6 +13,14 @@ description: >
   frees the lock. A hosted runner is a fresh VM per job, so both are no-ops
   there.
 
+  A runner started inside its own network namespace (the unit sets TP01_NETNS)
+  has its own loopback, so fixed ports cannot collide with jobs on other
+  runners and acquire skips the lock there. The namespace is checked, not
+  trusted from the variable: the default route must leave through the
+  namespace's veth and no other link may be visible; otherwise the lock is
+  taken as before. A job whose ports or containers live on the host anyway
+  (docker compose publishing ports) passes skip-in-netns: 'false'.
+
 inputs:
   mode:
     description: acquire or release
@@ -24,6 +32,12 @@ inputs:
       timeout-minutes must be its hosted value + this wait.
     required: false
     default: '80'
+  skip-in-netns:
+    description: >
+      'true' skips the lock on a runner verified to be in its own network
+      namespace. 'false' for jobs that publish ports on the host network.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -34,8 +48,18 @@ runs:
       env:
         MODE: ${{ inputs.mode }}
         WAIT_MINUTES: ${{ inputs.wait-minutes }}
+        SKIP_IN_NETNS: ${{ inputs.skip-in-netns }}
       run: |
         set -euo pipefail
+        own_netns() {
+          [ -n "${TP01_NETNS:-}" ] || return 1
+          ip route show default 2>/dev/null | grep -q " dev ${TP01_NETNS}-in " || return 1
+          ! ip -o link show 2>/dev/null | grep -qvE "^[0-9]+: (lo|${TP01_NETNS}-in)[@:]"
+        }
+        if [ "$MODE" = acquire ] && [ "$SKIP_IN_NETNS" = true ] && own_netns; then
+          echo "tp01 host lock skipped: runner is in its own network namespace (${TP01_NETNS})"
+          exit 0
+        fi
         lock="$HOME/.tp01-host-ports.lock"
         held="$RUNNER_TEMP/tp01-host-lock.held"
         pidf="$RUNNER_TEMP/tp01-host-lock.pid"

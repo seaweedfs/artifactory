@@ -69,6 +69,9 @@ jobs:
       uses: ./.github/actions/tp01-host-lock
       with:
         mode: acquire
+        # docker compose publishes this suite's ports on the host network and
+        # uses a fixed project name, so a network namespace does not isolate it.
+        skip-in-netns: 'false'
 
     - name: Link to seaweed-mono source
       if: github.event_name == 'repository_dispatch'
