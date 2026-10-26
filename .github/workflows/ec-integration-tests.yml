@@ -34,6 +34,10 @@ on:
         required: false
         type: boolean
         default: false
+      only_job:
+        description: 'Run only this job id (measurement runs); empty runs every job'
+        required: false
+        default: ''
 
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
@@ -46,6 +50,7 @@ permissions:
 
 jobs:
   ec-integration-tests:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'ec-integration-tests' }}
     name: EC Integration Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 155 || 75 }}
@@ -176,6 +181,7 @@ jobs:
   # End-to-end test for custom EC ratio support (Enterprise feature)
   # Regression test for https://github.com/seaweedfs/seaweedfs/issues/8936
   ec-custom-ratio-tests:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'ec-custom-ratio-tests' }}
     name: EC Custom Ratio Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 125 || 45 }}
@@ -286,6 +292,7 @@ jobs:
 
   # Regression test job
   ec-regression-tests:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'ec-regression-tests' }}
     name: EC Regression Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
@@ -365,6 +372,7 @@ jobs:
   #   - vacuum-to-empty (2 -> 3): empty new generation triggers the
   #     TeardownEmptyVolume callback cluster-wide.
   ec-vacuum-2pc-tests:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'ec-vacuum-2pc-tests' }}
     name: EC Vacuum 2PC Switch Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
@@ -463,6 +471,7 @@ jobs:
   # yet every restart test in the tree runs Go holders only. Master,
   # filer, admin and workers stay Go — they are the orchestrators.
   ec-vacuum-2pc-rust-tests:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'ec-vacuum-2pc-rust-tests' }}
     name: EC Vacuum 2PC Switch Tests (Rust volumes)
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     # A cold cargo cache means a full release build of the crate before the
@@ -551,6 +560,7 @@ jobs:
   # cooperative termination fires there and nothing they assert is true
   # before it — which would push the main EC integration job over budget.
   ec-2pc-interruption-tests:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'ec-2pc-interruption-tests' }}
     name: EC 2PC Interruption Tests
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 150 || 70 }}

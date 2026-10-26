@@ -36,6 +36,10 @@ on:
         required: false
         type: boolean
         default: false
+      only_job:
+        description: 'Run only this job id (measurement runs); empty runs every job'
+        required: false
+        default: ''
 
   # Nightly against main — catches distro kernel bumps that break the shipped
   # module source even when nothing in seaweed-mono changed (the reported issue:
@@ -56,6 +60,7 @@ permissions:
 jobs:
   # Build the Rust workspace (sw-client, sw-fuse, sw-kd) and run unit tests.
   rust:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'rust' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -119,6 +124,7 @@ jobs:
         with:
           mode: release
   kernel:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'kernel' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -178,6 +184,7 @@ jobs:
         with:
           mode: release
   dkms-package:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'dkms-package' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -267,6 +274,7 @@ jobs:
         with:
           mode: release
   fuse-smoke:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'fuse-smoke' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -442,6 +450,7 @@ jobs:
         with:
           mode: release
   pjdfstest:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'pjdfstest' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
