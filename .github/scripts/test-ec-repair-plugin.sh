@@ -3,7 +3,8 @@
 # EC Repair Plugin Worker Integration Test
 #
 # Tests the ec_repair plugin worker end-to-end:
-# 1. Start weed mini (master + filer + volume + admin) + 13 standalone volume servers
+# 1. Start weed server (master + filer + volume), weed admin, a plugin worker
+#    (erasure_coding + ec_repair) and 13 standalone volume servers
 # 2. Upload data, then EC-encode via the erasure_coding plugin worker
 # 3. Simulate shard loss by stopping a volume server and deleting shard files
 # 4. Trigger ec_repair detection + execution via admin plugin API
@@ -16,7 +17,7 @@ DATA_DIR="${WEED_DATA_DIR:-$(mktemp -d /tmp/ec-repair-test.XXXXXXXXXX)}"
 MASTER_IP="127.0.0.1"
 MASTER_PORT=9333
 VOLUME_PORT_START=9340
-ADMIN_PORT=0
+ADMIN_PORT=12646
 # 1 mini volume + 13 extras = 14 disks, the minimum for default EC 10+4 after
 # #9369 (planner now treats each (server, disk_id) pair as a distinct target).
 NUM_EXTRA_VOLUMES=13
@@ -101,41 +102,50 @@ put_job_config() {
 # ── Setup ──────────────────────────────────────────────────────────────
 
 info "Creating data directories"
-mkdir -p "${DATA_DIR}/mini"
+mkdir -p "${DATA_DIR}/server" "${DATA_DIR}/admin" "${DATA_DIR}/worker"
 for i in $(seq 1 $NUM_EXTRA_VOLUMES); do
     mkdir -p "${DATA_DIR}/vol${i}"
 done
 
-info "Starting weed mini"
-$WEED_BINARY mini \
-    -dir="${DATA_DIR}/mini" \
+# weed mini cannot be used here: a single-master mini pins its embedded volume
+# server as the only admitted reporter and rejects every other volume server's
+# heartbeat ("this master admits a single volume-server reporter", upstream
+# seaweedfs #12061). The test needs 14 volume servers on one master, so it runs
+# the components standalone: weed server (master + volume + filer), weed admin
+# and one plugin worker for the EC job types under test.
+info "Starting weed server (master + volume + filer)"
+$WEED_BINARY server \
+    -dir="${DATA_DIR}/server" \
+    -master.port=$MASTER_PORT \
     -master.volumeSizeLimitMB=$VOLUME_SIZE_LIMIT_MB \
     -volume.port=$VOLUME_PORT_START \
-    -s3=false -webdav=false -admin.ui=true \
+    -filer \
     -ip=$MASTER_IP -ip.bind=0.0.0.0 \
-    > "${DATA_DIR}/mini.log" 2>&1 &
-echo $! > "${DATA_DIR}/mini.pid"
+    > "${DATA_DIR}/server.log" 2>&1 &
+echo $! > "${DATA_DIR}/server.pid"
 
 wait_for_http "Master" "http://${MASTER_IP}:${MASTER_PORT}/cluster/status" 30
 
-# Detect admin port from logs. The mini welcome banner prints a line like
-# "    Admin UI:        http://127.0.0.1:12535" once all components are ready.
-for attempt in $(seq 1 20); do
-    ADMIN_PORT=$(grep -o "Admin UI:[[:space:]]*http://[^:]*:[0-9]*" "${DATA_DIR}/mini.log" | grep -o '[0-9]*$' | head -1 || true)
-    if [ -n "$ADMIN_PORT" ]; then
-        break
-    fi
-    sleep 1
-done
+info "Starting weed admin on port $ADMIN_PORT"
+$WEED_BINARY admin \
+    -master="${MASTER_IP}:${MASTER_PORT}" \
+    -port=$ADMIN_PORT -port.legacy=0 \
+    -dataDir="${DATA_DIR}/admin" \
+    > "${DATA_DIR}/admin.log" 2>&1 &
+echo $! > "${DATA_DIR}/admin.pid"
 
-if [ -z "$ADMIN_PORT" ] || [ "$ADMIN_PORT" = "0" ]; then
-    fail "Could not detect admin port from mini logs"
-    cat "${DATA_DIR}/mini.log"
-    exit 1
-fi
-
-wait_for_http "Admin" "http://${MASTER_IP}:${ADMIN_PORT}/health" 15
+wait_for_http "Admin" "http://${MASTER_IP}:${ADMIN_PORT}/health" 30
 info "Admin server ready on port $ADMIN_PORT"
+
+# -jobType=erasure_coding also builds the ec_repair handler (with the other
+# EC lifecycle handlers); ec_repair is not a separately selectable name.
+info "Starting the plugin worker (erasure_coding, which brings ec_repair)"
+$WEED_BINARY worker \
+    -admin="${MASTER_IP}:${ADMIN_PORT}" \
+    -jobType=erasure_coding \
+    -workingDir="${DATA_DIR}/worker" \
+    > "${DATA_DIR}/worker.log" 2>&1 &
+echo $! > "${DATA_DIR}/worker.pid"
 
 # Wait for plugin workers to register (need both erasure_coding and ec_repair)
 for attempt in $(seq 1 30); do
