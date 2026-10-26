@@ -403,20 +403,23 @@ jobs:
             fusermount3 -u "$RUNNER_TEMP/mnt" 2>/dev/null || fusermount3 -uz "$RUNNER_TEMP/mnt" 2>/dev/null || true
           fi
           rc=0
-          # A killed orphan can linger as a zombie for a moment; that is not alive.
-          alive() { [ -e "/proc/$1" ] && [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]; }
+          # owned PID START: the process is alive (a zombie is not) AND is still the one
+          # this job started (same start time). Checked before EVERY signal, so a PID
+          # reused after our process exited is never signalled.
+          owned() { local st; st=$(awk '{print $3, $22}' "/proc/$1/stat" 2>/dev/null) || return 1
+                    [ -n "$st" ] && [ "${st%% *}" != Z ] && [ "${st#* }" = "$2" ]; }
           for name in sw-fuse weed-server; do
             pidf="$RUNNER_TEMP/$name.pid"
             [ -s "$pidf" ] || { echo "$name: not started by this job"; continue; }
-            pid=$(cat "$pidf")
-            if [ "$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" != "$(cat "$pidf.start" 2>/dev/null)" ]; then
+            pid=$(cat "$pidf"); start=$(cat "$pidf.start" 2>/dev/null)
+            if ! owned "$pid" "$start"; then
               echo "$name: pid $pid already exited"; rm -f "$pidf" "$pidf.start"; continue
             fi
-            kill "$pid" 2>/dev/null || true
-            for _ in $(seq 1 60); do alive "$pid" || break; sleep 0.5; done
-            if alive "$pid"; then kill -KILL "$pid" 2>/dev/null || true; fi
-            for _ in $(seq 1 20); do alive "$pid" || break; sleep 0.5; done
-            if alive "$pid"; then
+            if owned "$pid" "$start"; then kill "$pid" 2>/dev/null || true; fi
+            for _ in $(seq 1 60); do owned "$pid" "$start" || break; sleep 0.5; done
+            if owned "$pid" "$start"; then kill -KILL "$pid" 2>/dev/null || true; fi
+            for _ in $(seq 1 20); do owned "$pid" "$start" || break; sleep 0.5; done
+            if owned "$pid" "$start"; then
               echo "::error::$name pid $pid is still alive; leaving the host lock to job-end cleanup"; rc=1
             else
               echo "$name: pid $pid stopped"; rm -f "$pidf" "$pidf.start"
