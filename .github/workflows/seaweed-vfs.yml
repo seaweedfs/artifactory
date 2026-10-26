@@ -65,7 +65,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'rust', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 70 || 25 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 105 || 25 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -128,7 +128,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'kernel', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -187,7 +187,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'dkms-package', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 70 || 25 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 105 || 25 }}
     # rawhide is a non-blocking canary; the fixed-kernel entries are required.
     continue-on-error: ${{ matrix.optional || false }}
     strategy:
@@ -276,7 +276,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'fuse-smoke', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 70 || 25 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 105 || 25 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -342,6 +342,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sw"
           weed server -dir="$RUNNER_TEMP/sw" -filer -ip=127.0.0.1 \
             -master.volumeSizeLimitMB=128 > "$RUNNER_TEMP/weed.log" 2>&1 &
+          # Record the owned process (pid + start time) for the always-run teardown.
+          echo $! > "$RUNNER_TEMP/weed-server.pid"
+          awk '{print $22}' "/proc/$!/stat" > "$RUNNER_TEMP/weed-server.pid.start"
           echo "waiting for filer..."
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:8888/ >/dev/null 2>&1 && break
@@ -360,6 +363,8 @@ jobs:
           SEAWEED_DISABLE_ENTERPRISE_MODE=1 RUST_LOG=info ./target/debug/sw-fuse "$RUNNER_TEMP/mnt" --filer 127.0.0.1:18888 \
             > "$RUNNER_TEMP/swvfs.log" 2>&1 &
           SW=$!
+          echo "$SW" > "$RUNNER_TEMP/sw-fuse.pid"
+          awk '{print $22}' "/proc/$SW/stat" > "$RUNNER_TEMP/sw-fuse.pid.start"
           sleep 3
           mount | grep -q "seaweedfs on $RUNNER_TEMP/mnt"
           # small file round-trip
@@ -383,6 +388,42 @@ jobs:
           echo "=== weed.log ==="; tail -100 "$RUNNER_TEMP/weed.log" 2>/dev/null || true
           echo "=== swvfs.log ==="; tail -100 "$RUNNER_TEMP/swvfs.log" 2>/dev/null || true
 
+      # The weed server started above is a background process that outlives its
+      # step and holds 9333/8888/18888. Releasing the host lock while it runs lets
+      # the next job collide with it, so stop it (and sw-fuse) first, on success
+      # and failure alike. Only this job's own processes, identified by pid AND
+      # start time, are touched. If one cannot be stopped, the lock is not
+      # released here; the runner's job-end cleanup then ends both together.
+      - name: Stop the owned SeaweedFS server and sw-fuse mount
+        id: fuse-smoke-teardown
+        if: always()
+        run: |
+          set -u
+          if mountpoint -q "$RUNNER_TEMP/mnt" 2>/dev/null; then
+            fusermount3 -u "$RUNNER_TEMP/mnt" 2>/dev/null || fusermount3 -uz "$RUNNER_TEMP/mnt" 2>/dev/null || true
+          fi
+          rc=0
+          # A killed orphan can linger as a zombie for a moment; that is not alive.
+          alive() { [ -e "/proc/$1" ] && [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]; }
+          for name in sw-fuse weed-server; do
+            pidf="$RUNNER_TEMP/$name.pid"
+            [ -s "$pidf" ] || { echo "$name: not started by this job"; continue; }
+            pid=$(cat "$pidf")
+            if [ "$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" != "$(cat "$pidf.start" 2>/dev/null)" ]; then
+              echo "$name: pid $pid already exited"; rm -f "$pidf" "$pidf.start"; continue
+            fi
+            kill "$pid" 2>/dev/null || true
+            for _ in $(seq 1 60); do alive "$pid" || break; sleep 0.5; done
+            if alive "$pid"; then kill -KILL "$pid" 2>/dev/null || true; fi
+            for _ in $(seq 1 20); do alive "$pid" || break; sleep 0.5; done
+            if alive "$pid"; then
+              echo "::error::$name pid $pid is still alive; leaving the host lock to job-end cleanup"; rc=1
+            else
+              echo "$name: pid $pid stopped"; rm -f "$pidf" "$pidf.start"
+            fi
+          done
+          exit $rc
+
   # Full pjdfstest POSIX compliance suite against an sw-fuse mount — the VFS
   # analogue of the Go mount's enterprise/test/pjdfstest. The harness starts a
   # weed mini cluster, mounts sw-fuse, builds pjdfstest, and runs it under prove;
@@ -390,7 +431,7 @@ jobs:
   # seaweed-vfs/tests/pjdfstest/known_failures.txt and skipped.
 
       - name: Release the tp01 host-port lock (self-hosted only)
-        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        if: always() && (inputs.runner || 'hosted') == 'tp01' && steps.fuse-smoke-teardown.outcome == 'success'
         uses: ./.github/actions/tp01-host-lock
         with:
           mode: release
@@ -404,7 +445,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'pjdfstest', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 85 || 40 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 120 || 40 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6

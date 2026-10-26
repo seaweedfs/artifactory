@@ -56,7 +56,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 75 || 30 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     strategy:
       matrix:
         test-type: ["quick", "comprehensive"]
@@ -212,7 +212,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-compatibility', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 70 || 25 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 105 || 25 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -348,7 +348,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-cors-compatibility', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -429,7 +429,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-retention-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 75 || 30 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     strategy:
       matrix:
         test-type: ["quick", "comprehensive"]
@@ -529,7 +529,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-lifecycle-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 55 || 10 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -633,7 +633,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-checksum-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -721,7 +721,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-cors-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 75 || 30 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     strategy:
       matrix:
         test-type: ["quick", "comprehensive"]
@@ -821,7 +821,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-retention-worm', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -903,7 +903,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-stress', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 80 || 35 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 115 || 35 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -1004,7 +1004,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-tagging-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -1092,7 +1092,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-remote-cache-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 65 || 20 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo

@@ -56,7 +56,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'basic-s3-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 60 || 15 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 95 || 15 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -407,7 +407,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'versioning-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 60 || 15 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 95 || 15 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -483,6 +483,9 @@ jobs:
             -master.port=9334 -volume.port=8081 -filer.port=8889 -s3.port=8001 -metricsPort=9325 \
             -s3.allowDeleteBucketNotEmpty=true -s3.config="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3.json" -master.peers=none &
           pid=$!
+          # Stop the server on every exit path: a failing tox exits this step before the
+          # kill at its end, and the host lock is released right after (fixed ports).
+          trap 'kill -9 "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
 
           # Wait for all SeaweedFS components to be ready
           echo "Waiting for SeaweedFS components to start..."
@@ -617,7 +620,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'cors-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 55 || 10 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 10 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -683,6 +686,9 @@ jobs:
             -master.port=9335 -volume.port=8082 -filer.port=8890 -s3.port=8002 -metricsPort=9326 \
             -s3.allowDeleteBucketNotEmpty=true -s3.config="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3.json" -master.peers=none &
           pid=$!
+          # Stop the server on every exit path: a failing tox exits this step before the
+          # kill at its end, and the host lock is released right after (fixed ports).
+          trap 'kill -9 "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
 
           # Wait for all SeaweedFS components to be ready
           echo "Waiting for SeaweedFS components to start..."
@@ -782,7 +788,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'copy-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 55 || 10 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 10 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -831,6 +837,9 @@ jobs:
             -master.port=9336 -volume.port=8083 -filer.port=8891 -s3.port=8003 -metricsPort=9327 \
             -s3.allowDeleteBucketNotEmpty=true -s3.config="$GITHUB_WORKSPACE/seaweedfs-source/enterprise/docker/compose/s3.json" -master.peers=none &
           pid=$!
+          # Stop the server on every exit path: a failing tox exits this step before the
+          # kill at its end, and the host lock is released right after (fixed ports).
+          trap 'kill -9 "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
 
           # Wait for all SeaweedFS components to be ready
           echo "Waiting for SeaweedFS components to start..."
@@ -917,7 +926,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'sql-store-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 60 || 15 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 95 || 15 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
