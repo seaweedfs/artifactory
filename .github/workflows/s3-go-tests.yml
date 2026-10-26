@@ -49,14 +49,14 @@ jobs:
     name: S3 Versioning Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     strategy:
       matrix:
         test-type: ["quick", "comprehensive"]
@@ -67,6 +67,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Link to seaweed-mono source
         if: github.event_name == 'repository_dispatch'
@@ -189,18 +195,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-versioning-compatibility:
     name: S3 Versioning Compatibility Test
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-compatibility', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-compatibility', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 25
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 105 || 25 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -208,6 +220,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Link to seaweed-mono source
         if: github.event_name == 'repository_dispatch'
@@ -313,18 +331,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-cors-compatibility:
     name: S3 CORS Compatibility Test
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-cors-compatibility', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-cors-compatibility', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -332,6 +356,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -382,18 +412,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/cors/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-retention-tests:
     name: S3 Retention Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-retention-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-retention-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     strategy:
       matrix:
         test-type: ["quick", "comprehensive"]
@@ -404,6 +440,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -470,18 +512,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/retention/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-lifecycle-tests:
     name: S3 Lifecycle Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-lifecycle-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-lifecycle-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 10
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 90 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -515,6 +563,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -562,18 +616,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/lifecycle/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-checksum-tests:
     name: S3 Checksum Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-checksum-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-checksum-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -581,6 +641,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -638,18 +704,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/checksum/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-cors-tests:
     name: S3 CORS Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-cors-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-cors-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
     strategy:
       matrix:
         test-type: ["quick", "comprehensive"]
@@ -660,6 +732,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -726,18 +804,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/cors/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-retention-worm:
     name: S3 Retention WORM Integration Test
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-retention-worm', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-retention-worm', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -745,6 +829,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -796,18 +886,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/retention/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-versioning-stress:
     name: S3 Versioning Stress Test
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-stress', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-versioning-stress', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 35
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 115 || 35 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -815,6 +911,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -884,19 +986,25 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/versioning/weed-test*.log
           retention-days: 7
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-tagging-tests:
     # CI job for S3 object tagging tests
     name: S3 Tagging Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-tagging-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-tagging-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -904,6 +1012,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -961,18 +1075,24 @@ jobs:
           path: seaweedfs-source/enterprise/test/s3/tagging/weed-test*.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-remote-cache-tests:
     name: S3 Remote Cache Tests
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-remote-cache-tests', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-remote-cache-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -980,6 +1100,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -1037,15 +1163,21 @@ jobs:
             seaweedfs-source/enterprise/test/s3/remote_cache/remote-weed.log
           retention-days: 3
 
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
+
   s3-test-summary:
     name: S3 Test Summary
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
-    # across every suite takes the same single repository-wide slot. A hosted
-    # runner is a fresh VM per job, so it gets a key unique to this job and
-    # matrix leg and never waits.
+    # across every suite waits on one host flock (tp01-host-lock action; a GitHub
+    # group would cancel all but one pending job). A hosted runner is a fresh VM
+    # per job, so it gets a group key unique to this job and matrix leg.
     concurrency:
-      group: ${{ (inputs.runner || 'hosted') == 'tp01' && 'tp01-host-ports' || format('hosted-{0}-{1}-{2}', github.run_id, 's3-test-summary', strategy.job-index) }}
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-test-summary', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
     needs:
