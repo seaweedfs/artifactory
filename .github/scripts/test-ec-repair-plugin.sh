@@ -17,7 +17,9 @@ DATA_DIR="${WEED_DATA_DIR:-$(mktemp -d /tmp/ec-repair-test.XXXXXXXXXX)}"
 MASTER_IP="127.0.0.1"
 MASTER_PORT=9333
 VOLUME_PORT_START=9340
-ADMIN_PORT=12646
+# Chosen at startup (a free pair: HTTP port and its gRPC port + 10000); the
+# override exists only for the occupied-port control.
+ADMIN_PORT="${EC_REPAIR_ADMIN_PORT:-}"
 # 1 mini volume + 13 extras = 14 disks, the minimum for default EC 10+4 after
 # #9369 (planner now treats each (server, disk_id) pair as a distinct target).
 NUM_EXTRA_VOLUMES=13
@@ -126,6 +128,25 @@ echo $! > "${DATA_DIR}/server.pid"
 
 wait_for_http "Master" "http://${MASTER_IP}:${MASTER_PORT}/cluster/status" 30
 
+# Never assume a fixed host port is free: pick an HTTP port whose gRPC port
+# (+10000, used by the worker) is free as well.
+if [ -z "$ADMIN_PORT" ]; then
+    ADMIN_PORT=$(python3 -c '
+import socket
+for _ in range(200):
+    a = socket.socket(); a.bind(("0.0.0.0", 0)); p = a.getsockname()[1]
+    if p + 10000 > 65535:
+        a.close(); continue
+    b = socket.socket()
+    try:
+        b.bind(("0.0.0.0", p + 10000))
+    except OSError:
+        a.close(); continue
+    a.close(); b.close(); print(p); break
+')
+    [ -n "$ADMIN_PORT" ] || { fail "Could not find a free admin port pair"; exit 1; }
+fi
+
 info "Starting weed admin on port $ADMIN_PORT"
 $WEED_BINARY admin \
     -master="${MASTER_IP}:${MASTER_PORT}" \
@@ -135,6 +156,24 @@ $WEED_BINARY admin \
 echo $! > "${DATA_DIR}/admin.pid"
 
 wait_for_http "Admin" "http://${MASTER_IP}:${ADMIN_PORT}/health" 30
+# A healthy answer is not proof it is OUR admin: if the port was taken, the
+# launched admin exits and a foreign one answers. Accept readiness only when the
+# launched PID is alive and owns both listeners; otherwise stop before any
+# worker registration, config or run call reaches the other process.
+ADMIN_PID=$(cat "${DATA_DIR}/admin.pid")
+admin_owns() {
+    kill -0 "$ADMIN_PID" 2>/dev/null &&
+        ss -ltnpH "( sport = :$1 )" 2>/dev/null | grep -q "pid=${ADMIN_PID},"
+}
+ADMIN_GRPC_PORT=$((ADMIN_PORT + 10000))
+for i in $(seq 1 10); do
+    if admin_owns "$ADMIN_PORT" && admin_owns "$ADMIN_GRPC_PORT"; then break; fi
+    sleep 1
+done
+if ! admin_owns "$ADMIN_PORT" || ! admin_owns "$ADMIN_GRPC_PORT"; then
+    fail "Admin ports $ADMIN_PORT/$ADMIN_GRPC_PORT are not owned by the launched admin (pid $ADMIN_PID): occupied or bind failed"
+    exit 1
+fi
 info "Admin server ready on port $ADMIN_PORT"
 
 # -jobType=erasure_coding also builds the ec_repair handler (with the other
