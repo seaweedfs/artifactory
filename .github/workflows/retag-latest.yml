@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           version="${{ inputs.version }}"
           for image in chrislusf/seaweedfs-enterprise ghcr.io/seaweedfs/seaweedfs-enterprise; do
-            for suffix in "" _full _large_disk _large_disk_full _large_disk_rocksdb _large_disk_rocksdb_9_3 _large_disk_foundationdb; do
+            for suffix in "" _full _large_disk _large_disk_full _large_disk_rocksdb _large_disk_rocksdb_9_3 _foundationdb _large_disk_foundationdb; do
               src="$image:$version$suffix"
               if docker buildx imagetools inspect "$src" >/dev/null 2>&1; then
                 docker buildx imagetools create -t "$image:latest$suffix" "$src"
