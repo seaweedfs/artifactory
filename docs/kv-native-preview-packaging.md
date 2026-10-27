@@ -7,13 +7,27 @@ builds with `mlx5-dc`, but only **RC** is supported for this preview. Compiled D
 is unsupported and not a documented runtime path. There is no NIXL/cuObject
 connector path in this preview; EFA is not enabled.
 
-Current draft build: CPython 3.12, Linux x86_64, Ubuntu 24.04.
-**Publishing is blocked pending the requested manylinux glibc baseline and
-library-repair proof.** No manylinux tag is applied to the current Linux wheel. It needs compatible glibc/libstdc++ plus rdma-core runtime
-libraries and mlx5 providers (Ubuntu: libibverbs1, librdmacm1t64,
-ibverbs-providers). RDMA use also requires appropriate NICs, drivers/device
-access, network configuration and sufficient memlock. Build/import checks do
-not qualify the LMCache runtime, throughput, or hardware transfers.
+This preview is CPython 3.12, Linux x86_64, built on Ubuntu 24.04 / glibc 2.39.
+It is distributed as a GitHub release asset, **not PyPI**, and remains honestly
+tagged `linux_x86_64`. Manylinux repair and an older glibc floor are GA follow-up
+work, outside this preview.
+
+Install on glibc **>=2.39 / Ubuntu 24.04-class** systems. The host must provide
+rdma-core **>= the build version** (the measured builder uses upstream 50.0),
+including `libibverbs.so.1`, `librdmacm.so.1` and `libmlx5.so.1`. On Ubuntu these
+come from `libibverbs1`, `librdmacm1t64` and `ibverbs-providers`. BUILD_INFO records
+the builder's exact package versions as the package minimums. These libraries
+and provider drivers are never bundled: use a consistent host installation.
+
+**Current draft dependency gate:** only the RDMA trio and glibc are permitted
+externally. The first measured binaries also need libstdc++, libgcc_s and
+OpenSSL 3, so the new literal gate refuses them. Publication remains blocked on
+the owner disposition of those additional dependencies; they are not silently
+whitelisted. No final artifact is claimed under that stricter gate yet.
+
+RDMA use also requires appropriate NICs, drivers/device access, network
+configuration and sufficient memlock. Build/import checks do not qualify the
+LMCache runtime, throughput, or hardware transfers.
 
 LMCache runtime is pinned to **0.5.6**, and native headers to release tag v0.5.6,
 commit `3e11e10812b448142c6cdb177a3058652bd826fa` (not `f2b65521`). The

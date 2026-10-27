@@ -38,8 +38,15 @@ The copied wheels were bundled offline on the evidence share with the same
 member layout as the workflow tar step (the native build/import verification
 ran on M02). This is not a second host build or a released asset.
 
-**Limits:** native wheel platform is linux_x86_64, not manylinux. Publishing
-remains blocked on the requested manylinux baseline and repair/bundling proof.
+**Current scope:** decision `6ae03830` accepts linux_x86_64 / Ubuntu24.04 / glibc
+>=2.39 release assets, not PyPI; manylinux is deferred to GA. RDMA libraries must
+remain system-provided at >=the builder's version. The original build proof
+above is unchanged. A new strict DT_NEEDED check now refuses these same ELF
+files: beyond bundled objects, glibc and the RDMA trio, they need libstdc++.so.6,
+libgcc_s.so.1, libssl.so.3 and libcrypto.so.3. Exact offline ELF observations are
+in `build-proof/dt-needed-observed.json`. Publication is blocked pending the
+owner's dependency disposition and proof of the final prerequisite metadata;
+no claim that the new stricter verifier passed on these binaries is made.
 Only RC is supported in this preview; DC is compiled but unsupported. The
 vLLM0.32.0/LMCache0.5.6/torch2.13.0/CUDA13 runtime matrix remains UNVERIFIED
 pending the correctness rerun; LMCache/vLLM/GPU runtime was not installed or run.

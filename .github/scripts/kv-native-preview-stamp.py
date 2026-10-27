@@ -3,6 +3,7 @@
 import importlib.metadata
 import json
 import pathlib
+import platform
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,16 @@ def stamp(mono, lmcache, out):
         if version != expected:
             raise ValueError(f"{name}=={version}, expected {expected}")
         tools[name] = version
+    packages = {name: subprocess.check_output(
+        ["dpkg-query", "-W", "-f=${Version}", name], text=True).strip()
+        for name in ("libibverbs1", "librdmacm1t64", "ibverbs-providers")}
+    if any(not version for version in packages.values()):
+        raise ValueError("missing system rdma-core package version")
+    upstream = {version.split(":")[-1].split("-")[0] for version in packages.values()}
+    if len(upstream) != 1:
+        raise ValueError("rdma-core packages disagree on upstream version")
+    if platform.libc_ver() != ("glibc", "2.39"):
+        raise ValueError("preview builder must match Ubuntu24.04 glibc 2.39 floor")
     info = {
         "schema": "seaweedkv-wheel-build-info/v1",
         "mono_commit": subprocess.check_output(["git", "-C", str(mono), "rev-parse", "HEAD"], text=True).strip(),
@@ -33,6 +44,14 @@ def stamp(mono, lmcache, out):
         "runtime": {"lmcache": pins["lmcache_runtime"], **pins["runtime"]},
         "supported_transport": "rc",
         "runtime_validation": pins["runtime_validation"],
+        "system_prerequisites": {
+            "platform": "Ubuntu 24.04-class Linux x86_64",
+            "glibc_min": "2.39",
+            "rdma_core_min": upstream.pop(),
+            "ubuntu_packages_min": packages,
+            "external_rdma_libraries": ["libibverbs.so.1", "librdmacm.so.1", "libmlx5.so.1"],
+            "rdma_bundling": "forbidden; use the host rdma-core/provider installation",
+        },
     }
     encoded = json.dumps(info, indent=2) + "\n"
     for wheel in sorted((out / "wheels").glob("*.whl")):

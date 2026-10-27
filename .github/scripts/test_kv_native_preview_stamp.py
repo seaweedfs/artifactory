@@ -33,12 +33,15 @@ class StampTest(unittest.TestCase):
             def output(argv, **kwargs):
                 if argv[0] == "git":
                     return ("mono-fixture" if argv[2] == "mono" else PINS["lmcache_commit"]) + "\n"
+                if argv[0] == "dpkg-query":
+                    return "50.0-2ubuntu0.2"
                 if argv[0] == "gcc":
                     return PINS["gcc"] + "\n"
                 return argv[0] + " " + PINS["rust" if argv[0] == "rustc" else argv[0]] + " fixture\n"
 
             with mock.patch.object(stamp.importlib.metadata, "version", side_effect=lambda n: PINS[n]), \
-                 mock.patch.object(stamp.subprocess, "check_output", side_effect=output):
+                 mock.patch.object(stamp.subprocess, "check_output", side_effect=output), \
+                 mock.patch.object(stamp.platform, "libc_ver", return_value=("glibc", "2.39")):
                 stamp.stamp(pathlib.Path("mono"), pathlib.Path("lmcache"), out)
             expected = (out / "BUILD_INFO").read_bytes()
             for wheel in wheels.iterdir():
@@ -53,8 +56,17 @@ class StampTest(unittest.TestCase):
             self.assertEqual(info["lmcache_headers_commit"], PINS["lmcache_commit"])
             self.assertEqual(info["supported_transport"], "rc")
             self.assertIn("UNVERIFIED", info["runtime_validation"])
+            self.assertEqual(info["system_prerequisites"]["glibc_min"], "2.39")
+            self.assertEqual(info["system_prerequisites"]["rdma_core_min"], "50.0")
+            self.assertEqual(len(info["system_prerequisites"]["ubuntu_packages_min"]), 3)
             for name in ("setuptools", "wheel", "pybind11", "cmake", "rustc", "cargo", "gcc"):
                 self.assertTrue(info["build_tools"][name].startswith(name + "=="))
+            for libc in [("glibc", "2.38"), ("glibc", "2.40"), ("", "")]:
+                with mock.patch.object(stamp.importlib.metadata, "version", side_effect=lambda n: PINS[n]), \
+                     mock.patch.object(stamp.subprocess, "check_output", side_effect=output), \
+                     mock.patch.object(stamp.platform, "libc_ver", return_value=libc):
+                    with self.assertRaisesRegex(ValueError, "glibc 2.39 floor"):
+                        stamp.stamp(pathlib.Path("mono"), pathlib.Path("lmcache"), out)
             # A wrong tool pin refuses before any wheel is rewritten.
             unchanged = {p.name: p.read_bytes() for p in wheels.iterdir()}
             with mock.patch.object(stamp.importlib.metadata, "version", return_value="wrong"):

@@ -21,5 +21,10 @@
   "supported_transport": "rc",
   "runtime_validation": "UNVERIFIED pending planned correctness rerun",
   "cargo": "1.93.0",
-  "gcc": "13.3.0"
+  "gcc": "13.3.0",
+  "distribution": "github-release-asset",
+  "platform_tag": "linux_x86_64",
+  "builder": "ubuntu-24.04",
+  "glibc_min": "2.39",
+  "rdma_library_policy": "system-only; never bundle rdma-core/providers"
 }
