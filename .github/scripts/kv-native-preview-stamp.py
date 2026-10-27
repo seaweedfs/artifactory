@@ -36,6 +36,9 @@ def stamp(mono, lmcache, out):
         raise ValueError("preview builder must match Ubuntu24.04 glibc 2.39 floor")
     info = {
         "schema": "seaweedkv-wheel-build-info/v1",
+        "status": "PREVIEW",
+        "platform_tag": "linux_x86_64",
+        "distribution": "GitHub release asset only; not PyPI",
         "mono_commit": subprocess.check_output(["git", "-C", str(mono), "rev-parse", "HEAD"], text=True).strip(),
         "lmcache_headers_commit": subprocess.check_output(["git", "-C", str(lmcache), "rev-parse", "HEAD"], text=True).strip(),
         "python": sys.version,

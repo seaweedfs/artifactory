@@ -27,10 +27,16 @@ def check_needed(observed, bundled):
         if any(name.startswith(prefix) for prefix in ("libibverbs", "librdmacm", "libmlx5", "libstdc++", "libgcc_s", "libssl", "libcrypto")):
             raise ValueError("library must remain system-provided: " + name)
     unexpected = {name for needed in observed.values() for name in needed
-                  if name not in RDMA_SYSTEM | GLIBC_SYSTEM | RUNTIME_SYSTEM | set(bundled)}
+                  if name not in RDMA_SYSTEM | GLIBC_SYSTEM | RUNTIME_SYSTEM | {"libseaweedfs_sw_rdma_nixl.so"}}
     if unexpected:
         raise ValueError("unexpected external DT_NEEDED: " + ", ".join(sorted(unexpected)))
     return observed
+
+
+def check_wheel_libraries(archive):
+    libraries = {pathlib.PurePosixPath(n).name for n in archive.namelist()
+                 if ".so" in pathlib.PurePosixPath(n).name}
+    check_needed({}, libraries)
 
 
 def read_needed(path):
@@ -44,26 +50,70 @@ def read_needed(path):
     return needed
 
 
+def resolve_dependencies(path, direct):
+    import re
+    text = subprocess.check_output(["ldd", str(path)], text=True, stderr=subprocess.STDOUT)
+    if "not found" in text or not text.strip():
+        raise ValueError("unresolved dependency: " + str(path))
+    # All direct names must have a resolved row. Transitive system rows are
+    # recorded verbatim, not subjected to the DIRECT SONAME allowlist.
+    names = {line.strip().split()[0] for line in text.splitlines() if line.strip()}
+    if any(name not in names and not any(n.endswith("/" + name) for n in names) for name in direct):
+        raise ValueError("missing direct resolution: " + str(path))
+    if not re.search(r"(?:=> /|^\s*/)", text, re.MULTILINE):
+        raise ValueError("missing resolved paths: " + str(path))
+    return text
+
+
+def validate_info(info):
+    required = {"status": "PREVIEW", "platform_tag": "linux_x86_64",
+                "distribution": "GitHub release asset only; not PyPI",
+                "supported_transport": "rc"}
+    if any(info.get(k) != v for k, v in required.items()):
+        raise ValueError("missing/changed preview policy")
+    if info.get("runtime_validation") != "UNVERIFIED pending planned correctness rerun":
+        raise ValueError("missing/changed UNVERIFIED runtime status")
+    prereq = info.get("system_prerequisites", {})
+    if (not isinstance(prereq, dict) or prereq.get("glibc_min") != "2.39" or not prereq.get("rdma_core_min")
+        or prereq.get("platform") != "Ubuntu 24.04-class Linux x86_64"
+        or not {"libstdc++6", "libgcc-s1", "libssl3t64", "libc6"}.issubset(prereq.get("ubuntu_packages_required", []))
+        or not all(prereq.get("ubuntu_packages_min", {}).get(n) for n in ("libibverbs1", "librdmacm1t64", "ibverbs-providers"))):
+        raise ValueError("missing/changed system prerequisites")
+
+
 def verify(mono, lmcache, out):
+    # Locate installed files without importing either package: inspect before load.
+    prefix = pathlib.Path(sys.prefix).resolve()
+    dist = importlib.metadata.distribution("seaweedkv-native")
+    files = [pathlib.Path(dist.locate_file(f)).resolve() for f in dist.files]
+    provider, = [p for p in files if p.name == "libseaweedfs_sw_rdma_nixl.so"]
+    extension, = [p for p in files if p.name.startswith("_native.") and p.suffix == ".so"]
+    assert provider.is_relative_to(prefix) and extension.is_relative_to(prefix)
+    wheels = sorted((out/"wheels").glob("*.whl"))
+    assert len(wheels) == 2
+    for wheel in wheels:
+        with zipfile.ZipFile(wheel) as archive:
+            check_wheel_libraries(archive)
+    observed = {p.name: read_needed(p) for p in (provider, extension)}
+    (out/"dt-needed.json").write_text(json.dumps(observed, indent=2)+"\n")
+    check_needed(observed, {provider.name, extension.name})
+    resolved = {p.name: resolve_dependencies(p, observed[p.name]) for p in (provider, extension)}
+    (out/"resolved-dependencies.json").write_text(json.dumps(resolved, indent=2)+"\n")
+    (out/"provider-ldd.txt").write_text(resolved[provider.name])
+    for name in ("seaweedkv-native", "seaweedkv-lmcache"):
+        installed = importlib.metadata.distribution(name)
+        member, = [f for f in installed.files if str(f).endswith(".dist-info/BUILD_INFO")]
+        raw = pathlib.Path(installed.locate_file(member)).read_bytes()
+        validate_info(json.loads(raw))
+        assert raw == (out/"BUILD_INFO").read_bytes()
     import seaweedkv_lmcache
     import seaweedkv_native
     native = importlib.import_module("seaweedkv_native._native")
     from seaweedkv_lmcache._native import library_transports
-
-    prefix = pathlib.Path(sys.prefix).resolve()
     for module in (seaweedkv_lmcache, seaweedkv_native, native):
         assert pathlib.Path(module.__file__).resolve().is_relative_to(prefix), module.__file__
-    provider = pathlib.Path(native.__file__).with_name("libseaweedfs_sw_rdma_nixl.so")
-    observed = {p.name: read_needed(p) for p in (provider, pathlib.Path(native.__file__))}
-    (out/"dt-needed.json").write_text(json.dumps(observed, indent=2)+"\n")
-    check_needed(observed, {provider.name, pathlib.Path(native.__file__).name})
     ctypes.CDLL(str(provider))
     assert "rc" in library_transports(provider)
-    ldd = subprocess.run(["ldd", str(provider)], capture_output=True, text=True, check=True).stdout
-    assert "not found" not in ldd
-    for lib in ("libibverbs.so", "librdmacm.so", "libmlx5.so"):
-        assert lib in ldd, lib
-    (out/"provider-ldd.txt").write_text(ldd)
 
     def digest(path):
         return hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
@@ -96,6 +146,7 @@ def verify(mono, lmcache, out):
         "rustc": subprocess.check_output(["rustc","--version"],text=True).strip(),
         "wheels": [{"name": p.name,"bytes": p.stat().st_size,"sha256": digest(p)} for p in wheels],
         "dt_needed": observed,
+        "resolved_dependencies": resolved,
         "native_provider_sha256": digest(provider),
         "extension_sha256": digest(pathlib.Path(native.__file__)),
         "lmcache_headers": {str(p.relative_to(lmcache)): digest(p) for p in sorted((lmcache/"csrc/storage_backends").glob("*.h"))},

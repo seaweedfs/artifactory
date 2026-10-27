@@ -66,3 +66,23 @@ The release job installs both wheels into a fresh, source-free venv using
 RC feature query, and checks dynamic linkage. It never creates a connector
 or opens an RDMA device. This deliberately separates wheel importability from
 runtime LMCache integration testing.
+
+## Selecting a matching server and connector
+
+A release tag alone does not prove pairing. Download `seaweedkv-preview-pair.json`
+plus the exact three assets it lists (RDMA volume, object service, preview bundle).
+Before use, run the repository's pairing verifier:
+
+```sh
+python3 .github/scripts/kv-native-preview-pair.py verify downloads downloads/seaweedkv-preview-pair.json
+```
+
+It verifies every asset digest and each embedded mono source SHA. The workflow
+serializes complete runs per tag without cancelling an active publisher. Before
+preview upload, it downloads the published servers and checks their digests
+against this run's build outputs and their source receipts against the preview.
+A mismatch refuses publication. The pairing manifest records the mono SHA and
+all three digests. Uploads are not atomic: a failed/partial run may leave an old
+manifest or a missing asset. That selection is invalid and must be refused,
+not inferred compatible from its tag. Retry a complete release run to repair it;
+never bypass the pairing check. No workflow was dispatched to test publication.

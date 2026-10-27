@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: rust-enterprise-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
 
   # Fail fast when the release tag does not match the enterprise version
@@ -150,6 +154,7 @@ jobs:
     needs: [verify-version]
     outputs:
       mono_sha: ${{ steps.source.outputs.mono_sha }}
+      asset_digests: ${{ steps.package.outputs.asset_digests }}
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -196,6 +201,7 @@ jobs:
           cargo build --locked --release --target x86_64-unknown-linux-gnu -p seaweedfs-sw-rdma-object --features mlx5-dc --bin sw-rdma-object-service --target-dir target/rdma
 
       - name: Package RDMA assets
+        id: package
         run: |
           mkdir -p rdma-volume rdma-object
           cp seaweedfs-enterprise-source/enterprise/seaweed-volume/target/rdma/x86_64-unknown-linux-gnu/release/weed-volume rdma-volume/
@@ -210,6 +216,13 @@ jobs:
             md5sum "$f" > "$f.md5"
             sha256sum "$f" > "$f.sha256"
           done
+          python3 - <<'PYDIGEST'
+          import hashlib, json, os, pathlib
+          names = ["weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz", "sw-rdma-object-service-enterprise_linux_amd64.tar.gz"]
+          values = {n: hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest() for n in names}
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              print('asset_digests=' + json.dumps(values), file=out)
+          PYDIGEST
 
       - name: Upload RDMA release assets
         uses: softprops/action-gh-release@v3
@@ -281,9 +294,20 @@ jobs:
       - name: Package preview bundle
         run: |
           cp docs/kv-native-preview-packaging.md kv-native-preview/README.md
-          tar czf seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz -C kv-native-preview wheels preview-pins.json BUILD-MANIFEST.json BUILD_INFO build-requirements.txt provider-ldd.txt README.md
+          tar czf seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz -C kv-native-preview wheels preview-pins.json BUILD-MANIFEST.json BUILD_INFO build-requirements.txt provider-ldd.txt dt-needed.json resolved-dependencies.json README.md
           md5sum seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz > seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.md5
           sha256sum seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz > seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.sha256
+
+      - name: Check published server and preview source/digest pairing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag_name || github.ref_name }}
+          SOURCE_SHA: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.mono_sha }}
+          SERVER_DIGESTS: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.asset_digests }}
+        run: |
+          gh release download "$TAG" --pattern weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz --pattern sw-rdma-object-service-enterprise_linux_amd64.tar.gz
+          python3 .github/scripts/kv-native-preview-pair.py create . "$SOURCE_SHA" "$SERVER_DIGESTS"
 
       - name: Upload preview assets
         uses: softprops/action-gh-release@v3
@@ -294,5 +318,6 @@ jobs:
             seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz
             seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.md5
             seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.sha256
+            seaweedkv-preview-pair.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

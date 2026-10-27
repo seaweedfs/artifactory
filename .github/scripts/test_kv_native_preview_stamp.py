@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import pathlib
@@ -10,6 +11,9 @@ SCRIPT = pathlib.Path(__file__).with_name("kv-native-preview-stamp.py")
 spec = importlib.util.spec_from_file_location("stamp", SCRIPT)
 stamp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stamp)
+verify_spec = importlib.util.spec_from_file_location("verify", SCRIPT.with_name("kv-native-preview-verify.py"))
+verify = importlib.util.module_from_spec(verify_spec)
+verify_spec.loader.exec_module(verify)
 PINS = json.loads(SCRIPT.parents[1].joinpath("kv-native-preview-pins.json").read_text())
 
 
@@ -52,6 +56,21 @@ class StampTest(unittest.TestCase):
                     member, = (n for n in archive.namelist() if n.endswith(".dist-info/BUILD_INFO"))
                     self.assertEqual(archive.read(member), expected)
             info = json.loads(expected)
+            verify.validate_info(info)
+            for key in ("status", "platform_tag", "distribution", "supported_transport", "runtime_validation", "system_prerequisites"):
+                for value in (None, "changed"):
+                    changed = copy.deepcopy(info)
+                    if value is None:
+                        del changed[key]
+                    else:
+                        changed[key] = value
+                    with self.assertRaises(ValueError):
+                        verify.validate_info(changed)
+            for key in ("glibc_min", "rdma_core_min", "platform", "ubuntu_packages_min", "ubuntu_packages_required"):
+                changed = copy.deepcopy(info)
+                del changed["system_prerequisites"][key]
+                with self.assertRaises(ValueError):
+                    verify.validate_info(changed)
             self.assertEqual(info["mono_commit"], "mono-fixture")
             self.assertEqual(info["lmcache_headers_commit"], PINS["lmcache_commit"])
             self.assertEqual(info["supported_transport"], "rc")

@@ -58,3 +58,27 @@ now consumes that job's actual SHA, ensuring future bundle/server identity.
 
 Raw logs, wheels, BUILD_INFO, source/header digests, ldd, and lease records:
 `V:/share/rdma/kv-native-preview-codex03-20261027/build-proof/`.
+
+## Review amendment controls (local only)
+
+- R1: direct DT_NEEDED for BOTH installed ELFs is checked before any package
+  import/load; wheel contents are checked for bundled system libraries. Unknown
+  direct SONAMEs (including extension-only libUNAPPROVED.so.7), missing/unresolved
+  dependencies and bundled RDMA variants refuse. Resolved transitive libnl is
+  retained as system prerequisite evidence, not compared to the direct allowlist.
+- S1: tag-keyed workflow serialization plus checked source/digest pairing.
+  CPU model exposes 2 mixed final pairs among 6 unconstrained upload orders;
+  serialized complete runs avoid them. Digest/source mutations, stale manifest
+  after partial overwrite, missing assets and wrong build digests refuse.
+- R2: both wheels retain PREVIEW, platform, release-only/not-PyPI, system
+  prerequisites, RC-only and runtime UNVERIFIED. Missing/changed policy negatives
+  refuse; actual captured wheels were repacked offline with new metadata and
+  RECORDs verified, with every ELF byte unchanged. This is not a rebuild/install.
+  Receipts: `review-amendment/restamp-receipt.json` beside the original evidence.
+  Shim: b42bd1781e38dec3c96853daf70df35a96d85d606b027c87ee3075515eafc102.
+  Native: c9684632f44390729858cc6451824ac709812f079334d760c1f1f0a45f928e0f.
+  Repack uses the observed rdma-core upstream floor 50.0, not a new observation
+  of Ubuntu package patch revisions. Future builder stamps query exact versions.
+
+Eight tests across linkage, metadata/RECORD and pairing pass locally; actionlint
+and diff checks pass. Native runtime/real release publication remain untested.
