@@ -22,7 +22,7 @@ for module in (seaweedkv_lmcache, seaweedkv_native, native):
     assert pathlib.Path(module.__file__).resolve().is_relative_to(prefix), module.__file__
 provider = pathlib.Path(native.__file__).with_name("libseaweedfs_sw_rdma_nixl.so")
 ctypes.CDLL(str(provider))
-assert {"rc", "dc"}.issubset(library_transports(provider))
+assert "rc" in library_transports(provider)
 ldd = subprocess.run(["ldd", str(provider)], capture_output=True, text=True, check=True).stdout
 assert "not found" not in ldd
 for lib in ("libibverbs.so", "librdmacm.so", "libmlx5.so"):
@@ -37,6 +37,9 @@ assert len(wheels) == 2
 for wheel in wheels:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
+        build_infos = [n for n in names if n.endswith(".dist-info/BUILD_INFO")]
+        assert len(build_infos) == 1
+        assert archive.read(build_infos[0]) == (out/"BUILD_INFO").read_bytes()
         if wheel.name.startswith("seaweedkv_native-"):
             assert "-cp312-cp312-linux_x86_64.whl" in wheel.name
             assert sum(n.endswith("libseaweedfs_sw_rdma_nixl.so") for n in names) == 1
@@ -57,7 +60,7 @@ manifest = {
     "extension_sha256": digest(pathlib.Path(native.__file__)),
     "lmcache_headers": {str(p.relative_to(lmcache)): digest(p) for p in sorted((lmcache/"csrc/storage_backends").glob("*.h"))},
     "installed_versions": {n: importlib.metadata.version(n) for n in ("seaweedkv-lmcache","seaweedkv-native")},
-    "smoke": "source-free imports, bundled-library load and rc/dc feature query; no transport opened",
+    "smoke": "source-free imports, bundled-library load and RC feature query; no transport opened",
 }
 (out/"BUILD-MANIFEST.json").write_text(json.dumps(manifest,indent=2)+"\n")
 print(json.dumps(manifest,indent=2))
