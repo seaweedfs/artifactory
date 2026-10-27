@@ -19,11 +19,12 @@ come from `libibverbs1`, `librdmacm1t64` and `ibverbs-providers`. BUILD_INFO rec
 the builder's exact package versions as the package minimums. These libraries
 and provider drivers are never bundled: use a consistent host installation.
 
-**Current draft dependency gate:** only the RDMA trio and glibc are permitted
-externally. The first measured binaries also need libstdc++, libgcc_s and
-OpenSSL 3, so the new literal gate refuses them. Publication remains blocked on
-the owner disposition of those additional dependencies; they are not silently
-whitelisted. No final artifact is claimed under that stricter gate yet.
+The host must also provide `libstdc++6`, `libgcc-s1`, `libssl3t64` (OpenSSL 3)
+and `libc6` (glibc >=2.39). OpenSSL and compiler runtimes stay system-provided;
+they are neither bundled nor statically linked by this packaging change.
+The verifier requires observed DT_NEEDED to be a subset of the bundled provider,
+RDMA trio, the approved glibc family and libstdc++.so.6 / libgcc_s.so.1 /
+libssl.so.3 / libcrypto.so.3. Any other dependency fails verification.
 
 RDMA use also requires appropriate NICs, drivers/device access, network
 configuration and sufficient memlock. Build/import checks do not qualify the

@@ -50,6 +50,9 @@ def stamp(mono, lmcache, out):
             "rdma_core_min": upstream.pop(),
             "ubuntu_packages_min": packages,
             "external_rdma_libraries": ["libibverbs.so.1", "librdmacm.so.1", "libmlx5.so.1"],
+            "ubuntu_packages_required": ["libstdc++6", "libgcc-s1", "libssl3t64", "libc6"],
+            "external_runtime_libraries": ["libstdc++.so.6", "libgcc_s.so.1", "libssl.so.3", "libcrypto.so.3"],
+            "runtime_bundling": "forbidden; keep OpenSSL and compiler runtimes system-provided",
             "rdma_bundling": "forbidden; use the host rdma-core/provider installation",
         },
     }

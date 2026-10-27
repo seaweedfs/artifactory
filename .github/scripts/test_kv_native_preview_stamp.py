@@ -59,6 +59,8 @@ class StampTest(unittest.TestCase):
             self.assertEqual(info["system_prerequisites"]["glibc_min"], "2.39")
             self.assertEqual(info["system_prerequisites"]["rdma_core_min"], "50.0")
             self.assertEqual(len(info["system_prerequisites"]["ubuntu_packages_min"]), 3)
+            self.assertEqual(info["system_prerequisites"]["ubuntu_packages_required"], ["libstdc++6", "libgcc-s1", "libssl3t64", "libc6"])
+            self.assertEqual(len(info["system_prerequisites"]["external_runtime_libraries"]), 4)
             for name in ("setuptools", "wheel", "pybind11", "cmake", "rustc", "cargo", "gcc"):
                 self.assertTrue(info["build_tools"][name].startswith(name + "=="))
             for libc in [("glibc", "2.38"), ("glibc", "2.40"), ("", "")]:

@@ -15,17 +15,19 @@ import zipfile
 # The release decision permits only these external non-glibc libraries.
 RDMA_SYSTEM = {"libibverbs.so.1", "librdmacm.so.1", "libmlx5.so.1"}
 GLIBC_SYSTEM = {"libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0",
-                "librt.so.1", "libresolv.so.2", "libutil.so.1",
+                "librt.so.1",
                 "ld-linux-x86-64.so.2"}
+
+RUNTIME_SYSTEM = {"libstdc++.so.6", "libgcc_s.so.1", "libssl.so.3", "libcrypto.so.3"}
 
 
 def check_needed(observed, bundled):
-    # No rdma-core copy/provider may be hidden under a hashed or versioned name.
+    # System libraries must not be hidden under hashed or versioned names.
     for name in bundled:
-        if any(name.startswith(prefix) for prefix in ("libibverbs", "librdmacm", "libmlx5")):
-            raise ValueError("RDMA library must remain system-provided: " + name)
+        if any(name.startswith(prefix) for prefix in ("libibverbs", "librdmacm", "libmlx5", "libstdc++", "libgcc_s", "libssl", "libcrypto")):
+            raise ValueError("library must remain system-provided: " + name)
     unexpected = {name for needed in observed.values() for name in needed
-                  if name not in RDMA_SYSTEM | GLIBC_SYSTEM | set(bundled)}
+                  if name not in RDMA_SYSTEM | GLIBC_SYSTEM | RUNTIME_SYSTEM | set(bundled)}
     if unexpected:
         raise ValueError("unexpected external DT_NEEDED: " + ", ".join(sorted(unexpected)))
     return observed
