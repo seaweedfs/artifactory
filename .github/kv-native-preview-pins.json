@@ -1,0 +1,12 @@
+{
+  "schema": "seaweedkv-native-preview/v1",
+  "python_abi": "cp312",
+  "python_version": "3.12",
+  "rust": "1.93.0",
+  "lmcache_commit": "f2b65521c55f55d6c146277f004153e185e5d73a",
+  "provider_features": "mlx5-dc",
+  "pip": "25.0.1",
+  "setuptools": "80.9.0",
+  "wheel": "0.45.1",
+  "pybind11": "2.13.6"
+}

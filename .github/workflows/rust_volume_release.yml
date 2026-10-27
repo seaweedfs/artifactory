@@ -75,7 +75,7 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           # ubuntu-24.04 keeps apt sources in deb822 ubuntu.sources, not
-          # sources.list — pin them to amd64 so apt does not probe arm64
+          # sources.list â€” pin them to amd64 so apt does not probe arm64
           # indexes on archive/security.ubuntu.com (they 404).
           sudo sed -i '/^Types: deb$/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
           for suite in noble noble-updates noble-security; do
@@ -215,5 +215,76 @@ jobs:
           files: |
             weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz*
             sw-rdma-object-service-enterprise_linux_amd64.tar.gz*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # PREVIEW: both Python distributions and the bundled native RC/DC provider.
+  # CPython 3.12 on Ubuntu 24.04 only; no manylinux/ARM64 compatibility claim.
+  build-kv-native-preview-linux-amd64:
+    needs: [verify-version]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone enterprise source and verify this checkout
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          .github/scripts/git-retry.sh clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          python3 .github/scripts/verify-enterprise-checkout.py "$TAG" seaweedfs-enterprise-source
+
+      - name: Read preview pins
+        id: pins
+        run: |
+          python3 - <<'PY'
+          import json, os
+          p = json.load(open('.github/kv-native-preview-pins.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              for k in ('rust', 'lmcache_commit'):
+                  print(f'{k}={p[k]}', file=f)
+          PY
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.pins.outputs.rust }}
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install native wheel build dependencies
+        run: |
+          .github/scripts/apt-retry.sh update
+          .github/scripts/apt-retry.sh install -y build-essential pkg-config clang libclang-dev libibverbs-dev librdmacm-dev libssl-dev protobuf-compiler python3.12 python3.12-dev python3.12-venv
+
+      - name: Checkout pinned LMCache headers
+        env:
+          LMCACHE_SHA: ${{ steps.pins.outputs.lmcache_commit }}
+        run: |
+          .github/scripts/git-retry.sh clone --filter=blob:none --no-checkout https://github.com/LMCache/LMCache.git lmcache-source
+          git -C lmcache-source fetch --depth=1 origin "$LMCACHE_SHA"
+          git -C lmcache-source checkout --detach "$LMCACHE_SHA"
+
+      - name: Build and verify source-free preview wheels
+        run: bash .github/scripts/kv-native-preview-build.sh seaweedfs-enterprise-source lmcache-source kv-native-preview
+
+      - name: Package preview bundle
+        run: |
+          cp docs/kv-native-preview-packaging.md kv-native-preview/README.md
+          tar czf seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz -C kv-native-preview wheels preview-pins.json BUILD-MANIFEST.json build-requirements.txt provider-ldd.txt README.md
+          md5sum seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz > seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.md5
+          sha256sum seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz > seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.sha256
+
+      - name: Upload preview assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz
+            seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.md5
+            seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
