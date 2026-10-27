@@ -75,7 +75,7 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           # ubuntu-24.04 keeps apt sources in deb822 ubuntu.sources, not
-          # sources.list â€” pin them to amd64 so apt does not probe arm64
+          # sources.list — pin them to amd64 so apt does not probe arm64
           # indexes on archive/security.ubuntu.com (they 404).
           sudo sed -i '/^Types: deb$/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
           for suite in noble noble-updates noble-security; do
