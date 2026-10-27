@@ -1,0 +1,30 @@
+{
+  "schema": "seaweedkv-native-preview/v1",
+  "python_abi": "cp312",
+  "python_version": "3.12",
+  "rust": "1.93.0",
+  "lmcache_commit": "3e11e10812b448142c6cdb177a3058652bd826fa",
+  "provider_features": "mlx5-dc",
+  "pip": "25.0.1",
+  "setuptools": "80.9.0",
+  "wheel": "0.45.1",
+  "pybind11": "2.13.6",
+  "lmcache_runtime": "0.5.6",
+  "cmake": "3.31.6",
+  "runtime": {
+    "vllm": "0.32.0",
+    "torch": "2.13.0",
+    "cuda-python": ">=13,<14",
+    "cupy": "cupy-cuda13x",
+    "transformers": ">=5.16.1,<5.20"
+  },
+  "supported_transport": "rc",
+  "runtime_validation": "UNVERIFIED pending planned correctness rerun",
+  "cargo": "1.93.0",
+  "gcc": "13.3.0",
+  "distribution": "github-release-asset",
+  "platform_tag": "linux_x86_64",
+  "builder": "ubuntu-24.04",
+  "glibc_min": "2.39",
+  "rdma_library_policy": "system-only; never bundle rdma-core/providers"
+}
