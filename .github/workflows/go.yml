@@ -259,3 +259,77 @@ jobs:
     - name: Test linux/386
       working-directory: seaweedfs-source/enterprise/weed
       run: GOOS=linux GOARCH=386 go test -short -timeout 20m ./...
+
+  vectors:
+    name: S3 Vectors integration (Go and Rust volumes)
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/vector-target
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      VOLUME_SERVER_IMPL: go,rust
+      VECTOR_QUERY_MODE: single,distributed
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/runner-housekeeping
+      - uses: ./.github/actions/mono-source-link
+        if: github.event_name == 'repository_dispatch'
+      - uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: seaweedfs-source/enterprise/go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: seaweedfs-source/enterprise/go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            vector-target
+          key: vectors-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('seaweedfs-source/enterprise/seaweed-vector/Cargo.lock', 'seaweedfs-source/enterprise/rust/Cargo.lock', 'seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: vectors-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libclang-dev libssl-dev pkg-config
+          python -m pip install -r seaweedfs-source/enterprise/test/vectors/requirements.txt
+      - name: Test coordinator and Rust worker
+        working-directory: seaweedfs-source/enterprise
+        run: |
+          go test -timeout 5m ./vector/coordinator ./weed/cluster ./weed/s3api/s3vectors ./weed/s3api/lance
+          cargo test --locked --manifest-path rust/Cargo.toml -p sw-vector-distributed
+      - name: Build vector integration binaries
+        working-directory: seaweedfs-source/enterprise/test/vectors
+        run: make build CARGO_PROFILE=dev
+      - name: Run all four volume and query combinations
+        working-directory: seaweedfs-source/enterprise/test/vectors
+        env:
+          PYTHON: python
+        run: |
+          ./run_test.sh --basetemp="$RUNNER_TEMP/vector-tests" --junitxml="$RUNNER_TEMP/vector-results.xml"
+          python - "$RUNNER_TEMP/vector-results.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter('testcase'))
+          assert len(cases) >= 44, f'Expected all four matrix combinations, got {len(cases)} tests'
+          assert not any(case.find('skipped') is not None for case in cases), 'Vector integration tests were skipped'
+          PY
+      - name: Upload vector test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vector-integration-${{ env.COMMIT_SHA }}
+          path: |
+            ${{ runner.temp }}/vector-tests
+            ${{ runner.temp }}/vector-results.xml
+          retention-days: 7
