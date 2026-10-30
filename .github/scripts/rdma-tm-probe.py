@@ -1,0 +1,150 @@
+"""No-service runner facts and exact reviewed BUILD/PROBE association."""
+import ipaddress,json,os,pathlib,re,signal,time,socket
+
+BUILD_SHA='a71564f7a85a6a5304cde977239f19d21f5bd1b8'
+MONO_SHA='8c22388d091484dd02dd78fc86f9b564baffbb36'
+BUILD_REF=dict(run_id=37359833660,attempt=1,workflow_id=302349806,head_sha=BUILD_SHA,actor_id=6647175,artifact_id=11365694398,name='tm-connected-build-'+MONO_SHA+'-37359833660-1')
+PRODUCTS=dict(loader='28bf1741053ada3f64b8fef74cd33bb1cf5501ff1cd1a2a11e25b14f32057523',server='e9dacec10841244ba2180a5a3a167dc1a785f485031faaa798f64f331daeb7eb',master='1a9630a7e5aa436b34df723ad601a04f1c06e815baf9d700eef5690d574ce15b')
+BUILD_JSON='9bded3c5422e6e03e1a6d128879bf105752c6ad5b769a8c7f81af3016bb311af'
+LIST_SHA='656ff488ae363a21a4473ed87509381a6a7a7c565a14b8698121a32adf4db226'
+
+def exact_build(a,bind,env):
+    a.require(bind['source_sha']==env['TM_SOURCE_SHA']==MONO_SHA and bind['ci_sha']==env['GITHUB_SHA'],'SOURCE_OR_ADAPTER_BIND_DRIFT')
+    a.require(bind['build_ci_sha']==BUILD_SHA and bind['build_reference']==BUILD_REF,'UNAPPROVED_PRIOR_BUILD')
+    a.require(bind['product_hashes']==PRODUCTS and bind['build_json_sha256']==BUILD_JSON and bind['list_sha256']==LIST_SHA,'BUILD_PROVENANCE_DRIFT')
+
+def prepare(a,out,env):
+    deadline=time.monotonic()+180;api=a.Actions(env['GITHUB_REPOSITORY'],env['GH_TOKEN'],out)
+    event=json.loads(pathlib.Path(env['GITHUB_EVENT_PATH']).read_text());request=json.loads(event['inputs']['diagnostic_objects'])
+    a.require(env.get('TM_MANAGER_ACTOR_ID') and str(event['sender']['id'])==env['TM_MANAGER_ACTOR_ID']==env.get('GITHUB_ACTOR_ID'),'FOREIGN_MANAGER_DISPATCH')
+    api.artifact(request['input'],out/'input',deadline);a.manifest(out/'input',request['input_manifest'])
+    bind=json.loads((out/'input/bind.json').read_text());a.require('local_inert_fixture' not in bind,'PRIVATE_FIXTURE_FORBIDDEN');exact_build(a,bind,env)
+    a.require(bind['phase']==env['TM_PHASE'] and bind['phase'] in ('probe','run'),'PHASE_BIND_DRIFT')
+    for name in ('rdma-tm-diagnostic.py','rdma-tm-decode.py','rdma-tm-probe.py'):a.require(a.sha(out/'input'/name)==a.sha(a.HERE/name),'ADAPTER_DRIFT')
+    a.authorize(bind,request,env,event['sender']['id']);a.save(out/'authority-association.json',dict(launch_id=request['launch_id'],input_digest=request['input_manifest'],actor_id=event['sender']['id'],ci_sha=env['GITHUB_SHA'],source_sha=env['TM_SOURCE_SHA'],run_id=bind['run_id']))
+    run,_=api.artifact(bind['build_reference'],out/'build',deadline);a.manifest(out/'build')
+    info=json.loads((out/'build/build.json').read_text())
+    a.require(info['ci_sha']==run['head_sha']==bind['build_ci_sha'] and info['source_sha']==MONO_SHA and a.sha(out/'build/build.json')==BUILD_JSON,'BUILD_BIND_DRIFT')
+    a.require(info['run_id']==run['id'] and info['attempt']==run['run_attempt'] and info['job']=='tm-connected-diagnostic','BUILD_JOB_ASSOCIATION')
+    jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(run['id'])+'/attempts/'+str(run['run_attempt'])+'/jobs?per_page=100',deadline)
+    a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==info['job'] and j['runner_name']==info['runner'] and j['conclusion']=='success'])==1,'BUILD_RUNNER_ASSOCIATION')
+    for label,digest in PRODUCTS.items():
+        row=info['products'][label];a.require(row['file']==label+'.elf' and row['source_sha']==MONO_SHA and row['sha256']==a.sha(out/'build'/row['file'])==digest,'BUILD_ELF_DRIFT');(out/'build'/row['file']).chmod(0o700)
+    a.require(a.sha(out/'build/loader-list.stdout.raw')==info['list_sha256']==LIST_SHA,'BUILD_LIST_DRIFT');a.exact_row((out/'build/loader-list.stdout.raw').read_bytes())
+    return bind,api,deadline
+
+def object_identity(a,path):
+    p=pathlib.Path(path).resolve(strict=True);before=p.stat();digest=a.sha(p);after=p.stat()
+    a.require((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns),'PROBE_OBJECT_DRIFT')
+    return dict(path=str(p),dev=f'{os.major(before.st_dev):02x}:{os.minor(before.st_dev):02x}',inode=before.st_ino,sha256=digest)
+
+def network(a,sysfs,links,addresses,out=None):
+    matches=re.findall(r'\bsiw0/1\s+[^\n]*?\bnetdev\s+(\S+)',links);a.require(len(set(matches))==1,'PROBE_NETDEV_AMBIGUOUS')
+    netdev=matches[0];ips={v['local'] for row in addresses if row['ifname']==netdev for v in row.get('addr_info',[]) if v['family']=='inet'}
+    candidates=[];raw_rows=[]
+    try:
+        for f in sorted((sysfs/'siw0/ports/1/gids').iterdir()):
+            row=dict(gid_path=str(f),netdev_path=str(sysfs/'siw0/ports/1/gid_attrs/ndevs'/f.name));raw_rows.append(row)
+            row['gid']=gid=f.read_text().strip();row['netdev']=ndev=pathlib.Path(row['netdev_path']).read_text().strip()
+            mapped=ipaddress.IPv6Address(gid).ipv4_mapped
+            if mapped and str(mapped) in ips and ndev==netdev:candidates.append(dict(gid=gid,gid_index=int(f.name),netdev=netdev,ip=str(mapped)))
+        a.require(len(candidates)==1,'PROBE_GID_MAPPING_MISSING_OR_AMBIGUOUS');return dict(candidates[0],gid_rows=raw_rows)
+    finally:
+        if out is not None:a.save(out/'sysfs-gid-observations.json',dict(rows=raw_rows,links=links,addresses=addresses))
+
+def root_access(a,bind,out,deadline,work='/opt/work'):
+    target=a.owned_root(bind['root'],bind['lock_path'],work);base=pathlib.Path(work).resolve(strict=True)
+    a.require(base.is_dir() and time.monotonic()<deadline,'PROBE_RUN_BASE_OR_DEADLINE')
+    lock=base/'siw-lab.lock';fd=None;made=False;created=False;primary=None;cleanup_errors=[];record=dict(base=str(base),root=str(target),lock=str(lock),uid=os.getuid(),free_bytes=os.statvfs(base).f_bavail*os.statvfs(base).f_frsize)
+    try:
+        a.require(not lock.is_symlink(),'PROBE_LOCK_ALIAS');created=not lock.exists()
+        fd=os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600);s=os.fstat(fd)
+        a.require(s.st_uid==os.getuid() and (s.st_dev,s.st_ino)==(lock.stat().st_dev,lock.stat().st_ino),'PROBE_LOCK_OWNER_OR_DRIFT')
+        record['lock_identity']=dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid);target.mkdir(mode=0o700);made=True
+        f=target/'admission';probe=os.open(f,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        try:
+            a.require(os.write(probe,b'probe')==5,'PROBE_WRITE_SHORT');os.fsync(probe);st=os.fstat(probe)
+            a.require(st.st_uid==os.getuid() and (st.st_dev,st.st_ino)==(f.stat().st_dev,f.stat().st_ino),'PROBE_ROOT_IDENTITY')
+            record['root_identity']=dict(dev=target.stat().st_dev,inode=target.stat().st_ino,uid=target.stat().st_uid)
+        finally:os.close(probe)
+        f.unlink();target.rmdir();made=False;a.require(time.monotonic()<deadline,'PROBE_DEADLINE');record['state']='PASS'
+    except BaseException as error:primary=error;record['primary_refusal']=repr(error);raise
+    finally:
+        # Only remove our verified fresh scratch entries. A cleanup tail grants
+        # no producer time; an expired producer remains a refusal after cleanup.
+        signal.setitimer(signal.ITIMER_REAL,5)
+        if made:
+            try:
+                a.require(target.stat().st_uid==os.getuid() and not target.is_symlink(),'PROBE_CLEANUP_OWNER')
+                f=target/'admission'
+                if f.exists():a.require(f.stat().st_uid==os.getuid() and not f.is_symlink(),'PROBE_CLEANUP_ALIAS');f.unlink()
+                target.rmdir();made=False
+            except BaseException as error:cleanup_errors.append(repr(error))
+        if fd is not None:os.close(fd)
+        # A preexisting lock is never removed, changed or certified reserved.
+        record['cleanup']=dict(scratch_absent=not target.exists(),created_lock=created,lock_retained=True,reservation='NONE',errors=cleanup_errors)
+        a.save(out/'run-root-access.json',record)
+        signal.setitimer(signal.ITIMER_REAL,max(.000001,deadline-time.monotonic()))
+        if primary is None:a.require(not made and not target.exists(),'PROBE_SCRATCH_CLEANUP_UNPROVEN')
+    return record
+
+def plans(a,build,bind,facts):
+    help_raw=(build/'server-help.stdout.raw').read_text()+(build/'server-help.stderr.raw').read_text()
+    needed=['--port','--port.grpc','--ip','--ip.bind','--master','--dir','--max','--rdma.enabled','--rdma.ip','--rdma.port']
+    a.require(all(re.search(re.escape(flag)+r'(?:\s|$)',help_raw) for flag in needed),'PROBE_SERVER_PLAN_UNSUPPORTED')
+    a.require('master' in (build/'master-help.stdout.raw').read_text(),'PROBE_MASTER_PLAN_UNSUPPORTED')
+    return dict(state='ARTIFACT_HELP_DERIVED_PLANS_NOT_EXECUTED',producer_hashes={name:a.sha(build/name) for name in ('server-help.stdout.raw','server-help.stderr.raw','master-help.stdout.raw')},setup=[dict(role='master',binary_hash=PRODUCTS['master'],argv=['${BUILD}/master.elf','master','-ip=127.0.0.1','-port=46243','-port.grpc=56243','-mdir=${ROOT}/master'],flag_help='probe-master-flags.stdout.raw + stderr.raw'),dict(role='server',binary_hash=PRODUCTS['server'],argv=['${BUILD}/server.elf','--ip',facts['ip'],'--ip.bind','127.0.0.1','--port','46240','--port.grpc','46241','--master','127.0.0.1:46243','--dir','${ROOT}/server','--max','4','--rdma.enabled','--rdma.ip',facts['ip'],'--rdma.port','46242'])],down=[dict(role=role,argv=['kill','-TERM','--','-${ENROLLED_'+role.upper()+'_SID}'],identity='RUN PID/starttime enrollment mandatory; checked guardian census/reap required') for role in ('server','master')],probes=[dict(role='master',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46243/dir/status']),dict(role='server',argv=['curl','--fail','--max-time','${REMAINING_SECONDS}','http://127.0.0.1:46240/status'])],runtime_renderer='NOT_RUN: direct spawn/owned SID plans require reviewed existing guardian enrollment wrapper before RUN INPUT; no plan is an observed service success')
+
+def produce(a,bind,out,env,api):
+    start=time.monotonic();deadline=start+20;previous=signal.getsignal(signal.SIGALRM)
+    def expired(signum,frame):raise ValueError('PROBE_PRODUCER_DEADLINE')
+    signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,20)
+    record=dict(state='FAIL',phase='PROBE_ONLY',ci_sha=env['GITHUB_SHA'],source_sha=MONO_SHA,build_ci_sha=BUILD_SHA,run_id=int(env['GITHUB_RUN_ID']),attempt=int(env['GITHUB_RUN_ATTEMPT']),job=env['GITHUB_JOB'],runner=env['RUNNER_NAME'],hostname=socket.gethostname(),uid=os.getuid(),scope='INSTALLED_HOST_FACTS_NOT_IN_CHILD',producer_start=start,deadline=deadline)
+    def run(label,argv):return a.command(argv,out,'probe-'+label,deadline).decode()
+    try:
+        record['kernel_release']=run('kernel',['uname','-r']).strip();record['loaded_modules']=pathlib.Path('/proc/modules').read_text()
+        a.require(re.search(r'^siw\s',record['loaded_modules'],re.M),'PROBE_SIW_NOT_LOADED')
+        module=run('siw-module',['modinfo','siw']);record['siw_module_required_lines']=[line for line in module.splitlines() if line.split(':',1)[0] in ('filename','version','srcversion','vermagic')]
+        a.require(any(line.startswith('srcversion:') for line in record['siw_module_required_lines']),'PROBE_MODULE_IDENTITY_MISSING')
+        links=run('rdma-link',['rdma','link','show']);addresses=json.loads(run('IP',['ip','-j','addr','show']))
+        facts=network(a,pathlib.Path('/sys/class/infiniband'),links,addresses,out);record.update(facts)
+        a.require(run('memlock',['bash','-c','ulimit -l']).strip()=='unlimited','PROBE_MEMLOCK')
+        devices=run('devices',['ibv_devinfo','-v']);a.require('siw0' in devices and facts['gid'] in devices,'PROBE_DEVICE_GID')
+        ld=run('ldconfig',['ldconfig','-p']);objects={}
+        for library in ('libibverbs','librdmacm'):
+            paths={str(pathlib.Path(v).resolve()) for v in re.findall(r'\b'+library+r'\.so(?:\.\d+)*\s+[^\n]*=>\s+(\S+)',ld)}
+            a.require(len(paths)==1,'PROBE_PROVIDER_AMBIGUOUS_'+library);objects[library]=object_identity(a,next(iter(paths)))
+        candidates={str(f.resolve()) for directory in {pathlib.Path(objects['libibverbs']['path']).parent/'libibverbs',pathlib.Path('/usr/lib64/libibverbs')} for f in directory.glob('libsiw*.so*')}
+        a.require(len(candidates)==1,'PROBE_PROVIDER_AMBIGUOUS_libsiw');objects['libsiw']=object_identity(a,next(iter(candidates)));record['provider_objects']=objects
+        prefix='/repos/'+api.repository+'/actions/';recent=api.get(prefix+'runs?per_page=10',deadline);inventory=[]
+        for row in recent['workflow_runs']:
+            jobs=api.get(prefix+'runs/'+str(row['id'])+'/jobs?per_page=100',deadline);a.require(jobs['total_count']<100,'PROBE_JOB_INVENTORY_TRUNCATED');inventory.extend(jobs['jobs'])
+        names=sorted({r['runner_name'] for r in inventory if r.get('runner_name') and 'tp01' in r.get('labels',[])})
+        a.save(out/'runner-inventory.json',dict(scope='repository latest10 run job observations; not exhaustive inventory/exclusion',recent=recent,jobs=inventory))
+        a.require(len(set(names))==2 and record['runner'] in names,'PROBE_ACTUAL_RUNNER_NOT_INVENTORIED');record['runner_names']=names
+        a.ports_free();record['ports_observed_free_not_reserved']=a.PORTS
+        record['runtime_access']=root_access(a,bind,out,deadline)
+        help_raw=run('master-flags',[str(out/'build/master.elf'),'master','-h'])
+        help_raw+=(out/'probe-master-flags.stderr.raw').read_text()
+        a.require(all(re.search(r'-'+re.escape(name)+r'(?:\s|=)',help_raw) for name in ('ip','port','port.grpc','mdir')),'PROBE_MASTER_FLAGS_UNSUPPORTED')
+        record['plans']=plans(a,out/'build',bind,facts)
+        a.require(time.monotonic()<deadline,'PROBE_PRODUCER_DEADLINE');record['state']='PASS_FACTS_PLANS_NOT_RUN'
+    except BaseException as error:record.update(error=repr(error),error_code=str(error) if isinstance(error,ValueError) else 'PROBE_'+type(error).__name__);raise
+    finally:
+        signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous);record['producer_end']=time.monotonic();record['producer_seconds']=record['producer_end']-start;a.save(out/'probe.json',record)
+    return 'PROBE_FACTS_CAPTURED_PLANS_NOT_EXECUTED_PUBLICATION_PENDING'
+
+def run_admit(a,bind,out,env,api,deadline):
+    run,_=api.artifact(bind['probe_reference'],out/'probe',deadline);a.manifest(out/'probe',output_receipt=True)
+    p=json.loads((out/'probe/probe.json').read_text())
+    a.require(a.sha(out/'probe/probe.json')==bind['probe_json_sha256'] and p['state']=='PASS_FACTS_PLANS_NOT_RUN','PROBE_RECEIPT_DRIFT')
+    a.require(p['ci_sha']==run['head_sha']==bind['ci_sha'] and p['source_sha']==MONO_SHA and p['build_ci_sha']==BUILD_SHA and p['run_id']==run['id'] and p['attempt']==run['run_attempt'] and p['job']=='tm-connected-diagnostic','PROBE_JOB_ASSOCIATION')
+    a.require(p['runner']==env['RUNNER_NAME'] and p['hostname']==socket.gethostname() and p['uid']==os.getuid(),'PROBE_FOREIGN_RUNNER')
+    jobs=api.get('/repos/'+api.repository+'/actions/runs/'+str(run['id'])+'/attempts/'+str(run['run_attempt'])+'/jobs?per_page=100',deadline)
+    a.require(jobs['total_count']<100 and len([j for j in jobs['jobs'] if j['name']==p['job'] and j['runner_name']==p['runner'] and j['conclusion']=='success'])==1,'PROBE_RUNNER_ASSOCIATION')
+    for key in ('kernel_release','siw_module_required_lines','gid','gid_index','netdev','ip','provider_objects','runner_names'):a.require(bind[key]==p[key],'PROBE_BIND_FACT_DRIFT_'+key)
+    a.require(pathlib.Path(bind['root']).resolve().parent==pathlib.Path(p['runtime_access']['base']) and pathlib.Path(bind['lock_path']).resolve()==pathlib.Path(p['runtime_access']['lock']),'PROBE_RUN_ROOT_DRIFT')
+    lock=pathlib.Path(bind['lock_path']);s=lock.stat();a.require(not lock.is_symlink() and dict(dev=s.st_dev,inode=s.st_ino,uid=s.st_uid)==p['runtime_access']['lock_identity'],'PROBE_LOCK_IDENTITY_DRIFT')
+    a.require(os.access(lock,os.W_OK) and os.access(lock.parent,os.W_OK),'PROBE_RUN_PERMISSION_DRIFT')
+    a.require(bind['probe_plan_source_sha256']==a.sha(out/'probe/probe.json') and bind['plans_status']=='REVIEWED_RENDERED_OWNED_WRAPPERS','PROBE_PLAN_RENDERER_UNREVIEWED')
+    # Existing guardian still checks fresh_host/job/port/flock before any service.
