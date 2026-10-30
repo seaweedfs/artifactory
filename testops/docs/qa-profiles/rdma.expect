@@ -1,0 +1,9 @@
+# RDMA unified lab gate floors.
+#
+# The common envelope (__gate_pass, __tested_ref, __tested_sha, __lab_run_id)
+# is checked by scripts/qa-assert.sh itself. Keep only RDMA-specific metrics here.
+
+__rdma_perf_rc_push_mib_s>=5120
+__rdma_perf_dc_push_mib_s>=5120
+__rdma_perf_rc_pull_mib_s>0
+__rdma_loader_rows>8

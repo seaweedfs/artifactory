@@ -1,0 +1,16 @@
+{
+  "change_count": 4294967297,
+  "group_count": 1,
+  "groups": [
+    {
+      "group_id": 1,
+      "nsid_count": 1,
+      "group_change_count": 4294967297,
+      "state": 1,
+      "state_name": "optimized",
+      "nsids": [
+        1
+      ]
+    }
+  ]
+}
