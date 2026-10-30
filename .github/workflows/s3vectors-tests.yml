@@ -137,11 +137,12 @@ jobs:
       # only for rust legs, the vector worker only for distributed legs.
       run: |
         set -e
-        make ./weed ./weed-vector
+        make -j2 ./weed ./weed-vector
         if [ "${{ matrix.volume }}" = "rust" ]; then make ./weed-volume; fi
         if [ "${{ matrix.mode }}" = "distributed" ]; then make ./weed-vector-worker; fi
       env:
         CARGO_PROFILE: dev
+        CARGO_PROFILE_DEV_DEBUG: "0"
 
     - name: Run s3vectors integration tests
       working-directory: seaweedfs-source/enterprise/test/s3vectors
