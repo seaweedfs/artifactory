@@ -118,11 +118,19 @@ jobs:
       working-directory: seaweedfs-source/enterprise/test/s3vectors
       run: pip install -r requirements.txt
 
-    - name: Build weed, weed-vector, worker, and volume binaries
+    - name: Build test binaries
       working-directory: seaweedfs-source/enterprise/test/s3vectors
-      run: make build
+      # dev profile: correctness suite, no need for release codegen — cuts the
+      # cargo build several-fold (go.yml already does the same). And each leg
+      # only builds what its matrix cell runs: weed-volume (the heaviest crate)
+      # only for rust legs, the vector worker only for distributed legs.
+      run: |
+        set -e
+        make ./weed ./weed-vector
+        if [ "${{ matrix.volume }}" = "rust" ]; then make ./weed-volume; fi
+        if [ "${{ matrix.mode }}" = "distributed" ]; then make ./weed-vector-worker; fi
       env:
-        CARGO_PROFILE: release
+        CARGO_PROFILE: dev
 
     - name: Run s3vectors integration tests
       working-directory: seaweedfs-source/enterprise/test/s3vectors
