@@ -148,13 +148,13 @@ jobs:
       env:
         VOLUME_SERVER_IMPL: ${{ matrix.volume }}
         VECTOR_QUERY_MODE: ${{ matrix.mode }}
-      run: ./run_test.sh
+      run: ./run_test.sh --basetemp=/tmp/s3vectors-work
 
     - name: Collect cluster logs on failure
       if: failure()
       run: |
         mkdir -p /tmp/s3vectors-logs
-        find /tmp -type d -name "vectors-*" -print -exec cp -r {} /tmp/s3vectors-logs/ \; || true
+        find /tmp/s3vectors-work -type d -name "vectors-*" -print -exec cp -r {} /tmp/s3vectors-logs/ \; || true
 
     - name: Archive logs on failure
       if: failure()
