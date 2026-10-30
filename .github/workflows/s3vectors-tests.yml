@@ -89,9 +89,6 @@ jobs:
       working-directory: seaweedfs-source/enterprise/weed
       run: "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
 
-    - name: Install protoc
-      run: sudo apt-get install -y protobuf-compiler
-
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
@@ -108,6 +105,20 @@ jobs:
         key: s3vectors-rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-vector/Cargo.lock', 'seaweedfs-source/enterprise/seaweed-volume/Cargo.lock', 'seaweedfs-source/enterprise/rust/Cargo.lock') }}
         restore-keys: |
           s3vectors-rust-
+
+    # lance's build scripts compile their own protos and look for a protoc.
+    # Point them at the one protoc-bin-vendored ships, so no job depends on a
+    # system package and every build sees the same version. Same pattern as
+    # upstream's rust-vector-tests.yml.
+    - name: Use the vendored protoc
+      run: |
+        cd seaweedfs-source/enterprise/seaweed-vector
+        cargo fetch
+        version=$(awk '/^name = "protoc-bin-vendored-linux-x86_64"$/{found=1; next} found && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
+        test -n "$version" || { echo "protoc-bin-vendored-linux-x86_64 is not in Cargo.lock" >&2; exit 1; }
+        protoc=$(find ~/.cargo/registry/src -path "*protoc-bin-vendored-linux-x86_64-$version/bin/protoc" | head -1)
+        test -x "$protoc" || { echo "no vendored protoc $version in the registry" >&2; exit 1; }
+        echo "PROTOC=$protoc" >> "$GITHUB_ENV"
 
     - name: Set up Python
       uses: actions/setup-python@v6
