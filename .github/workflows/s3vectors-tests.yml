@@ -1,0 +1,152 @@
+name: "S3 Vectors Tests (seaweed-mono)"
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted>.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
+
+# enterprise/test/s3vectors is a pytest suite that spins up master, volume,
+# filer, authenticated S3, the weed-vector engine, and (for distributed query
+# mode) a sw-vector-distributed worker on temporary ports. It parametrizes over
+# VOLUME_SERVER_IMPL (go, rust) and VECTOR_QUERY_MODE (single, distributed), so
+# the matrix below runs one leg per combination.
+on:
+  # Triggered by seaweed-mono push (repository_dispatch)
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
+  # dispatched mono ref (or the manual branch input) to actually dedupe runs.
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/s3vectors-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s3vectors-tests:
+    name: S3 Vectors (${{ matrix.volume }}-volume, ${{ matrix.mode }} queries)
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        volume: [go, rust]
+        mode: [single, distributed]
+
+    steps:
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
+    - name: Link to seaweed-mono source
+      if: github.event_name == 'repository_dispatch'
+      uses: ./.github/actions/mono-source-link
+
+    - name: Clone seaweed-mono (enterprise) source
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Download Go modules (retried)
+      working-directory: seaweedfs-source/enterprise/weed
+      run: "$GITHUB_WORKSPACE/.github/scripts/go-mod-retry.sh"
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry and target
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          seaweedfs-source/enterprise/seaweed-vector/target
+        # The suite's Makefile exports CARGO_TARGET_DIR=seaweed-vector/target
+        # for every crate it builds (weed-vector-server, sw-vector-distributed,
+        # weed-volume), so one target dir covers the whole build.
+        key: s3vectors-rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-vector/Cargo.lock', 'seaweedfs-source/enterprise/seaweed-volume/Cargo.lock', 'seaweedfs-source/enterprise/rust/Cargo.lock') }}
+        restore-keys: |
+          s3vectors-rust-
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.x'
+
+    - name: Install test dependencies
+      working-directory: seaweedfs-source/enterprise/test/s3vectors
+      run: pip install -r requirements.txt
+
+    - name: Build weed, weed-vector, worker, and volume binaries
+      working-directory: seaweedfs-source/enterprise/test/s3vectors
+      run: make build
+      env:
+        CARGO_PROFILE: release
+
+    - name: Run s3vectors integration tests
+      working-directory: seaweedfs-source/enterprise/test/s3vectors
+      env:
+        VOLUME_SERVER_IMPL: ${{ matrix.volume }}
+        VECTOR_QUERY_MODE: ${{ matrix.mode }}
+      run: ./run_test.sh
+
+    - name: Collect cluster logs on failure
+      if: failure()
+      run: |
+        mkdir -p /tmp/s3vectors-logs
+        find /tmp -maxdepth 2 -type d -name "vectors-*" -print -exec cp -r {} /tmp/s3vectors-logs/ \; || true
+
+    - name: Archive logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: s3vectors-test-logs-${{ matrix.volume }}-${{ matrix.mode }}-${{ github.run_id }}
+        path: /tmp/s3vectors-logs/
+        if-no-files-found: warn
+        retention-days: 7
+
+    - name: Test summary
+      if: always()
+      run: |
+        echo "## S3 Vectors Integration Test Summary (${{ matrix.volume }}-volume, ${{ matrix.mode }} queries)" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Source: github.com/seaweedfs/seaweed-mono enterprise/ (branch: ${{ env.BRANCH_NAME }}, commit: ${{ env.COMMIT_SHA }})" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Suite: test/s3vectors (VOLUME_SERVER_IMPL=${{ matrix.volume }}, VECTOR_QUERY_MODE=${{ matrix.mode }})" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Command: make build && ./run_test.sh" >> "$GITHUB_STEP_SUMMARY"
