@@ -154,7 +154,7 @@ jobs:
       if: failure()
       run: |
         mkdir -p /tmp/s3vectors-logs
-        find /tmp -maxdepth 2 -type d -name "vectors-*" -print -exec cp -r {} /tmp/s3vectors-logs/ \; || true
+        find /tmp -type d -name "vectors-*" -print -exec cp -r {} /tmp/s3vectors-logs/ \; || true
 
     - name: Archive logs on failure
       if: failure()
