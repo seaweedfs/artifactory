@@ -149,7 +149,19 @@ jobs:
       env:
         VOLUME_SERVER_IMPL: ${{ matrix.volume }}
         VECTOR_QUERY_MODE: ${{ matrix.mode }}
-      run: ./run_test.sh --basetemp=/tmp/s3vectors-work
+      # Same gate as upstream's rust-vector-tests.yml: a leg that skipped or
+      # collected nothing would otherwise pass.
+      run: |
+        ./run_test.sh --basetemp=/tmp/s3vectors-work --junitxml=/tmp/s3vectors-results.xml
+        python - <<'PY'
+        import os
+        import xml.etree.ElementTree as ET
+        cases = ET.parse("/tmp/s3vectors-results.xml").findall(".//testcase")
+        assert len(cases) >= 17, f"expected at least 17 cases, got {len(cases)}"
+        assert not any(case.find("skipped") is not None for case in cases), "integration cases were skipped"
+        leg = f"[{os.environ['VOLUME_SERVER_IMPL']}-{os.environ['VECTOR_QUERY_MODE']}]"
+        assert all(case.get("name", "").endswith(leg) for case in cases), leg
+        PY
 
     - name: Collect cluster logs on failure
       if: failure()
