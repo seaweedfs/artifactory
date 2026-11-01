@@ -321,3 +321,50 @@ jobs:
       - name: Test seaweed-vector
         working-directory: seaweedfs-source/enterprise/seaweed-vector
         run: cargo test --locked --workspace
+
+  # Upstream's rust-worker-tests.yml.
+  rust-worker:
+    name: Rust plugin worker unit tests
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/worker-target
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/runner-housekeeping
+      - uses: ./.github/actions/mono-source-link
+        if: github.event_name == 'repository_dispatch'
+      - uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            worker-target
+          key: rust-worker-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('seaweedfs-source/enterprise/seaweed-worker/Cargo.lock', 'seaweedfs-source/enterprise/seaweed-common/Cargo.lock') }}
+          restore-keys: rust-worker-${{ runner.os }}-${{ runner.arch }}-
+      - name: Use the vendored protoc
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-worker
+          cargo fetch
+          version=$(awk '/^name = "protoc-bin-vendored-linux-x86_64"$/{found=1; next} found && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
+          test -n "$version" || { echo "protoc-bin-vendored-linux-x86_64 is not in Cargo.lock" >&2; exit 1; }
+          protoc=$(find ~/.cargo/registry/src -path "*protoc-bin-vendored-linux-x86_64-$version/bin/protoc" | head -1)
+          test -x "$protoc" || { echo "no vendored protoc $version in the registry" >&2; exit 1; }
+          echo "PROTOC=$protoc" >> "$GITHUB_ENV"
+      # seaweed-common is a path dependency, not a workspace member, so
+      # --workspace below does not reach its tests.
+      - name: Test seaweed-common
+        working-directory: seaweedfs-source/enterprise/seaweed-common
+        run: cargo test --locked
+      - name: Test seaweed-worker
+        working-directory: seaweedfs-source/enterprise/seaweed-worker
+        run: cargo test --locked --workspace
