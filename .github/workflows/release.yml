@@ -143,8 +143,8 @@ jobs:
   # Tag the seaweed-mono commit these binaries were built from as
   # enterprise-<version>, and list the seaweed-mono PRs merged since the
   # previous enterprise-* tag in the release notes, the way OSS releases list
-  # theirs. Runs once the builds are done, even if some platform failed; the
-  # assets that did publish came from this commit.
+  # theirs. Runs once the builds are done, even if some platform failed,
+  # unless a failed rebuild left assets from the commit tagged before.
   release-notes:
     needs: [prepare-release, build-release-binaries]
     if: ${{ !cancelled() && needs.prepare-release.result == 'success' }}
@@ -156,6 +156,7 @@ jobs:
       - name: Tag seaweed-mono and write the enterprise change log
         env:
           MONO_SHA: ${{ needs.prepare-release.outputs.mono_sha }}
+          BUILD_RESULT: ${{ needs.build-release-binaries.result }}
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
