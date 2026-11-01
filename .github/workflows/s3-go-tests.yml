@@ -1170,12 +1170,16 @@ jobs:
         with:
           mode: release
 
-  # Upstream's s3-sqlite-cbs-regressions (seaweedfs#12243). The suite picks
-  # free ports for its weed mini, so it needs no tp01 host-port lock.
+  # Upstream's s3-sqlite-cbs-regressions (seaweedfs#12243). Its weed mini
+  # uses free ports, but on tp01 it still takes the host lock: other jobs
+  # holding it run `pkill -f weed`, which would kill this suite's server.
   s3-sqlite-cbs-tests:
     name: S3 SQLite CBS Regression Tests
+    concurrency:
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-sqlite-cbs-tests', strategy.job-index) }}
+      cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 100 || 20 }}
 
     steps:
       - name: Checkout artifactory repo
@@ -1183,6 +1187,12 @@ jobs:
 
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
@@ -1221,6 +1231,12 @@ jobs:
           name: s3-sqlite-cbs-test-logs
           path: seaweedfs-source/enterprise/test/s3/sqlite_cbs/tmp/seaweedfs_sqlite_cbs_*
           retention-days: 3
+
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
 
   s3-test-summary:
     name: S3 Test Summary
