@@ -21,6 +21,7 @@
 #                 contents:write, the notes alone need read
 #   GH_TOKEN      token that can edit this repository's releases
 #   GH_REPO       this repository (owner/name), as Actions sets it
+#   BUILD_RESULT  result of the build jobs (default success)
 #   PREVIOUS_TAG  optional: seaweed-mono tag to list changes from, instead of
 #                 the latest enterprise-* tag below this release
 #   DRY_RUN=1     print the notes; create no tag and edit no release
@@ -57,6 +58,12 @@ if [ -n "$DRY_RUN" ]; then
 else
   current=$(mono "repos/${MONO_REPO}/git/matching-refs/tags/${mono_tag}" \
     --jq ".[] | select(.ref == \"refs/tags/${mono_tag}\") | .object.sha")
+  # Failed legs keep their assets from the commit the tag names, so neither
+  # moves until the failed jobs are re-run from this commit.
+  if [ "${BUILD_RESULT:-success}" != success ] && [ -n "$current" ] && [ "$current" != "$MONO_SHA" ]; then
+    echo "::warning::some ${TAG} builds failed and their assets are still from ${current}; leaving ${mono_tag} and the notes as they are. Re-run the failed jobs to finish ${TAG} from ${MONO_SHA}."
+    exit 0
+  fi
   if [ "$current" = "$MONO_SHA" ]; then
     echo "${MONO_REPO} ${mono_tag} already at ${MONO_SHA}"
     tagged=1
