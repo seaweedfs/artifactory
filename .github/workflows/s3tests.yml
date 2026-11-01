@@ -935,7 +935,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 'sql-store-tests', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 95 || 15 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 95 || 20 }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -996,7 +996,8 @@ jobs:
           S3_TESTS_PATH: s3-tests
 
       - name: Run Ceph S3 tests with SQL store
-        timeout-minutes: 15
+        # The expiration pair takes about 2.5 minutes and may run three times.
+        timeout-minutes: 20
         shell: bash
         run: |
           cd seaweedfs-source/enterprise/weed
