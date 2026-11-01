@@ -60,6 +60,7 @@ jobs:
         with:
           tag: ${{ env.TAG }}
           mono-token: ${{ secrets.MONO_TOKEN }}
+          ref: ${{ steps.mono.outputs.sha }}
 
       - name: Ensure the release exists
         uses: ./.github/actions/ensure-release
