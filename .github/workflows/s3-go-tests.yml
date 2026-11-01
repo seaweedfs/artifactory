@@ -1170,6 +1170,58 @@ jobs:
         with:
           mode: release
 
+  # Upstream's s3-sqlite-cbs-regressions (seaweedfs#12243). The suite picks
+  # free ports for its weed mini, so it needs no tp01 host-port lock.
+  s3-sqlite-cbs-tests:
+    name: S3 SQLite CBS Regression Tests
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+      - name: Build SeaweedFS
+        working-directory: seaweedfs-source/enterprise
+        run: go build -o weed/weed -buildvcs=false ./weed
+
+      - name: Run SQLite CBS regressions
+        timeout-minutes: 15
+        working-directory: seaweedfs-source/enterprise
+        env:
+          TMPDIR: ${{ github.workspace }}/seaweedfs-source/enterprise/test/s3/sqlite_cbs/tmp
+          S3_SQLITE_CBS_KEEP_LOGS: "1"
+          WEED_BINARY: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+        run: |
+          set -x
+          mkdir -p "$TMPDIR"
+          go test -v -count=1 -timeout=12m ./test/s3/sqlite_cbs
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-sqlite-cbs-test-logs
+          path: seaweedfs-source/enterprise/test/s3/sqlite_cbs/tmp/seaweedfs_sqlite_cbs_*
+          retention-days: 3
+
   s3-test-summary:
     name: S3 Test Summary
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
@@ -1193,6 +1245,7 @@ jobs:
       - s3-versioning-stress
       - s3-tagging-tests
       - s3-remote-cache-tests
+      - s3-sqlite-cbs-tests
     if: always()
     steps:
       - name: Generate Test Summary
@@ -1219,6 +1272,7 @@ jobs:
           echo "- **S3 Versioning Stress**: ${{ needs.s3-versioning-stress.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- **S3 Tagging**: ${{ needs.s3-tagging-tests.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- **S3 Remote Cache**: ${{ needs.s3-remote-cache-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 SQLite CBS**: ${{ needs.s3-sqlite-cbs-tests.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Count successful tests
@@ -1234,11 +1288,12 @@ jobs:
           [ "${{ needs.s3-versioning-stress.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
           [ "${{ needs.s3-tagging-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
           [ "${{ needs.s3-remote-cache-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          [ "${{ needs.s3-sqlite-cbs-tests.result }}" = "success" ] && SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
 
           echo "### Summary" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **$SUCCESS_COUNT/11** test suites passed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **$SUCCESS_COUNT/12** test suites passed" >> $GITHUB_STEP_SUMMARY
 
-          if [ $SUCCESS_COUNT -eq 11 ]; then
+          if [ $SUCCESS_COUNT -eq 12 ]; then
             echo "🎉 **All S3 tests passed!**" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ **Some tests failed. Check individual job logs for details.**" >> $GITHUB_STEP_SUMMARY
