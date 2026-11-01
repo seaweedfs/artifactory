@@ -89,13 +89,15 @@ fi
 # A PR counts when it targets the enterprise branch or changes the enterprise
 # product: enterprise/ on main, or the root layout (weed/, seaweed-volume/...)
 # that only branches cut from enterprise have.
+# Called as an if condition, where set -e does not apply, so a failed lookup
+# exits explicitly instead of leaving the PR out.
 is_enterprise_pr() {
   local pr=$1 base files
-  base=$(mono "repos/${MONO_REPO}/pulls/${pr}" --jq .base.ref)
+  base=$(mono "repos/${MONO_REPO}/pulls/${pr}" --jq .base.ref) || exit 1
   [ "$base" = enterprise ] && return 0
   # captured first: grep -q quitting early would SIGPIPE gh, and pipefail
   # would then report a match as a miss
-  files=$(mono --paginate "repos/${MONO_REPO}/pulls/${pr}/files" --jq '.[].filename')
+  files=$(mono --paginate "repos/${MONO_REPO}/pulls/${pr}/files" --jq '.[].filename') || exit 1
   grep -qE '^(enterprise|weed|seaweed-volume|seaweed-worker|seaweed-common|seaweed-vector|rust|sw-block|docker|k8s)/' <<<"$files"
 }
 
