@@ -32,9 +32,28 @@ jobs:
   # attaches to an existing one.
   prepare-release:
     runs-on: ubuntu-24.04
+    outputs:
+      mono_sha: ${{ steps.mono.outputs.sha }}
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+
+      # Every build leg and the release notes use this one commit. Each leg
+      # used to clone main on its own, so a push to main mid-release could
+      # leave the platforms built from different commits.
+      - name: Resolve the seaweed-mono commit to release
+        id: mono
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha=$(.github/scripts/git-retry.sh ls-remote "https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git" refs/heads/main | cut -f1)
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not resolve seaweed-mono main"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Releasing seaweed-mono main at ${sha}"
 
       - name: Verify enterprise version matches release tag
         uses: ./.github/actions/verify-enterprise-version
@@ -79,9 +98,12 @@ jobs:
       - name: Clone seaweed-mono (enterprise) source
         env:
           MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          MONO_SHA: ${{ needs.prepare-release.outputs.mono_sha }}
         run: |
           .github/scripts/git-retry.sh clone -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
           cd seaweedfs-enterprise-source
+          # the commit prepare-release resolved, even if main moved since
+          git checkout -q "$MONO_SHA"
           echo "Cloned enterprise branch commit: $(git rev-parse HEAD)"
           echo "COMMIT_SHA=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
 
@@ -116,3 +138,24 @@ jobs:
           project_path: seaweedfs-enterprise-source/enterprise/weed
           binary_name: weed
           asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}_large_disk" 
+
+  # Tag the seaweed-mono commit these binaries were built from as
+  # enterprise-<version>, and list the seaweed-mono PRs merged since the
+  # previous enterprise-* tag in the release notes, the way OSS releases list
+  # theirs. Runs once the builds are done, even if some platform failed; the
+  # assets that did publish came from this commit.
+  release-notes:
+    needs: [prepare-release, build-release-binaries]
+    if: ${{ !cancelled() && needs.prepare-release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Tag seaweed-mono and write the enterprise change log
+        env:
+          MONO_SHA: ${{ needs.prepare-release.outputs.mono_sha }}
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/enterprise-release-notes.sh
