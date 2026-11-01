@@ -17,8 +17,8 @@
 # Environment:
 #   TAG           release tag being published (e.g. 4.52 or 4.52.1)
 #   MONO_SHA      the seaweed-mono commit the binaries were built from
-#   MONO_TOKEN    token for seaweedfs/seaweed-mono; tagging needs
-#                 contents:write, the notes alone need read
+#   MONO_TOKEN    token with contents:write on seaweedfs/seaweed-mono, for
+#                 the tag and for generate-notes
 #   GH_TOKEN      token that can edit this repository's releases
 #   GH_REPO       this repository (owner/name), as Actions sets it
 #   BUILD_RESULT  result of the build jobs (default success)
