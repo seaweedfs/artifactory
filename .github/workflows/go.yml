@@ -269,6 +269,8 @@ jobs:
 
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
@@ -306,6 +308,8 @@ jobs:
       CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/runner-housekeeping
       - uses: ./.github/actions/mono-source-link
         if: github.event_name == 'repository_dispatch'
@@ -367,6 +371,8 @@ jobs:
       CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/runner-housekeeping
       - uses: ./.github/actions/mono-source-link
         if: github.event_name == 'repository_dispatch'
