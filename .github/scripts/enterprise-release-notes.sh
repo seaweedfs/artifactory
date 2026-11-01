@@ -158,9 +158,10 @@ fi
 
 # --- write it into the release ----------------------------------------------
 # Replace an earlier copy of the section and keep anything else the release
-# says, so hand-written notes survive a re-run.
+# says, so hand-written notes survive a re-run. A body saved from the web
+# editor has CRLF line ends.
 body=$(gh release view "$TAG" --json body --jq .body)
-rest=$(awk -v s="$START" -v e="$END" '$0 == s { skip = 1; next } $0 == e { skip = 0; next } !skip' <<<"$body" | sed '/./,$!d')
+rest=$(awk -v s="$START" -v e="$END" '{ sub(/\r$/, "") } $0 == s { skip = 1; next } $0 == e { skip = 0; next } !skip' <<<"$body" | sed '/./,$!d')
 notes=$(mktemp)
 {
   echo "$section"
