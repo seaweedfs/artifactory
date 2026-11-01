@@ -12,6 +12,10 @@ inputs:
   mono-token:
     description: Token with read access to seaweedfs/seaweed-mono
     required: true
+  ref:
+    description: seaweed-mono commit or branch whose constants to check
+    required: false
+    default: main
 
 runs:
   using: composite
@@ -21,6 +25,7 @@ runs:
       env:
         TAG: ${{ inputs.tag }}
         MONO_TOKEN: ${{ inputs.mono-token }}
+        REF: ${{ inputs.ref }}
       run: |
         set -euo pipefail
 
@@ -35,7 +40,7 @@ runs:
         constants=$(curl -fsSL \
           -H "Authorization: token ${MONO_TOKEN}" \
           -H "Accept: application/vnd.github.raw" \
-          "https://api.github.com/repos/seaweedfs/seaweed-mono/contents/enterprise/weed/util/version/constants.go?ref=main")
+          "https://api.github.com/repos/seaweedfs/seaweed-mono/contents/enterprise/weed/util/version/constants.go?ref=${REF}")
 
         major=$(sed -n 's/.*MAJOR_VERSION[[:space:]]*=[[:space:]]*int32(\([0-9]\{1,\}\)).*/\1/p' <<<"$constants")
         minor=$(sed -n 's/.*MINOR_VERSION[[:space:]]*=[[:space:]]*int32(\([0-9]\{1,\}\)).*/\1/p' <<<"$constants")
@@ -46,7 +51,7 @@ runs:
         version=$(printf '%d.%02d' "$major" "$minor")
 
         if (( tag_major != major || tag_minor != minor )); then
-          echo "::error::release tag ${tag} does not match enterprise version ${version} in seaweed-mono main (enterprise/weed/util/version/constants.go); bump the version constants there before tagging"
+          echo "::error::release tag ${tag} does not match enterprise version ${version} in seaweed-mono ${REF} (enterprise/weed/util/version/constants.go); bump the version constants there before tagging"
           exit 1
         fi
         echo "Release tag ${tag} matches enterprise version ${version}."
