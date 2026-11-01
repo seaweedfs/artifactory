@@ -556,6 +556,7 @@ jobs:
           - TestLifecycleSuspendedVersioningExpiration
           - TestLifecycleTagFilter
           - TestLifecycleVersionedBucketCreatesDeleteMarker
+          - TestLifecycleVersionedBucketExpiresOnSecondRun
 
     steps:
       - name: Checkout artifactory repo
