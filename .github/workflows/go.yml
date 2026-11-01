@@ -260,6 +260,39 @@ jobs:
       working-directory: seaweedfs-source/enterprise/weed
       run: GOOS=linux GOARCH=386 go test -short -timeout 20m ./...
 
+  # Upstream's build-azurekms job. weed/kms/azure is excluded from every
+  # default build, so without this nothing compiles it.
+  build-azurekms:
+    name: Build and test with azurekms tag
+    runs-on: ${{ (inputs.runner || 'tp01') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    steps:
+
+    - name: Checkout artifactory repo
+      uses: actions/checkout@v6
+
+    - name: Runner housekeeping (self-hosted only)
+      uses: ./.github/actions/runner-housekeeping
+
+    - name: Clone seaweed-mono (enterprise) source
+      uses: ./.github/actions/clone-mono-source
+      with:
+        token: ${{ secrets.MONO_TOKEN }}
+        branch: ${{ github.event.inputs.gitlab_branch }}
+        sha: ${{ inputs.mono_sha }}
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: 'seaweedfs-source/enterprise/go.mod'
+        cache: ${{ runner.environment == 'github-hosted' }}
+        cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+    - name: Build and test with azurekms
+      working-directory: seaweedfs-source/enterprise/weed
+      run: |
+        go build -tags azurekms ./...
+        go test -tags azurekms ./kms/...
+
   # Unit tests only. The integration suite moved to enterprise/test/s3vectors
   # and runs per volume and query mode in s3vectors-tests.yml.
   vectors:
