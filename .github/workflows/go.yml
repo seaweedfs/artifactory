@@ -348,9 +348,9 @@ jobs:
           protoc=$(find ~/.cargo/registry/src -path "*protoc-bin-vendored-linux-x86_64-$version/bin/protoc" | head -1)
           test -x "$protoc" || { echo "no vendored protoc $version in the registry" >&2; exit 1; }
           echo "PROTOC=$protoc" >> "$GITHUB_ENV"
-      - name: Test Go vector gateway and coordinator
+      - name: Test Go vector gateway, router and placement
         working-directory: seaweedfs-source/enterprise
-        run: go test -timeout 5m ./vector/coordinator ./weed/cluster ./weed/s3api/s3vectors ./weed/s3api/lance
+        run: go test -timeout 5m ./vector/... ./weed/cluster ./weed/s3api/s3vectors ./weed/s3api/lance
       - name: Test sw-vector-distributed
         working-directory: seaweedfs-source/enterprise
         run: cargo test --locked --manifest-path rust/Cargo.toml -p sw-vector-distributed
