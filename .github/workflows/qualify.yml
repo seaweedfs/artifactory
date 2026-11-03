@@ -142,8 +142,11 @@ jobs:
       cancel-in-progress: false
     steps:
 
+    # A persisted GITHUB_TOKEN header would override MONO_TOKEN in ls-remote.
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
@@ -501,8 +504,11 @@ jobs:
           exit 1
         fi
 
+    # A persisted GITHUB_TOKEN header would override MONO_TOKEN in ls-remote.
     - name: Checkout artifactory repo
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Runner housekeeping (self-hosted only)
       uses: ./.github/actions/runner-housekeeping
