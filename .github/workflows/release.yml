@@ -35,8 +35,11 @@ jobs:
     outputs:
       mono_sha: ${{ steps.mono.outputs.sha }}
     steps:
+      # A persisted GITHUB_TOKEN header would override MONO_TOKEN in ls-remote.
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       # Every build leg and the release notes use this one commit. Each leg
       # used to clone main on its own, so a push to main mid-release could
