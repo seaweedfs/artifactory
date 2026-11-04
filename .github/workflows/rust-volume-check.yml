@@ -12,7 +12,9 @@ run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.m
 #      must exist in the Rust copy, and the Rust-only marker block must still be
 #      there (it is what tells the next re-sync what to keep);
 #   2. cargo check with --features rdma (the RDMA code is feature-gated; the
-#      default build would not see a breakage inside rdma.rs).
+#      default build would not see a breakage inside rdma.rs), then with the
+#      release asset's rdma,rdma-dc,kvcache, which otherwise only a release tag
+#      would build.
 #
 # Hosted only: it is PR-triggered (mono-merge-request), and PR-triggered work
 # never runs on the self-hosted runner.
@@ -94,7 +96,7 @@ jobs:
   cargo-check-rdma:
     name: cargo check --features rdma
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout artifactory repo
         uses: actions/checkout@v6
@@ -124,3 +126,7 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo check --features rdma --bins --lib --tests
+      - name: cargo check --features rdma,rdma-dc,kvcache (the release RDMA asset)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo check --features rdma,rdma-dc,kvcache --bins --lib --tests
