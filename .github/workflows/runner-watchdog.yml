@@ -190,6 +190,13 @@ jobs:
                 *,self-hosted,*) ;;
                 *) echo "run $id: queued ${age}m on hosted labels [$labels] - ordinary queue, leaving it"; continue ;;
               esac
+              # A measurement run (run name " · measure", set by measurement=true or a
+              # nonempty only_job) is never rescued: its inputs (only_job, measurement)
+              # are not rebuilt from the run name, so a rescue would turn a bounded
+              # one-job proof into a full production-group suite on hosted.
+              case "$title" in
+                *" · measure"*) echo "run $id: queued ${age}m - measurement run, never rescued"; continue ;;
+              esac
               if [ "$age" -lt "$MAX_MIN" ]; then echo "run $id: queued ${age}m on [$labels] - under the ${MAX_MIN}m limit"; continue; fi
               # Busy is not offline. One runner serialises a whole mono push, so a
               # deep queue is the healthy state; evacuating it to hosted would
