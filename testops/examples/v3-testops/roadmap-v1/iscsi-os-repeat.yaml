@@ -1,0 +1,94 @@
+apiVersion: testrunner.io/v1
+kind: Scenario
+metadata:
+  name: v3-iscsi-os-repeat
+  testrunner.minVersion: "0.3.0"
+  product: seaweed-block
+  tier: TierBlock
+  tags: [iscsi, p2, os-initiator, smoke]
+  qa_assignment: internal/docs/qa-assignments/iscsi-p2-p3-lab-validation.md#test-1
+
+env:
+  product_root:    "{{required \"product_root\"}}"
+  artifact_dir:    "{{required \"artifact_dir\"}}"
+  iterations:      5
+  iqn:             "iqn.2026-05.io.seaweedfs:os-smoke-v1"
+  port:            3267
+  master_listen:   "127.0.0.1:19333"
+  durable_root:    "/tmp/sw-block-iscsi-os/run/durable"
+
+phases:
+  - id: build
+    action: go_build_set
+    cwd: "{{.env.product_root}}"
+    binaries:
+      - { package: ./cmd/blockmaster, out: bin/blockmaster }
+      - { package: ./cmd/blockvolume, out: bin/blockvolume }
+
+  - id: spawn_master
+    template: ../templates/blockmaster-spawn.yaml
+    vars:
+      bin:          "{{.phases.build.outputs.bin/blockmaster}}"
+      listen:       "{{.env.master_listen}}"
+      artifact_dir: "{{.env.artifact_dir}}"
+
+  - id: spawn_volume
+    template: ../templates/blockvolume-spawn.yaml
+    vars:
+      bin:          "{{.phases.build.outputs.bin/blockvolume}}"
+      master:       "{{.phases.spawn_master.outputs.listen}}"
+      artifact_dir: "{{.env.artifact_dir}}"
+      durable_root: "{{.env.durable_root}}"
+      iscsi_listen: "127.0.0.1:{{.env.port}}"
+      iscsi_iqn:    "{{.env.iqn}}"
+
+  - id: iscsi_loop
+    action: loop
+    count: "{{.env.iterations}}"
+    body:
+      - id: discover
+        action: iscsi_discovery
+        portal: "127.0.0.1:{{.env.port}}"
+      - id: login
+        action: iscsi_login
+        portal: "127.0.0.1:{{.env.port}}"
+        iqn:    "{{.env.iqn}}"
+      - id: wait_dev
+        action: wait_iscsi_block_device
+        portal: "127.0.0.1:{{.env.port}}"
+        iqn:    "{{.env.iqn}}"
+        timeout: 30s
+      - id: mkfs
+        action: mkfs
+        device: "{{.phases.wait_dev.outputs.device}}"
+        fs:     ext4
+      - id: mount_write_read
+        action: mount_write_verify
+        device: "{{.phases.wait_dev.outputs.device}}"
+        size_mb: 16
+        verify: sha256sum
+      - id: dd_stress
+        action: dd_seq
+        device: "{{.phases.wait_dev.outputs.device}}"
+        bs: 1M
+        count: 16
+      - id: logout
+        action: iscsi_logout
+        portal: "127.0.0.1:{{.env.port}}"
+        iqn:    "{{.env.iqn}}"
+
+  - id: assert_no_data_out_errors
+    action: assert_grep_count
+    file:    "{{.phases.spawn_volume.outputs.log}}"
+    pattern: "expected Data-Out"
+    expect:  0
+
+  - id: assert_no_active_iscsi
+    action: assert_no_active_iscsi_sessions
+
+cleanup:
+  - action: iscsi_logout_all
+  - action: kill
+    pid: "{{.phases.spawn_volume.outputs.pid}}"
+  - action: kill
+    pid: "{{.phases.spawn_master.outputs.pid}}"
