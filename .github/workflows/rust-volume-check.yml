@@ -130,3 +130,44 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo check --features rdma,rdma-dc,kvcache --bins --lib --tests
+
+  cargo-check-msrv:
+    name: cargo check declared MSRV (release features)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+      - name: Install RDMA headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libibverbs-dev librdmacm-dev protobuf-compiler
+      - name: Read and install the declared MSRV
+        id: msrv
+        run: |
+          version=$(python3 -c 'import pathlib, re, tomllib; v=tomllib.loads(pathlib.Path("seaweedfs-source/enterprise/seaweed-volume/Cargo.toml").read_text())["package"]["rust-version"]; assert re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", v), v; print(v)')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          rustup toolchain install "$version" --profile minimal
+          rustup run "$version" rustc --version
+      - name: Cache MSRV registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-check-msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-check-msrv-${{ steps.msrv.outputs.version }}-
+      - name: Check all release-feature targets on the declared MSRV
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo +"$MSRV" check --locked --features rdma,rdma-dc,kvcache --bins --lib --tests
