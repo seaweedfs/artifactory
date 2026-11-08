@@ -55,7 +55,7 @@ class SelectedRustTargets(unittest.TestCase):
             fake = root / 'bin'
             fake.mkdir()
             cargo = fake / 'cargo'
-            cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\nassert "rdma,kvcache,test-support" in sys.argv,sys.argv\nassert "rdma-dc" not in ",".join(sys.argv),sys.argv\nopen(os.environ["CARGO_ARGS"],"w").write(json.dumps(sys.argv[1:]))\nif "--message-format=json" in sys.argv:\n assert "rdma_inventory_startup" in sys.argv,sys.argv\n print(json.dumps({"reason":"compiler-artifact","target":{"name":"rdma_inventory_startup"},"profile":{"test":True},"executable":os.environ["FAKE_BINARY"]}))\n')
+            cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\ntarget=sys.argv[sys.argv.index("--test")+1] if "--test" in sys.argv else ""\nassert ("rdma,test-support" if target=="rdma_inventory_resolve" else "rdma,kvcache,test-support") in sys.argv,sys.argv\nassert "rdma-dc" not in ",".join(sys.argv),sys.argv\nopen(os.environ["CARGO_ARGS"],"w").write(json.dumps(sys.argv[1:]))\nif "--message-format=json" in sys.argv:\n assert target in ("rdma_inventory_startup","rdma_inventory_resolve"),sys.argv\n print(json.dumps({"reason":"compiler-artifact","target":{"name":target},"profile":{"test":True},"executable":os.environ["FAKE_BINARY"]}))\n')
             cargo.chmod(0o755)
             env = dict(os.environ, PATH=str(fake) + ':/usr/bin:/bin', GITHUB_WORKSPACE=td,
                        RUNNER_ENVIRONMENT='self-hosted', RXE_IP='192.0.2.10',
@@ -145,6 +145,25 @@ class SelectedRustTargets(unittest.TestCase):
         ]:
             with self.subTest(summary=summary, status=status):
                 self.check_run(body, summary, expected, status)
+
+    def test_inventory_resolve_selected_guarded_caller(self):
+        body = self.step('Shipped volume inventory resolve')
+        for summary, status, expected in [
+            (PASS_IGNORED, 0, True),
+            ('test result: ok. 0 passed; 0 failed; 0 ignored;', 0, False),
+            ('no summary', 0, False),
+            (ONE_PASS + '\n' + FAILED, 0, False),
+            (FAILED + '\n' + ONE_PASS, 0, False),
+            (ONE_PASS, 23, False),
+        ]:
+            with self.subTest(summary=summary, status=status):
+                q = self.invoke(body, summary, status, targets=['rdma_inventory_resolve'])
+                self.assertEqual(q.returncode == 0, expected, q.stdout + q.stderr)
+                if expected:
+                    i = q.cargo_args.index('--test')
+                    self.assertEqual(q.cargo_args[i + 1], 'rdma_inventory_resolve')
+                    self.assertEqual(q.cargo_args[q.cargo_args.index('--features') + 1], 'rdma,test-support')
+                    self.assertEqual(q.binary_calls, ['rdma_inventory_resolve-fixture'])
 
 
 if __name__ == '__main__':

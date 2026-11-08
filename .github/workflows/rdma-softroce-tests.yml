@@ -431,6 +431,20 @@ jobs:
             bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
             "$GITHUB_WORKSPACE/.github/scripts/run-rust-tests-nonzero.sh" "$BIN"
 
+      # This non-e2e target is cfg-gated on rdma + test-support.
+      - name: Shipped volume inventory resolve (rdma,test-support)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -euo pipefail
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test --features rdma,test-support --test rdma_inventory_resolve --no-run --message-format=json > inventory-resolve-build.json
+          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("inventory-resolve-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="rdma_inventory_resolve" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
+          $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+            bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
+            "$GITHUB_WORKSPACE/.github/scripts/run-rust-tests-nonzero.sh" "$BIN"
+
       # Each row starts listeners that live until its process exits. Run every
       # ignored push-range row separately, and require one actual passing test.
       - name: Shipped volume push-range tests (one process per row)
@@ -469,5 +483,6 @@ jobs:
             echo "- sw-rdma-object (real-rdma): ${object:-none}"
             echo "- sw-rdma-vfs (real-rdma): ${vfs:-none}"
             echo "- seaweed-volume (rdma,kvcache,test-support): ${vol:-none},rdma_inventory_startup"
+            echo "- seaweed-volume (rdma,test-support): rdma_inventory_resolve"
             echo "- NOT_RUN rdma_dc_compaction_repro_e2e: requires mlx5 DC; software lane keeps rdma-dc disabled."
           } >> "$GITHUB_STEP_SUMMARY"
