@@ -28,17 +28,24 @@ class SelectedRustTargets(unittest.TestCase):
         self.assertEqual(len(matches), 1, prefix)
         return matches[0]
 
-    def invoke(self, body, summary, status=0):
+    def invoke(self, body, summary, status=0, targets=None, zero_target=''):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             volume = root / 'seaweedfs-source/enterprise/seaweed-volume'
             (volume / 'tests').mkdir(parents=True)
-            (volume / 'tests/rdma_selected_e2e.rs').write_text('// fixture\n')
+            for component in ['sw-rdma-vfs', 'sw-rdma-loader', 'sw-rdma-object']:
+                tests = root / 'seaweedfs-source/enterprise/rust' / component / 'tests'
+                tests.mkdir(parents=True)
+                (tests / 'rdma_fixture_e2e.rs').write_text('// summary discovery fixture\n')
+            targets = targets or ['rdma_selected_e2e']
+            for target in targets:
+                (volume / ('tests/' + target + '.rs')).write_text('// fixture\n')
             deps = volume / 'target/debug/deps'
             deps.mkdir(parents=True)
-            binary = deps / 'rdma_selected_e2e-fixture'
-            binary.write_text('#!/bin/bash\ntest "$RXE_IP" = 192.0.2.10 || exit 92\nprintf "%s\\n" "$FAKE_SUMMARY"\nexit "$FAKE_EXIT"\n')
-            binary.chmod(0o755)
+            for target in targets:
+                binary = deps / (target + '-fixture')
+                binary.write_text('#!/bin/bash\ntest "$RXE_IP" = 192.0.2.10 || exit 92\necho "${0##*/}" >> "$BINARY_CALLS"\nif [ "${0##*/}" = "$ZERO_TARGET-fixture" ]; then echo "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"; else printf "%s\\n" "$FAKE_SUMMARY"; fi\nexit "$FAKE_EXIT"\n')
+                binary.chmod(0o755)
             scripts = root / '.github/scripts'
             scripts.mkdir(parents=True)
             helper = REPO / '.github/scripts/run-rust-tests-nonzero.sh'
@@ -48,16 +55,52 @@ class SelectedRustTargets(unittest.TestCase):
             fake = root / 'bin'
             fake.mkdir()
             cargo = fake / 'cargo'
-            cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\nassert "rdma,kvcache,test-support" in sys.argv,sys.argv\nassert "rdma_inventory_startup" in sys.argv,sys.argv\nprint(json.dumps({"reason":"compiler-artifact","target":{"name":"rdma_inventory_startup"},"profile":{"test":True},"executable":os.environ["FAKE_BINARY"]}))\n')
+            cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\nassert "rdma,kvcache,test-support" in sys.argv,sys.argv\nassert "rdma-dc" not in ",".join(sys.argv),sys.argv\nopen(os.environ["CARGO_ARGS"],"w").write(json.dumps(sys.argv[1:]))\nif "--message-format=json" in sys.argv:\n assert "rdma_inventory_startup" in sys.argv,sys.argv\n print(json.dumps({"reason":"compiler-artifact","target":{"name":"rdma_inventory_startup"},"profile":{"test":True},"executable":os.environ["FAKE_BINARY"]}))\n')
             cargo.chmod(0o755)
             env = dict(os.environ, PATH=str(fake) + ':/usr/bin:/bin', GITHUB_WORKSPACE=td,
                        RUNNER_ENVIRONMENT='self-hosted', RXE_IP='192.0.2.10',
                        RUST_BACKTRACE='1', FAKE_BINARY=str(binary),
-                       FAKE_SUMMARY=summary, FAKE_EXIT=str(status))
+                       FAKE_SUMMARY=summary, FAKE_EXIT=str(status),
+                       ZERO_TARGET=zero_target, BINARY_CALLS=str(root / 'binary-calls'),
+                       CARGO_ARGS=str(root / 'cargo-args'), GITHUB_STEP_SUMMARY=str(root / 'summary'))
             # Memlock is preprovisioned by the runner, outside this caller test.
             env['BASH_FUNC_ulimit%%'] = '() { return 0; }'
-            return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body],
-                                  cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            result.cargo_args = json.loads((root / 'cargo-args').read_text()) if (root / 'cargo-args').exists() else []
+            result.binary_calls = (root / 'binary-calls').read_text().splitlines() if (root / 'binary-calls').exists() else []
+            result.step_summary = (root / 'summary').read_text() if (root / 'summary').exists() else ''
+            return result
+
+    def test_exact_dc_compaction_exclusion_in_both_discovery_paths(self):
+        targets = ['rdma_dc_compaction_repro_e2e', 'rdma_dc_write_contract_e2e',
+                   'rdma_dc_compaction_repro_extra_e2e', 'rdma_startup_e2e']
+        expected = set(targets) - {'rdma_dc_compaction_repro_e2e'}
+        build = self.invoke(self.step('Build shipped volume server RDMA e2e'), ONE_PASS, targets=targets)
+        with self.subTest(discovery='build'):
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            selected = {build.cargo_args[i+1] for i, value in enumerate(build.cargo_args) if value == '--test'}
+            self.assertEqual(selected, expected)
+        run = self.invoke(self.step('Run shipped volume server RDMA e2e'), ONE_PASS,
+                          targets=targets, zero_target='rdma_dc_compaction_repro_e2e')
+        with self.subTest(discovery='run'):
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertEqual(set(run.binary_calls), {target + '-fixture' for target in expected})
+        retained_guard = self.invoke(self.step('Run shipped volume server RDMA e2e'), ONE_PASS,
+                                     targets=targets, zero_target='rdma_dc_write_contract_e2e')
+        self.assertNotEqual(retained_guard.returncode, 0, retained_guard.stdout + retained_guard.stderr)
+
+    def test_dc_compaction_not_run_is_visible_in_summary(self):
+        q = self.invoke(self.step('Test summary'), ONE_PASS,
+                        targets=['rdma_dc_compaction_repro_e2e', 'rdma_dc_write_contract_e2e', 'rdma_startup_e2e'])
+        self.assertEqual(q.returncode, 0, q.stdout + q.stderr)
+        self.assertIn('NOT_RUN rdma_dc_compaction_repro_e2e', q.step_summary)
+        self.assertIn('mlx5 DC', q.step_summary)
+        selected = next(line for line in q.step_summary.splitlines() if line.startswith('- seaweed-volume ('))
+        self.assertNotIn('rdma_dc_compaction_repro_e2e', selected)
+        self.assertIn('rdma_dc_write_contract_e2e', selected)
+        self.assertIn('rdma_startup_e2e', selected)
+        self.assertIn('rdma_inventory_startup', selected)
 
     def check_run(self, body, summary, expected, status=0):
         q = self.invoke(body, summary, status)

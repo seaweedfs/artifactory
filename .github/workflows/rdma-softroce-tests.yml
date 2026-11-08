@@ -384,6 +384,7 @@ jobs:
           TESTS=""
           for f in tests/rdma_*_e2e.rs; do
             [ -e "$f" ] || continue
+            [ "$(basename "$f" .rs)" = rdma_dc_compaction_repro_e2e ] && continue
             TESTS="$TESTS --test $(basename "$f" .rs)"
           done
           if [ -z "$TESTS" ]; then echo "no shipped-volume RDMA e2e tests"; exit 0; fi
@@ -403,6 +404,7 @@ jobs:
           for f in tests/rdma_*_e2e.rs; do
             [ -e "$f" ] || continue
             t=$(basename "$f" .rs)
+            [ "$t" = rdma_dc_compaction_repro_e2e ] && continue
             BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
@@ -459,7 +461,7 @@ jobs:
           vfs=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           loader=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-loader/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           object=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-object/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
-          vol=$(cd seaweedfs-source/enterprise/seaweed-volume 2>/dev/null && for f in tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
+          vol=$(cd seaweedfs-source/enterprise/seaweed-volume 2>/dev/null && for f in tests/rdma_*_e2e.rs; do [ -e "$f" ] || continue; [ "$(basename "$f" .rs)" = rdma_dc_compaction_repro_e2e ] && continue; basename "$f" .rs; done | paste -sd, -)
           {
             echo "## RDMA software (siw) e2e summary"
             echo "- Layer: Soft-iWARP (siw) over the runner NIC"
@@ -467,4 +469,5 @@ jobs:
             echo "- sw-rdma-object (real-rdma): ${object:-none}"
             echo "- sw-rdma-vfs (real-rdma): ${vfs:-none}"
             echo "- seaweed-volume (rdma,kvcache,test-support): ${vol:-none},rdma_inventory_startup"
+            echo "- NOT_RUN rdma_dc_compaction_repro_e2e: requires mlx5 DC; software lane keeps rdma-dc disabled."
           } >> "$GITHUB_STEP_SUMMARY"
