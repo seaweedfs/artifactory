@@ -375,7 +375,8 @@ jobs:
 
       # The shipped volume server (enterprise/seaweed-volume) is a separate crate
       # with its own RDMA e2e tests (volume move over one-sided RDMA), built with
-      # the `rdma` + `test-support` features. Auto-discovered like the sw-rdma-vfs
+      # rdma,kvcache,test-support so cfg-gated KV tests execute too.
+      # Auto-discovered like the sw-rdma-vfs
       # set so adding a test on a branch needs no workflow change.
       - name: Build shipped volume server RDMA e2e tests (rdma)
         run: |
@@ -383,11 +384,12 @@ jobs:
           TESTS=""
           for f in tests/rdma_*_e2e.rs; do
             [ -e "$f" ] || continue
+            [ "$(basename "$f" .rs)" = rdma_dc_compaction_repro_e2e ] && continue
             TESTS="$TESTS --test $(basename "$f" .rs)"
           done
           if [ -z "$TESTS" ]; then echo "no shipped-volume RDMA e2e tests"; exit 0; fi
           echo "building shipped-volume e2e tests:$TESTS"
-          cargo test --features rdma,test-support $TESTS --no-run
+          cargo test --features rdma,kvcache,test-support $TESTS --no-run
 
       - name: Run shipped volume server RDMA e2e over software RDMA (sudo)
         env:
@@ -402,16 +404,32 @@ jobs:
           for f in tests/rdma_*_e2e.rs; do
             [ -e "$f" ] || continue
             t=$(basename "$f" .rs)
+            [ "$t" = rdma_dc_compaction_repro_e2e ] && continue
             BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
             if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
-              bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
+              bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
+              "$GITHUB_WORKSPACE/.github/scripts/run-rust-tests-nonzero.sh" "$BIN"; then
               echo "::error::$t failed"; rc=1
             fi
           done
           exit $rc
+
+      # Not named *_e2e.rs: select this executable-boundary tripwire explicitly.
+      - name: Shipped volume inventory startup (rdma,kvcache,test-support)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -euo pipefail
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test --features rdma,kvcache,test-support --test rdma_inventory_startup --no-run --message-format=json > inventory-startup-build.json
+          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("inventory-startup-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="rdma_inventory_startup" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
+          $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+            bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
+            "$GITHUB_WORKSPACE/.github/scripts/run-rust-tests-nonzero.sh" "$BIN"
 
       # Each row starts listeners that live until its process exits. Run every
       # ignored push-range row separately, and require one actual passing test.
@@ -443,12 +461,13 @@ jobs:
           vfs=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           loader=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-loader/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
           object=$(cd seaweedfs-source/enterprise/rust 2>/dev/null && for f in sw-rdma-object/tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
-          vol=$(cd seaweedfs-source/enterprise/seaweed-volume 2>/dev/null && for f in tests/rdma_*_e2e.rs; do [ -e "$f" ] && basename "$f" .rs; done | paste -sd, -)
+          vol=$(cd seaweedfs-source/enterprise/seaweed-volume 2>/dev/null && for f in tests/rdma_*_e2e.rs; do [ -e "$f" ] || continue; [ "$(basename "$f" .rs)" = rdma_dc_compaction_repro_e2e ] && continue; basename "$f" .rs; done | paste -sd, -)
           {
             echo "## RDMA software (siw) e2e summary"
             echo "- Layer: Soft-iWARP (siw) over the runner NIC"
             echo "- sw-rdma-loader (real-rdma): ${loader:-none}"
             echo "- sw-rdma-object (real-rdma): ${object:-none}"
             echo "- sw-rdma-vfs (real-rdma): ${vfs:-none}"
-            echo "- seaweed-volume (rdma,test-support): ${vol:-none}"
+            echo "- seaweed-volume (rdma,kvcache,test-support): ${vol:-none},rdma_inventory_startup"
+            echo "- NOT_RUN rdma_dc_compaction_repro_e2e: requires mlx5 DC; software lane keeps rdma-dc disabled."
           } >> "$GITHUB_STEP_SUMMARY"
