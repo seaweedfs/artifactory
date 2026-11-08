@@ -12,6 +12,10 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / '.github/workflows/rdma-softroce-tests.yml'
+ONE_PASS = 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'
+PASS_IGNORED = 'test result: ok. 4 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.02s'
+FAILED = 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'
+BAD_OK = 'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'
 
 
 class SelectedRustTargets(unittest.TestCase):
@@ -69,18 +73,32 @@ class SelectedRustTargets(unittest.TestCase):
 
     def test_selected_volume_one_passes(self):
         self.check_run(self.step('Run shipped volume server RDMA e2e'),
-                       'test result: ok. 1 passed; 0 failed; 0 ignored;', True)
+                       ONE_PASS, True)
+
+    def test_summary_candidates_are_unambiguous_in_both_callers(self):
+        for prefix in ['Run shipped volume server RDMA e2e', 'Shipped volume inventory startup']:
+            body = self.step(prefix)
+            with self.subTest(caller=prefix, positive='passing-with-ignored'):
+                self.check_run(body, PASS_IGNORED, True)
+            for second in [FAILED, BAD_OK, 'test result: unreadable']:
+                for order in [(ONE_PASS, second), (second, ONE_PASS)]:
+                    with self.subTest(caller=prefix, summaries=order):
+                        self.check_run(body, '\n'.join(order), False)
+            with self.subTest(caller=prefix, same_line=True):
+                self.check_run(body, ONE_PASS + ' ' + FAILED, False)
+            with self.subTest(caller=prefix, invalid_suffix=True):
+                self.check_run(body, ONE_PASS + ' unexpected', False)
 
     def test_inventory_workflow_caller(self):
         body = self.step('Shipped volume inventory startup')
         for summary, status, expected in [
-            ('test result: ok. 4 passed; 0 failed; 0 ignored;', 0, True),
+            (PASS_IGNORED, 0, True),
             ('test result: ok. 0 passed; 0 failed; 0 ignored;', 0, False),
             ('test result: ok. 0 passed; 0 failed; 4 ignored;', 0, False),
             ('no summary', 0, False),
-            ('test result: ok. 1 passed; 0 failed;\ntest result: ok. 1 passed; 0 failed;', 0, False),
-            ('test result: ok. 1 passed; 0 failed;', 23, False),
-            ('test result: FAILED. 0 passed; 1 failed;', 101, False),
+            (ONE_PASS + '\n' + ONE_PASS, 0, False),
+            (ONE_PASS, 23, False),
+            (FAILED, 101, False),
         ]:
             with self.subTest(summary=summary, status=status):
                 self.check_run(body, summary, expected, status)
