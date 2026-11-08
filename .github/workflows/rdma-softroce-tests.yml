@@ -1,5 +1,5 @@
 name: "RDMA software (siw) Tests (seaweed-mono)"
-run-name: ${{ github.workflow }}${{ github.event.client_payload.sha && format(' · mono:{0}', github.event.client_payload.sha) || '' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -15,6 +15,10 @@ on:
         description: 'seaweed-mono branch to test'
         required: false
         default: 'main'
+      mono_sha:
+        description: 'Exact mono commit to test; defaults to the branch head'
+        required: false
+        default: ''
       runner:
         description: "tp01 (self-hosted, default; siw link and device access are pre-provisioned, no sudo) or ubuntu-24.04 (hosted)"
         required: false
@@ -73,6 +77,7 @@ jobs:
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Install protobuf compiler
         if: runner.environment == 'github-hosted'
@@ -144,6 +149,7 @@ jobs:
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
 
       # Build deps: protoc (tonic-build), clang/libclang (rdma-sys bindgen),
       # ibverbs/rdmacm headers. Runtime: rdma-core (`rdma`), ibverbs-utils
@@ -236,6 +242,11 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo test --features rdma --lib
+
+      - name: Shipped volume KV-cache feature tests (execute, not check)
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test --features kvcache
 
       # RDMA modularisation crates (rdma/dev, milestone 2 onwards): the portable
       # core (mock provider, boundary) and the verbs provider's loopback over the
@@ -401,6 +412,28 @@ jobs:
             fi
           done
           exit $rc
+
+      # Each row starts listeners that live until its process exits. Run every
+      # ignored push-range row separately, and require one actual passing test.
+      - name: Shipped volume push-range tests (one process per row)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -euo pipefail
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test --features rdma,test-support --lib --no-run --message-format=json > push-range-build.json
+          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("push-range-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="seaweed_volume" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          "$BIN" --list --ignored > push-range-list.txt
+          sed -n 's/^\(rdma::push_range_tests::[a-z0-9_]*\): test$/\1/p' push-range-list.txt > push-range-names.txt
+          test "$(wc -l < push-range-names.txt)" -ge 15
+          SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
+          while read -r row; do
+            echo "== running $row =="
+            $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
+              bash -c 'ulimit -l unlimited && timeout 120 "$1" --ignored --exact "$2" --nocapture' _ "$BIN" "$row" \
+              2>&1 | tee push-range-row.log
+            grep -q '^test result: ok. 1 passed; 0 failed' push-range-row.log
+          done < push-range-names.txt
 
       - name: Test summary
         if: always()
