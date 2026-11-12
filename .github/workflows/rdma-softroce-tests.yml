@@ -422,7 +422,7 @@ jobs:
           set -euo pipefail
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo test --features rdma,kvcache,test-support --test rdma_inventory_startup --no-run --message-format=json-render-diagnostics > inventory-startup-build.json
-          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("inventory-startup-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="rdma_inventory_startup" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" inventory-startup-build.json rdma_inventory_startup)
           SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
             bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
@@ -436,7 +436,7 @@ jobs:
           set -euo pipefail
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo test --features rdma,test-support --test rdma_inventory_resolve --no-run --message-format=json-render-diagnostics > inventory-resolve-build.json
-          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("inventory-resolve-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="rdma_inventory_resolve" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" inventory-resolve-build.json rdma_inventory_resolve)
           SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
             bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
