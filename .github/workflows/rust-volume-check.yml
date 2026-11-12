@@ -130,6 +130,13 @@ jobs:
         run: |
           cd seaweedfs-source/enterprise/seaweed-volume
           cargo check --features rdma,rdma-dc,kvcache --bins --lib --tests
+      - name: cargo test --features rdma,kvcache,test-support (lib)
+        env:
+          CARGO_PROFILE_DEV_DEBUG: 0
+          CARGO_PROFILE_TEST_DEBUG: 0
+        run: |
+          cd seaweedfs-source/enterprise/seaweed-volume
+          cargo test -p weed-volume --features rdma,kvcache,test-support --lib
 
   cargo-check-msrv:
     name: cargo check declared MSRV (release features)
