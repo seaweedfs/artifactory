@@ -305,7 +305,7 @@ jobs:
             TESTS="$TESTS --test $(basename "$f" .rs)"
           done
           echo "building e2e tests:$TESTS"
-          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma $TESTS --no-run
+          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma $TESTS --no-run --message-format=json > vfs-e2e.json
 
       - name: Run RDMA e2e over software RDMA (sudo)
         env:
@@ -320,7 +320,7 @@ jobs:
           for f in sw-rdma-vfs/tests/rdma_*_e2e.rs; do
             [ -e "$f" ] || continue
             t=$(basename "$f" .rs)
-            BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
+            BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" vfs-e2e.json "$t") || exit 1
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
@@ -345,7 +345,7 @@ jobs:
             done
             [ -n "$TESTS" ] || { echo "no $root RDMA e2e tests"; continue; }
             echo "building $root e2e tests:$TESTS"
-            cargo test -p seaweedfs-${root} --features real-rdma $TESTS --no-run
+            cargo test -p seaweedfs-${root} --features real-rdma $TESTS --no-run --message-format=json > "${root}-e2e.json"
           done
 
       - name: Run object/loader RDMA e2e over software RDMA (sudo)
@@ -362,7 +362,7 @@ jobs:
             for f in "$root"/tests/rdma_*_e2e.rs; do
               [ -e "$f" ] || continue
               t=$(basename "$f" .rs)
-              BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
+              BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" "${root}-e2e.json" "$t") || exit 1
               if [ -z "$BIN" ]; then echo "::error::test binary for $root/$t not found"; exit 1; fi
               echo "== running $root/$t :: $BIN =="
               if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
@@ -389,7 +389,7 @@ jobs:
           done
           if [ -z "$TESTS" ]; then echo "no shipped-volume RDMA e2e tests"; exit 0; fi
           echo "building shipped-volume e2e tests:$TESTS"
-          cargo test --features rdma,kvcache,test-support $TESTS --no-run
+          cargo test --features rdma,kvcache,test-support $TESTS --no-run --message-format=json > volume-e2e.json
 
       - name: Run shipped volume server RDMA e2e over software RDMA (sudo)
         env:
@@ -405,7 +405,7 @@ jobs:
             [ -e "$f" ] || continue
             t=$(basename "$f" .rs)
             [ "$t" = rdma_dc_compaction_repro_e2e ] && continue
-            BIN=$(ls -t target/debug/deps/${t}-* 2>/dev/null | grep -v '\.d$' | head -n1 || true)
+            BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" volume-e2e.json "$t") || exit 1
             if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
