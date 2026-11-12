@@ -67,6 +67,11 @@ class CargoArtifactLookup(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(called)
 
+    def test_cargo_json_builds_keep_rendered_diagnostics(self):
+        text = WORKFLOW.read_text()
+        self.assertIn('--message-format=json-render-diagnostics', text)
+        self.assertNotIn('--message-format=json ', text)
+
     def test_binary_failure_is_preserved(self):
         for family in ['vfs', 'object', 'volume']:
             with self.subTest(family=family):
