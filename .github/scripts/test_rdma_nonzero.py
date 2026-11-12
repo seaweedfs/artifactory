@@ -46,16 +46,24 @@ class SelectedRustTargets(unittest.TestCase):
                 binary = deps / (target + '-fixture')
                 binary.write_text('#!/bin/bash\ntest "$RXE_IP" = 192.0.2.10 || exit 92\necho "${0##*/}" >> "$BINARY_CALLS"\nif [ "${0##*/}" = "$ZERO_TARGET-fixture" ]; then echo "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"; else printf "%s\\n" "$FAKE_SUMMARY"; fi\nexit "$FAKE_EXIT"\n')
                 binary.chmod(0o755)
+            (volume / 'volume-e2e.json').write_text(''.join(json.dumps({
+                'reason': 'compiler-artifact',
+                'target': {'name': target, 'kind': ['test']},
+                'profile': {'test': True},
+                'executable': str(deps / (target + '-fixture')),
+            }) + '\n' for target in targets))
             scripts = root / '.github/scripts'
             scripts.mkdir(parents=True)
             helper = REPO / '.github/scripts/run-rust-tests-nonzero.sh'
             if helper.exists():
-                shutil.copyfile(helper, scripts / helper.name)
+                (scripts / helper.name).write_text(helper.read_text())
                 (scripts / helper.name).chmod(0o755)
+            selector = REPO / '.github/scripts/cargo-test-executable.py'
+            shutil.copyfile(selector, scripts / selector.name)
             fake = root / 'bin'
             fake.mkdir()
             cargo = fake / 'cargo'
-            cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\ntarget=sys.argv[sys.argv.index("--test")+1] if "--test" in sys.argv else ""\nassert ("rdma,test-support" if target=="rdma_inventory_resolve" else "rdma,kvcache,test-support") in sys.argv,sys.argv\nassert "rdma-dc" not in ",".join(sys.argv),sys.argv\nopen(os.environ["CARGO_ARGS"],"w").write(json.dumps(sys.argv[1:]))\nif "--message-format=json" in sys.argv:\n assert target in ("rdma_inventory_startup","rdma_inventory_resolve"),sys.argv\n print(json.dumps({"reason":"compiler-artifact","target":{"name":target},"profile":{"test":True},"executable":os.environ["FAKE_BINARY"]}))\n')
+            cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\ntarget=sys.argv[sys.argv.index("--test")+1] if "--test" in sys.argv else ""\nassert ("rdma,test-support" if target=="rdma_inventory_resolve" else "rdma,kvcache,test-support") in sys.argv,sys.argv\nassert "rdma-dc" not in ",".join(sys.argv),sys.argv\nopen(os.environ["CARGO_ARGS"],"w").write(json.dumps(sys.argv[1:]))\nif "--message-format=json" in sys.argv and target in ("rdma_inventory_startup","rdma_inventory_resolve"):\n assert target in ("rdma_inventory_startup","rdma_inventory_resolve"),sys.argv\n print(json.dumps({"reason":"compiler-artifact","target":{"name":target},"profile":{"test":True},"executable":os.environ["FAKE_BINARY"]}))\n')
             cargo.chmod(0o755)
             env = dict(os.environ, PATH=str(fake) + ':/usr/bin:/bin', GITHUB_WORKSPACE=td,
                        RUNNER_ENVIRONMENT='self-hosted', RXE_IP='192.0.2.10',
