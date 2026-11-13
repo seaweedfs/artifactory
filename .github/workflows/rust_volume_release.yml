@@ -337,7 +337,7 @@ jobs:
           SERVER_DIGESTS: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.asset_digests }}
         run: |
           gh release download "$TAG" --pattern weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz --pattern sw-rdma-object-service-enterprise_linux_amd64.tar.gz
-          python3 .github/scripts/kv-native-preview-pair.py create . "$SOURCE_SHA" "$SERVER_DIGESTS"
+          python3 .github/scripts/kv-native-preview-pair.py create . "$SOURCE_SHA" "$SERVER_DIGESTS" --wheel
 
       - name: Upload preview assets
         uses: softprops/action-gh-release@v3

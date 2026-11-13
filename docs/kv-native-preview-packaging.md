@@ -77,7 +77,19 @@ Before use, run the repository's pairing verifier:
 python3 .github/scripts/kv-native-preview-pair.py verify downloads downloads/seaweedkv-preview-pair.json
 ```
 
-It verifies every asset digest and each embedded mono source SHA. The workflow
+It verifies every asset digest and each embedded mono source SHA.
+
+The release also publishes `seaweedkv_native-<version>-cp312-cp312-linux_x86_64.whl` (version = the enterprise
+release version, e.g. 4.54.0) and its `.sha256` by themselves. The pairing manifest pins that wheel, and its bytes
+must equal the `wheels` entry in the paired bundle's `BUILD-MANIFEST.json`; its own `.sha256` alone is not enough.
+To select the standalone wheel, put it and its `.sha256` beside the three assets and verify with `--wheel`:
+
+```sh
+python3 .github/scripts/kv-native-preview-pair.py verify downloads downloads/seaweedkv-preview-pair.json --wheel
+```
+
+A manifest that does not pin a wheel (any release before this change), a replaced or stale wheel, a mismatching
+`.sha256`, or more than one standalone wheel is refused. The workflow
 serializes complete runs per tag without cancelling an active publisher. Before
 preview upload, it downloads the published servers and checks their digests
 against this run's build outputs and their source receipts against the preview.
