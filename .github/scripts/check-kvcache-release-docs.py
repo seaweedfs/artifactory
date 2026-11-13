@@ -3,17 +3,25 @@
 
   check-kvcache-release-docs.py assets TAG ASSET_NAMES_FILE   (one asset name per line, e.g. from
                                                               `gh release view TAG --json assets --jq '.assets[].name'`)
-  check-kvcache-release-docs.py content FILE...               (the staged docs, before upload)
+  check-kvcache-release-docs.py content SKILL_DIR QUICKSTART INDEX   (the staged docs, before upload)
 
-assets: the release must carry kvcache-SKILL.md, KVCACHE-QUICKSTART.md and a .sha256 for each.
-content: each doc is non-empty UTF-8 text with LF line endings, the skill starts with its YAML front matter, and no
-doc links into the private source repository (a public reader cannot open it): no seaweed-mono URL and no relative
-Markdown link. Exit 0 when the check passes, else 1 naming each problem.
+assets: the release carries the skill bundle, the quickstart and the llms.txt index, each with a .sha256.
+content: the docs are for customers' own agents, so they must be readable from the release alone:
+  - every file is non-empty UTF-8 text with LF line endings and never links the private seaweed-mono repository;
+  - SKILL_DIR/SKILL.md starts with standard skill front matter (name, description);
+  - a relative Markdown link inside the bundle resolves to a file in the bundle (no ../ escape);
+  - the quickstart and the index have no relative links, and the index names every published doc.
+Exit 0 when the check passes, else 1 naming each problem.
 """
+import pathlib
+import posixpath
 import re
 import sys
 
-DOCS = ("kvcache-SKILL.md", "KVCACHE-QUICKSTART.md")
+BUNDLE = "seaweedfs-kvcache-skill.tar.gz"
+QUICKSTART = "KVCACHE-QUICKSTART.md"
+INDEX = "llms.txt"
+DOCS = (BUNDLE, QUICKSTART, INDEX)
 PRIVATE = re.compile(r"github\.com/seaweedfs/seaweed-mono\b")
 RELATIVE_LINK = re.compile(r"\]\((?![a-z][a-z0-9+.-]*:|#)([^)\s]+)\)", re.I)   # ](path), not ](https:...) or ](#x)
 
@@ -27,24 +35,65 @@ def missing(names):
     return [n for n in expected() if n not in have]
 
 
-def problems(name, raw):
+def text_problems(name, raw):
+    """-> (text or None, problems) for one published text file."""
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return [f"{name}: not UTF-8"]
+        return None, [f"{name}: not UTF-8"]
     found = []
     if not text.strip():
         found.append(f"{name}: empty")
     if "\r" in text:
         found.append(f"{name}: CR line endings")
-    if name.endswith("SKILL.md") and not re.match(r"---\nname: [a-z0-9-]+\ndescription: \S", text):
-        found.append(f"{name}: does not start with the skill front matter (name, description)")
     for n, line in enumerate(text.splitlines(), 1):
         if PRIVATE.search(line):
             found.append(f"{name}:{n}: links the private seaweed-mono repository")
-        for target in RELATIVE_LINK.findall(line):
-            found.append(f"{name}:{n}: relative link {target!r} (not resolvable from a release asset)")
+    return text, found
+
+
+def links(text):
+    return [(n, t) for n, line in enumerate(text.splitlines(), 1) for t in RELATIVE_LINK.findall(line)]
+
+
+def standalone_problems(name, raw):
+    text, found = text_problems(name, raw)
+    if text is not None:
+        found += [f"{name}:{n}: relative link {t!r} (not resolvable from a release asset)" for n, t in links(text)]
+    return text, found
+
+
+def bundle_problems(files):
+    """files: {posix path inside the bundle: bytes}. Relative links must stay inside and name a bundled file."""
+    found = []
+    if "SKILL.md" not in files:
+        return ["bundle: no SKILL.md at its top level"]
+    for path, raw in sorted(files.items()):
+        text, bad = text_problems(f"bundle/{path}", raw)
+        found += bad
+        if text is None:
+            continue
+        if path == "SKILL.md" and not re.match(r"---\nname: [a-z0-9-]+\ndescription: \S", text):
+            found.append("bundle/SKILL.md: does not start with the skill front matter (name, description)")
+        for n, target in links(text):
+            rel = posixpath.normpath(posixpath.join(posixpath.dirname(path), target.split("#", 1)[0]))
+            if rel.startswith("../") or rel == ".." or rel.startswith("/") or rel not in files:
+                found.append(f"bundle/{path}:{n}: link {target!r} does not resolve to a file in the bundle")
     return found
+
+
+def index_problems(raw):
+    text, found = standalone_problems(INDEX, raw)
+    if text is not None:
+        found += [f"{INDEX}: does not name {d}" for d in (BUNDLE, QUICKSTART) if d not in text]
+    return found
+
+
+def content(skill_dir, quickstart, index):
+    root = pathlib.Path(skill_dir)
+    files = {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+    return (bundle_problems(files) + standalone_problems(QUICKSTART, pathlib.Path(quickstart).read_bytes())[1]
+            + index_problems(pathlib.Path(index).read_bytes()))
 
 
 if __name__ == "__main__":
@@ -54,12 +103,11 @@ if __name__ == "__main__":
             tag, path = args
             bad = [f"release {tag} lacks {n}" for n in missing(open(path, encoding="utf-8").read().splitlines())]
         elif mode == "content":
-            if not args:
-                raise ValueError("content needs at least one file")
-            bad = [p for f in args for p in problems(f.replace("\\", "/").rsplit("/", 1)[-1], open(f, "rb").read())]
+            skill_dir, quickstart, index = args
+            bad = content(skill_dir, quickstart, index)
         else:
             raise ValueError(f"unknown mode {mode!r}; expected assets or content")
-    except (IndexError, OSError, ValueError) as e:
+    except (OSError, ValueError) as e:
         print(f"::error::{e}", file=sys.stderr)
         sys.exit(1)
     for p in bad:

@@ -13,7 +13,8 @@ import unittest
 import yaml
 
 HERE = pathlib.Path(__file__).parent
-spec = importlib.util.spec_from_file_location("docs_check", HERE / "check-kvcache-release-docs.py")
+SCRIPT = HERE / "check-kvcache-release-docs.py"
+spec = importlib.util.spec_from_file_location("docs_check", SCRIPT)
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
 
@@ -25,7 +26,15 @@ RELEASE_4_53 = [
     "seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.sha256",
     "seaweedkv-preview-pair.json",
 ]
-SKILL = b"---\nname: seaweedfs-kvcache\ndescription: Install SeaweedFS KV cache.\n---\n\n# KV cache\n"
+SKILL = (b"---\nname: seaweedfs-kvcache\ndescription: Install SeaweedFS KV cache.\n---\n\n# KV cache\n"
+         b"Codes: [failure codes](reference/failure-codes.md#doctor), template [cluster.yaml](cluster.yaml).\n")
+BUNDLE = {"SKILL.md": SKILL, "cluster.yaml": b"apiVersion: seaweedfs.io/cluster/v1\n",
+          "reference/failure-codes.md": b"# Codes\nBack to [the skill](../SKILL.md).\n"}
+INDEX = b"# SeaweedFS KV cache\nRead first: seaweedfs-kvcache-skill.tar.gz. Humans: KVCACHE-QUICKSTART.md.\n"
+
+
+def run(*args):
+    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
 
 
 class ReleaseDocsAssets(unittest.TestCase):
@@ -36,41 +45,66 @@ class ReleaseDocsAssets(unittest.TestCase):
         self.assertEqual(check.missing(RELEASE_4_53 + check.expected()), [])
 
     def test_a_doc_without_its_sha256_is_missing(self):
-        self.assertEqual(check.missing(RELEASE_4_53 + ["kvcache-SKILL.md", "KVCACHE-QUICKSTART.md",
-                                                       "KVCACHE-QUICKSTART.md.sha256"]),
-                         ["kvcache-SKILL.md.sha256"])
+        names = RELEASE_4_53 + [n for n in check.expected() if n != "llms.txt.sha256"]
+        self.assertEqual(check.missing(names), ["llms.txt.sha256"])
 
     def test_cli_names_each_missing_asset(self):
         with tempfile.TemporaryDirectory() as d:
             names = pathlib.Path(d, "names")
             names.write_text("\n".join(RELEASE_4_53) + "\n")
-            r = subprocess.run([sys.executable, str(HERE / "check-kvcache-release-docs.py"), "assets", "4.53",
-                                str(names)], capture_output=True, text=True)
+            r = run("assets", "4.53", str(names))
             self.assertEqual(r.returncode, 1)
-            self.assertIn("KV_DOCS_MISSING: release 4.53 lacks kvcache-SKILL.md", r.stderr)
+            self.assertIn("KV_DOCS_MISSING: release 4.53 lacks seaweedfs-kvcache-skill.tar.gz", r.stderr)
             names.write_text("\n".join(RELEASE_4_53 + check.expected()) + "\n")
-            r = subprocess.run([sys.executable, str(HERE / "check-kvcache-release-docs.py"), "assets", "4.54",
-                                str(names)], capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(run("assets", "4.54", str(names)).returncode, 0)
 
 
 class ReleaseDocsContent(unittest.TestCase):
-    def test_green_public_doc(self):
-        self.assertEqual(check.problems("kvcache-SKILL.md", SKILL + b"See [steps](#install) and "
-                                        b"[releases](https://github.com/seaweedfs/artifactory/releases).\n"), [])
+    def test_green_self_contained_bundle(self):
+        self.assertEqual(check.bundle_problems(BUNDLE), [])
 
-    def test_private_repo_and_relative_links_refused(self):
-        bad = check.problems("KVCACHE-QUICKSTART.md", b"# Q\nSee [guide](../product-layer/x.md) and "
-                             b"https://github.com/seaweedfs/seaweed-mono/blob/main/README.md\n")
+    def test_bundle_link_must_resolve_inside_the_bundle(self):
+        bad = check.bundle_problems({**BUNDLE, "SKILL.md": SKILL + b"See [guide](../../product-layer/x.md) "
+                                     b"and [gone](reference/missing.md).\n"})
         self.assertEqual(len(bad), 2, bad)
-        self.assertIn("private seaweed-mono", bad[0])
-        self.assertIn("relative link '../product-layer/x.md'", bad[1])
+        self.assertIn("'../../product-layer/x.md' does not resolve", bad[0])
+        self.assertIn("'reference/missing.md' does not resolve", bad[1])
 
-    def test_skill_front_matter_crlf_empty_and_encoding(self):
-        self.assertIn("front matter", check.problems("kvcache-SKILL.md", b"# no front matter\n")[0])
-        self.assertIn("CR line endings", check.problems("kvcache-SKILL.md", SKILL.replace(b"\n", b"\r\n"))[0])
-        self.assertIn("empty", check.problems("KVCACHE-QUICKSTART.md", b"\n")[0])
-        self.assertEqual(check.problems("KVCACHE-QUICKSTART.md", b"\xff\xfe"), ["KVCACHE-QUICKSTART.md: not UTF-8"])
+    def test_bundle_needs_skill_front_matter_and_no_private_links(self):
+        self.assertEqual(check.bundle_problems({"cluster.yaml": b"x\n"}), ["bundle: no SKILL.md at its top level"])
+        self.assertIn("front matter", check.bundle_problems({**BUNDLE, "SKILL.md": b"# no front matter\n"})[0])
+        bad = check.bundle_problems({**BUNDLE, "reference/failure-codes.md":
+                                     b"https://github.com/seaweedfs/seaweed-mono/blob/main/x.go\n"})
+        self.assertEqual(bad, ["bundle/reference/failure-codes.md:1: links the private seaweed-mono repository"])
+
+    def test_text_rules_crlf_empty_encoding(self):
+        self.assertIn("CR line endings", check.text_problems("x", b"a\r\nb\n")[1][0])
+        self.assertIn("empty", check.text_problems("x", b"\n")[1][0])
+        self.assertEqual(check.text_problems("x", b"\xff\xfe"), (None, ["x: not UTF-8"]))
+
+    def test_quickstart_and_index_stand_alone(self):
+        self.assertEqual(check.standalone_problems("KVCACHE-QUICKSTART.md", b"# Q\n[releases]"
+                                                   b"(https://github.com/seaweedfs/artifactory/releases)\n")[1], [])
+        self.assertIn("relative link", check.standalone_problems("KVCACHE-QUICKSTART.md", b"[a](SKILL.md)\n")[1][0])
+        self.assertEqual(check.index_problems(INDEX), [])
+        self.assertEqual(check.index_problems(b"# only the quickstart: KVCACHE-QUICKSTART.md\n"),
+                         ["llms.txt: does not name seaweedfs-kvcache-skill.tar.gz"])
+
+    def test_cli_content_on_staged_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d, "seaweedfs-kvcache")
+            for name, raw in BUNDLE.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_bytes(raw)
+            quick, index = pathlib.Path(d, "KVCACHE-QUICKSTART.md"), pathlib.Path(d, "llms.txt")
+            quick.write_bytes(b"# Quickstart\n")
+            index.write_bytes(INDEX)
+            r = run("content", str(root), str(quick), str(index))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            (root / "reference/failure-codes.md").unlink()
+            r = run("content", str(root), str(quick), str(index))
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("KV_DOCS_INVALID: bundle/SKILL.md:7: link 'reference/failure-codes.md#doctor'", r.stderr)
 
 
 class ReleaseDocsJob(unittest.TestCase):
@@ -87,12 +121,12 @@ class ReleaseDocsJob(unittest.TestCase):
         self.assertIn('checkout --detach "$SOURCE_SHA"', self.text)
         self.assertIn("verify-enterprise-checkout.py", self.text)
 
-    def test_stages_checks_uploads_and_rechecks_the_release(self):
-        self.assertIn("docs/skills/kvcache-preview/SKILL.md:kvcache-SKILL.md", self.text)
-        self.assertIn("docs/KVCACHE-QUICKSTART.md:KVCACHE-QUICKSTART.md", self.text)
-        self.assertIn("KV_DOCS_MISSING", self.text)
-        self.assertIn("check-kvcache-release-docs.py content", self.text)
-        self.assertIn("check-kvcache-release-docs.py assets", self.text)
+    def test_stages_checks_packs_uploads_and_rechecks_the_release(self):
+        for needle in ("docs/skills/seaweedfs-kvcache/SKILL.md", "docs/KVCACHE-QUICKSTART.md", "docs/kvcache-llms.txt",
+                       "KV_DOCS_MISSING", "check-kvcache-release-docs.py content",
+                       "check-kvcache-release-docs.py assets", "--sort=name", "gzip -n"):
+            self.assertIn(needle, self.text)
+        self.assertLess(self.text.index("check-kvcache-release-docs.py content"), self.text.index("gzip -n"))
         upload = next(s for s in self.job["steps"] if "action-gh-release" in s.get("uses", ""))
         self.assertTrue(upload["with"]["fail_on_unmatched_files"])
         self.assertEqual(upload["with"]["files"].split(), check.expected())

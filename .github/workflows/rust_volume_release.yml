@@ -354,8 +354,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # The KV cache install docs (agent skill + human quickstart) live in the private seaweed-mono, so each release also
-  # publishes them, from the same source commit as its RDMA volume and native wheel assets.
+  # The KV cache install docs (agent skill bundle, human quickstart, llms.txt index) live in the private seaweed-mono,
+  # so each release also publishes them, from the same source commit as its RDMA volume and native wheel assets.
   publish-kvcache-docs:
     needs: [verify-version, build-rust-rdma-enterprise-linux-amd64]
     permissions:
@@ -377,21 +377,28 @@ jobs:
           test "$(git -C seaweedfs-enterprise-source rev-parse HEAD)" = "$SOURCE_SHA"
           python3 .github/scripts/verify-enterprise-checkout.py "$TAG" seaweedfs-enterprise-source
 
+      # The skill is a self-contained folder (SKILL.md + the files it links), packed reproducibly from the commit.
       - name: Stage the KV cache install docs
         env:
           SOURCE_SHA: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.mono_sha }}
         run: |
           set -euo pipefail
-          for pair in docs/skills/kvcache-preview/SKILL.md:kvcache-SKILL.md docs/KVCACHE-QUICKSTART.md:KVCACHE-QUICKSTART.md; do
-            from=${pair%%:*} to=${pair##*:}
-            if [ ! -s "seaweedfs-enterprise-source/${from}" ]; then
-              echo "::error::KV_DOCS_MISSING: ${from} is absent or empty at mono ${SOURCE_SHA}"
+          src=seaweedfs-enterprise-source
+          for f in docs/skills/seaweedfs-kvcache/SKILL.md docs/KVCACHE-QUICKSTART.md docs/kvcache-llms.txt; do
+            if [ ! -s "${src}/${f}" ]; then
+              echo "::error::KV_DOCS_MISSING: ${f} is absent or empty at mono ${SOURCE_SHA}"
               exit 1
             fi
-            cp "seaweedfs-enterprise-source/${from}" "${to}"
-            sha256sum "${to}" > "${to}.sha256"
           done
-          python3 .github/scripts/check-kvcache-release-docs.py content kvcache-SKILL.md KVCACHE-QUICKSTART.md
+          mkdir kvcache-docs
+          cp -R "${src}/docs/skills/seaweedfs-kvcache" kvcache-docs/seaweedfs-kvcache
+          cp "${src}/docs/KVCACHE-QUICKSTART.md" KVCACHE-QUICKSTART.md
+          cp "${src}/docs/kvcache-llms.txt" llms.txt
+          python3 .github/scripts/check-kvcache-release-docs.py content kvcache-docs/seaweedfs-kvcache KVCACHE-QUICKSTART.md llms.txt
+          epoch=$(git -C "${src}" show -s --format=%ct HEAD)
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${epoch}" -C kvcache-docs -cf - seaweedfs-kvcache \
+            | gzip -n > seaweedfs-kvcache-skill.tar.gz
+          for f in seaweedfs-kvcache-skill.tar.gz KVCACHE-QUICKSTART.md llms.txt; do sha256sum "${f}" > "${f}.sha256"; done
 
       - name: Upload KV cache install docs
         uses: softprops/action-gh-release@v3
@@ -399,10 +406,12 @@ jobs:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           fail_on_unmatched_files: true
           files: |
-            kvcache-SKILL.md
-            kvcache-SKILL.md.sha256
+            seaweedfs-kvcache-skill.tar.gz
+            seaweedfs-kvcache-skill.tar.gz.sha256
             KVCACHE-QUICKSTART.md
             KVCACHE-QUICKSTART.md.sha256
+            llms.txt
+            llms.txt.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
