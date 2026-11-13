@@ -353,3 +353,65 @@ jobs:
             ${{ env.WHEEL }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The KV cache install docs (agent skill + human quickstart) live in the private seaweed-mono, so each release also
+  # publishes them, from the same source commit as its RDMA volume and native wheel assets.
+  publish-kvcache-docs:
+    needs: [verify-version, build-rust-rdma-enterprise-linux-amd64]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone enterprise source and verify this checkout
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+          TAG: ${{ inputs.tag_name || github.ref_name }}
+          SOURCE_SHA: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.mono_sha }}
+        run: |
+          test -n "$SOURCE_SHA"
+          .github/scripts/git-retry.sh clone --no-checkout -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git -C seaweedfs-enterprise-source checkout --detach "$SOURCE_SHA"
+          test "$(git -C seaweedfs-enterprise-source rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 .github/scripts/verify-enterprise-checkout.py "$TAG" seaweedfs-enterprise-source
+
+      - name: Stage the KV cache install docs
+        env:
+          SOURCE_SHA: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.mono_sha }}
+        run: |
+          set -euo pipefail
+          for pair in docs/skills/kvcache-preview/SKILL.md:kvcache-SKILL.md docs/KVCACHE-QUICKSTART.md:KVCACHE-QUICKSTART.md; do
+            from=${pair%%:*} to=${pair##*:}
+            if [ ! -s "seaweedfs-enterprise-source/${from}" ]; then
+              echo "::error::KV_DOCS_MISSING: ${from} is absent or empty at mono ${SOURCE_SHA}"
+              exit 1
+            fi
+            cp "seaweedfs-enterprise-source/${from}" "${to}"
+            sha256sum "${to}" > "${to}.sha256"
+          done
+          python3 .github/scripts/check-kvcache-release-docs.py content kvcache-SKILL.md KVCACHE-QUICKSTART.md
+
+      - name: Upload KV cache install docs
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            kvcache-SKILL.md
+            kvcache-SKILL.md.sha256
+            KVCACHE-QUICKSTART.md
+            KVCACHE-QUICKSTART.md.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the release carries the docs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets --jq '.assets[].name' > release-assets.txt
+          python3 .github/scripts/check-kvcache-release-docs.py assets "$TAG" release-assets.txt
