@@ -305,7 +305,7 @@ jobs:
             TESTS="$TESTS --test $(basename "$f" .rs)"
           done
           echo "building e2e tests:$TESTS"
-          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma $TESTS --no-run --message-format=json > vfs-e2e.json
+          cargo test -p seaweedfs-sw-rdma-vfs --features real-rdma $TESTS --no-run --message-format=json-render-diagnostics > vfs-e2e.json
 
       - name: Run RDMA e2e over software RDMA (sudo)
         env:
@@ -321,7 +321,6 @@ jobs:
             [ -e "$f" ] || continue
             t=$(basename "$f" .rs)
             BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" vfs-e2e.json "$t") || exit 1
-            if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
             if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
@@ -345,7 +344,7 @@ jobs:
             done
             [ -n "$TESTS" ] || { echo "no $root RDMA e2e tests"; continue; }
             echo "building $root e2e tests:$TESTS"
-            cargo test -p seaweedfs-${root} --features real-rdma $TESTS --no-run --message-format=json > "${root}-e2e.json"
+            cargo test -p seaweedfs-${root} --features real-rdma $TESTS --no-run --message-format=json-render-diagnostics > "${root}-e2e.json"
           done
 
       - name: Run object/loader RDMA e2e over software RDMA (sudo)
@@ -363,7 +362,6 @@ jobs:
               [ -e "$f" ] || continue
               t=$(basename "$f" .rs)
               BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" "${root}-e2e.json" "$t") || exit 1
-              if [ -z "$BIN" ]; then echo "::error::test binary for $root/$t not found"; exit 1; fi
               echo "== running $root/$t :: $BIN =="
               if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
                 bash -c "ulimit -l unlimited && '$BIN' --nocapture --test-threads=1"; then
@@ -389,7 +387,7 @@ jobs:
           done
           if [ -z "$TESTS" ]; then echo "no shipped-volume RDMA e2e tests"; exit 0; fi
           echo "building shipped-volume e2e tests:$TESTS"
-          cargo test --features rdma,kvcache,test-support $TESTS --no-run --message-format=json > volume-e2e.json
+          cargo test --features rdma,kvcache,test-support $TESTS --no-run --message-format=json-render-diagnostics > volume-e2e.json
 
       - name: Run shipped volume server RDMA e2e over software RDMA (sudo)
         env:
@@ -406,7 +404,6 @@ jobs:
             t=$(basename "$f" .rs)
             [ "$t" = rdma_dc_compaction_repro_e2e ] && continue
             BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" volume-e2e.json "$t") || exit 1
-            if [ -z "$BIN" ]; then echo "::error::test binary for $t not found"; exit 1; fi
             echo "== running $t :: $BIN =="
             # Verbs/rdma_cm need root; raise memlock so reg_mr can pin MRs.
             if ! $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
@@ -424,8 +421,8 @@ jobs:
         run: |
           set -euo pipefail
           cd seaweedfs-source/enterprise/seaweed-volume
-          cargo test --features rdma,kvcache,test-support --test rdma_inventory_startup --no-run --message-format=json > inventory-startup-build.json
-          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("inventory-startup-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="rdma_inventory_startup" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          cargo test --features rdma,kvcache,test-support --test rdma_inventory_startup --no-run --message-format=json-render-diagnostics > inventory-startup-build.json
+          BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" inventory-startup-build.json rdma_inventory_startup)
           SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
             bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
@@ -438,8 +435,8 @@ jobs:
         run: |
           set -euo pipefail
           cd seaweedfs-source/enterprise/seaweed-volume
-          cargo test --features rdma,test-support --test rdma_inventory_resolve --no-run --message-format=json > inventory-resolve-build.json
-          BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("inventory-resolve-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="rdma_inventory_resolve" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
+          cargo test --features rdma,test-support --test rdma_inventory_resolve --no-run --message-format=json-render-diagnostics > inventory-resolve-build.json
+          BIN=$(python3 "$GITHUB_WORKSPACE/.github/scripts/cargo-test-executable.py" inventory-resolve-build.json rdma_inventory_resolve)
           SUDO=sudo; [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || SUDO=""
           $SUDO env "RXE_IP=$RXE_IP" "RUST_BACKTRACE=$RUST_BACKTRACE" \
             bash -c 'ulimit -l unlimited && "$1" "$2" --color=never --nocapture --test-threads=1' _ \
@@ -453,7 +450,7 @@ jobs:
         run: |
           set -euo pipefail
           cd seaweedfs-source/enterprise/seaweed-volume
-          cargo test --features rdma,test-support --lib --no-run --message-format=json > push-range-build.json
+          cargo test --features rdma,test-support --lib --no-run --message-format=json-render-diagnostics > push-range-build.json
           BIN=$(python3 -c 'import json; rows=[json.loads(s) for s in open("push-range-build.json")]; bins=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="seaweed_volume" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(bins)==1, bins; print(bins[0])')
           "$BIN" --list --ignored > push-range-list.txt
           sed -n 's/^\(rdma::push_range_tests::[a-z0-9_]*\): test$/\1/p' push-range-list.txt > push-range-names.txt
