@@ -70,7 +70,7 @@ class CargoArtifactLookup(unittest.TestCase):
     def test_cargo_json_builds_keep_rendered_diagnostics(self):
         text = WORKFLOW.read_text()
         self.assertIn('--message-format=json-render-diagnostics', text)
-        self.assertNotIn('--message-format=json ', text)
+        self.assertNotRegex(text, r'--message-format=json(?!-render-diagnostics)')
 
     def test_binary_failure_is_preserved(self):
         for family in ['vfs', 'object', 'volume']:
