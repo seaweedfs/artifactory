@@ -139,7 +139,8 @@ jobs:
         set -e
         make -j2 ./weed ./weed-vector
         if [ "${{ matrix.volume }}" = "rust" ]; then make ./weed-volume; fi
-        if [ "${{ matrix.mode }}" = "distributed" ]; then make ./weed-vector-worker; fi
+        # Until the source builds the Enterprise engine as weed-vector.
+        if [ "${{ matrix.mode }}" = "distributed" ] && grep -q '^WORKER :=' Makefile; then make ./weed-vector-worker; fi
       env:
         CARGO_PROFILE: dev
         CARGO_PROFILE_DEV_DEBUG: "0"
