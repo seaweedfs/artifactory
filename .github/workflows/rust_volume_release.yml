@@ -258,6 +258,18 @@ jobs:
           test "$(git -C seaweedfs-enterprise-source rev-parse HEAD)" = "$SOURCE_SHA"
           python3 .github/scripts/verify-enterprise-checkout.py "$TAG" seaweedfs-enterprise-source
 
+      # The wheel's version is this release's enterprise version (4.54 -> 4.54.0), parsed from the checkout's
+      # constants.go like verify-enterprise-checkout.py; never a hand-kept number and never a fallback.
+      - name: Stamp the seaweedkv-native wheel version
+        id: wheelver
+        env:
+          TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(python3 .github/scripts/kv-native-wheel-version.py "$TAG" seaweedfs-enterprise-source)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "seaweedkv-native wheel version ${version}"
+
       - name: Read preview pins
         id: pins
         run: |
@@ -289,7 +301,25 @@ jobs:
           git -C lmcache-source checkout --detach "$LMCACHE_SHA"
 
       - name: Build and verify source-free preview wheels
+        env:
+          SEAWEEDKV_NATIVE_VERSION: ${{ steps.wheelver.outputs.version }}
         run: bash .github/scripts/kv-native-preview-build.sh seaweedfs-enterprise-source lmcache-source kv-native-preview
+
+      # The same verified wheel, also published by itself so `pip install` needs no tarball.
+      - name: Stage the standalone seaweedkv-native wheel
+        env:
+          VERSION: ${{ steps.wheelver.outputs.version }}
+        run: |
+          set -euo pipefail
+          wheel="seaweedkv_native-${VERSION}-cp312-cp312-linux_x86_64.whl"
+          built=$(cd kv-native-preview/wheels && ls seaweedkv_native-*.whl 2>/dev/null || true)   # none: named error below
+          if [ "$built" != "$wheel" ]; then
+            echo "::error::KV_WHEEL_VERSION_NOT_STAMPED: built '${built}', expected '${wheel}'"
+            exit 1
+          fi
+          cp "kv-native-preview/wheels/${wheel}" .
+          sha256sum "${wheel}" > "${wheel}.sha256"
+          echo "WHEEL=${wheel}" >> "$GITHUB_ENV"
 
       - name: Package preview bundle
         run: |
@@ -307,7 +337,7 @@ jobs:
           SERVER_DIGESTS: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.asset_digests }}
         run: |
           gh release download "$TAG" --pattern weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz --pattern sw-rdma-object-service-enterprise_linux_amd64.tar.gz
-          python3 .github/scripts/kv-native-preview-pair.py create . "$SOURCE_SHA" "$SERVER_DIGESTS"
+          python3 .github/scripts/kv-native-preview-pair.py create . "$SOURCE_SHA" "$SERVER_DIGESTS" --wheel
 
       - name: Upload preview assets
         uses: softprops/action-gh-release@v3
@@ -319,5 +349,7 @@ jobs:
             seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.md5
             seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz.sha256
             seaweedkv-preview-pair.json
+            ${{ env.WHEEL }}
+            ${{ env.WHEEL }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
