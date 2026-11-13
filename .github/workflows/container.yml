@@ -125,8 +125,8 @@ jobs:
             ~/.cargo/git
             seaweedfs-enterprise-source/enterprise/seaweed-volume/target
             seaweedfs-enterprise-source/enterprise/seaweed-worker/target/${{ matrix.target }}/release
-            seaweedfs-enterprise-source/enterprise/seaweed-vector/target/${{ matrix.target }}/release
-          key: rust-docker-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/enterprise/seaweed-volume/Cargo.lock', 'seaweedfs-enterprise-source/enterprise/seaweed-worker/Cargo.lock', 'seaweedfs-enterprise-source/enterprise/seaweed-vector/Cargo.lock') }}
+            seaweedfs-enterprise-source/enterprise/rust/target/${{ matrix.target }}/release
+          key: rust-docker-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/enterprise/seaweed-volume/Cargo.lock', 'seaweedfs-enterprise-source/enterprise/seaweed-worker/Cargo.lock', 'seaweedfs-enterprise-source/enterprise/rust/Cargo.lock') }}
           restore-keys: |
             rust-docker-${{ matrix.target }}-
 
@@ -167,10 +167,12 @@ jobs:
           cargo build --release -p weed-lance-worker --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/weed-worker ../../../weed-worker-${{ matrix.arch }}
 
+      # The Enterprise weed-vector: the open-source VectorService plus the
+      # distributed search engine.
       - name: Build the vector engine
         run: |
-          cd seaweedfs-enterprise-source/enterprise/seaweed-vector
-          cargo build --release -p weed-vector-server --target ${{ matrix.target }}
+          cd seaweedfs-enterprise-source/enterprise/rust
+          cargo build --release -p sw-vector-distributed --bin weed-vector --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/weed-vector ../../../weed-vector-${{ matrix.arch }}
 
       - name: Upload artifacts
