@@ -143,6 +143,22 @@ jobs:
           binary_name: weed
           asset_name: "weed-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}_large_disk" 
 
+      - name: Go Release swctl Linux Binaries
+        if: ${{ matrix.goos == 'linux' && (matrix.goarch == 'amd64' || matrix.goarch == 'arm64') }}
+        uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 # v1.53
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          release_tag: ${{ env.TAG }}
+          overwrite: true
+          pre_command: export CGO_ENABLED=0 && export GODEBUG=http2client=0
+          build_flags: -buildvcs=false
+          ldflags: -s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${{ env.COMMIT_SHA }}
+          project_path: seaweedfs-enterprise-source/enterprise/cmd/swctl
+          binary_name: swctl
+          asset_name: "swctl-enterprise-${{ matrix.goos }}_${{ matrix.goarch }}"
+
   # Tag the seaweed-mono commit these binaries were built from as
   # enterprise-<version>, and list the seaweed-mono PRs merged since the
   # previous enterprise-* tag in the release notes, the way OSS releases list
