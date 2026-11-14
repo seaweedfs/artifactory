@@ -77,6 +77,24 @@ class ReleaseDocsContent(unittest.TestCase):
                                      b"https://github.com/seaweedfs/seaweed-mono/blob/main/x.go\n"})
         self.assertEqual(bad, ["bundle/reference/failure-codes.md:1: links the private seaweed-mono repository"])
 
+    def test_review_titled_and_reference_links_are_checked(self):
+        # Titled inline links and reference definitions are links too; each must resolve inside the bundle.
+        bad = check.bundle_problems({**BUNDLE, "SKILL.md": SKILL + b'See [g](../x.md "Guide") and [r][ref].\n\n'
+                                     b"[ref]: ../../product-layer/y.md\n[ok]: reference/failure-codes.md\n"})
+        self.assertEqual(len(bad), 2, bad)
+        self.assertIn("'../x.md' does not resolve", bad[0])
+        self.assertIn("'../../product-layer/y.md' does not resolve", bad[1])
+        self.assertIn("relative link", check.standalone_problems("llms.txt", b'[a](SKILL.md "t")\n')[1][0])
+        self.assertIn("relative link", check.standalone_problems("llms.txt", b"[a]: SKILL.md\n")[1][0])
+        self.assertEqual(check.standalone_problems("llms.txt", b'[a](https://x.test/a "t")\n[b]: https://x.test/b\n')[1], [])
+
+    def test_review_every_private_repo_url_form_is_refused(self):
+        for url in (b"https://github.com/seaweedfs/seaweed-mono/blob/main/a.md",
+                    b"https://raw.githubusercontent.com/seaweedfs/seaweed-mono/main/a.md",
+                    b"https://codeload.github.com/seaweedfs/seaweed-mono/zip/main",
+                    b"git@github.com:seaweedfs/seaweed-mono.git"):
+            self.assertIn("private seaweed-mono", check.text_problems("x", url + b"\n")[1][0], url)
+
     def test_text_rules_crlf_empty_encoding(self):
         self.assertIn("CR line endings", check.text_problems("x", b"a\r\nb\n")[1][0])
         self.assertIn("empty", check.text_problems("x", b"\n")[1][0])

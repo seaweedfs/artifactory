@@ -22,8 +22,11 @@ BUNDLE = "seaweedfs-kvcache-skill.tar.gz"
 QUICKSTART = "KVCACHE-QUICKSTART.md"
 INDEX = "llms.txt"
 DOCS = (BUNDLE, QUICKSTART, INDEX)
-PRIVATE = re.compile(r"github\.com/seaweedfs/seaweed-mono\b")
-RELATIVE_LINK = re.compile(r"\]\((?![a-z][a-z0-9+.-]*:|#)([^)\s]+)\)", re.I)   # ](path), not ](https:...) or ](#x)
+# Any URL form of the private repository: github.com/..., raw.githubusercontent.com/..., codeload, git@github.com:...
+PRIVATE = re.compile(r"seaweedfs/seaweed-mono\b")
+INLINE_LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\)")        # [t](target) or [t](target "title")
+REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?")             # [label]: target "title"
+SCHEME = re.compile(r"[a-z][a-z0-9+.-]*:", re.I)
 
 
 def expected():
@@ -53,7 +56,12 @@ def text_problems(name, raw):
 
 
 def links(text):
-    return [(n, t) for n, line in enumerate(text.splitlines(), 1) for t in RELATIVE_LINK.findall(line)]
+    """-> [(line number, target)] for every relative link: inline (titled or not) and reference definitions."""
+    found = []
+    for n, line in enumerate(text.splitlines(), 1):
+        targets = INLINE_LINK.findall(line) + REFERENCE_LINK.findall(line)
+        found += [(n, t) for t in targets if not SCHEME.match(t) and not t.startswith("#")]
+    return found
 
 
 def standalone_problems(name, raw):
