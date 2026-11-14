@@ -1,4 +1,4 @@
-name: "rust: build enterprise volume server and vector engine binaries"
+name: "rust: build enterprise volume server, vector engine and worker binaries"
 
 # Mirrors the OSS rust_binaries_release.yml in seaweedfs/seaweedfs, but builds
 # the Rust weed-volume from the private enterprise source (same as release.yml
@@ -148,25 +148,34 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # The Enterprise weed-vector: the open-source VectorService plus the
-  # distributed search engine. Same toolchain setup as container.yml's build
-  # of it; the tarball holds a binary named weed-vector, like the OSS
-  # weed-vector_<os>_<arch> assets, so installers unpack it the same way.
-  build-rust-vector-enterprise-linux:
+  # The Enterprise weed-vector (the open-source VectorService plus the
+  # distributed search engine) and weed-worker, built from the enterprise
+  # source like container.yml does. Each tarball holds a binary with the same
+  # name as in the OSS assets, so installers unpack them the same way.
+  build-rust-lance-enterprise-linux:
     needs: [verify-version]
     permissions:
       contents: write
     runs-on: ubuntu-24.04
     strategy:
-      # One architecture failing must not cancel the other's upload.
+      # One build failing must not cancel another's upload.
       fail-fast: false
       matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+        bin: [weed-vector, weed-worker]
         include:
           - target: x86_64-unknown-linux-musl
             asset_suffix: linux_amd64
           - target: aarch64-unknown-linux-musl
             asset_suffix: linux_arm64
             cross: true
+          - bin: weed-vector
+            workspace: enterprise/rust
+            package: -p sw-vector-distributed --bin weed-vector
+            locked: --locked
+          - bin: weed-worker
+            workspace: enterprise/seaweed-worker
+            package: -p weed-lance-worker
 
     steps:
       - name: Checkout artifactory repo
@@ -230,34 +239,34 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            seaweedfs-enterprise-source/enterprise/rust/target/${{ matrix.target }}/release
-          key: rust-vector-enterprise-${{ matrix.target }}-${{ hashFiles('seaweedfs-enterprise-source/enterprise/rust/Cargo.lock') }}
+            seaweedfs-enterprise-source/${{ matrix.workspace }}/target/${{ matrix.target }}/release
+          key: rust-${{ matrix.bin }}-enterprise-${{ matrix.target }}-${{ hashFiles(format('seaweedfs-enterprise-source/{0}/Cargo.lock', matrix.workspace)) }}
           restore-keys: |
-            rust-vector-enterprise-${{ matrix.target }}-
+            rust-${{ matrix.bin }}-enterprise-${{ matrix.target }}-
 
       # lance's build scripts look for a protoc: the one protoc-bin-vendored
-      # ships, at the version enterprise/rust's lock pins.
+      # ships, at the version the workspace's lock pins.
       - name: Use the vendored protoc
         run: |
-          cd seaweedfs-enterprise-source/enterprise/rust
-          cargo fetch --locked
+          cd seaweedfs-enterprise-source/${{ matrix.workspace }}
+          cargo fetch ${{ matrix.locked }}
           version=$(awk '/^name = "protoc-bin-vendored-linux-x86_64"$/{found=1; next} found && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
           test -n "$version" || { echo "protoc-bin-vendored-linux-x86_64 is not in Cargo.lock" >&2; exit 1; }
           protoc=$(find ~/.cargo/registry/src -path "*protoc-bin-vendored-linux-x86_64-$version/bin/protoc" | head -1)
           test -x "$protoc" || { echo "no vendored protoc $version in the registry" >&2; exit 1; }
           echo "PROTOC=$protoc" >> "$GITHUB_ENV"
 
-      - name: Build the vector engine
+      - name: Build ${{ matrix.bin }}
         run: |
-          cd seaweedfs-enterprise-source/enterprise/rust
-          cargo build --locked --release -p sw-vector-distributed --bin weed-vector --target ${{ matrix.target }}
+          cd seaweedfs-enterprise-source/${{ matrix.workspace }}
+          cargo build ${{ matrix.locked }} --release ${{ matrix.package }} --target ${{ matrix.target }}
 
       - name: Package binary
         run: |
-          cp seaweedfs-enterprise-source/enterprise/rust/target/${{ matrix.target }}/release/weed-vector weed-vector
-          tar czf weed-vector-enterprise_${{ matrix.asset_suffix }}.tar.gz weed-vector
-          rm weed-vector
-          md5sum weed-vector-enterprise_${{ matrix.asset_suffix }}.tar.gz > weed-vector-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
+          cp seaweedfs-enterprise-source/${{ matrix.workspace }}/target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.bin }}
+          tar czf ${{ matrix.bin }}-enterprise_${{ matrix.asset_suffix }}.tar.gz ${{ matrix.bin }}
+          rm ${{ matrix.bin }}
+          md5sum ${{ matrix.bin }}-enterprise_${{ matrix.asset_suffix }}.tar.gz > ${{ matrix.bin }}-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
@@ -265,8 +274,8 @@ jobs:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           fail_on_unmatched_files: true
           files: |
-            weed-vector-enterprise_${{ matrix.asset_suffix }}.tar.gz
-            weed-vector-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
+            ${{ matrix.bin }}-enterprise_${{ matrix.asset_suffix }}.tar.gz
+            ${{ matrix.bin }}-enterprise_${{ matrix.asset_suffix }}.tar.gz.md5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
