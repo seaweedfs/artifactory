@@ -1,0 +1,67 @@
+apiVersion: testrunner.io/v1
+kind: Template
+metadata:
+  name: dynamic-pvc-cycle
+  description: |
+    Apply a dynamic StorageClass + PVC + pod, wait for the pod to
+    succeed, then tear down PVC and verify K8s GC cleans the
+    PVC-owned blockvolume Deployment + iSCSI session.
+  parameters:
+    product_root:   { type: string, required: true }
+    pvc_manifest:   { type: string, required: true }
+    namespace:      { type: string, default: default }
+    blockvolume_namespace: { type: string, default: default }
+    pvc_name:       { type: string, default: sw-block-dynamic-v1 }
+    pod_name:       { type: string, default: sw-block-dynamic-smoke }
+spec:
+  phases:
+    - id: apply_dynamic
+      action: kubectl_apply
+      file: "{{.pvc_manifest}}"
+    - id: wait_launcher_manifest
+      action: wait_file_exists
+      node: "{{.env.node_name}}"
+      path: "/var/lib/sw-block/launcher/generated-blockvolume.yaml"
+      timeout: 60s
+    - id: apply_generated_blockvolume
+      action: kubectl_apply
+      file: "{{.phases.wait_launcher_manifest.outputs.path}}"
+      wait_condition: { kind: deployment, label: app=sw-blockvolume, namespace: "{{.blockvolume_namespace}}", condition: available, timeout: 90s }
+    - id: wait_pod_succeeded
+      action: kubectl_wait
+      kind: pod
+      name: "{{.pod_name}}"
+      namespace: "{{.namespace}}"
+      condition: succeeded
+      timeout: 240s
+    - id: collect_pod_log
+      action: kubectl_logs
+      kind: pod
+      name: "{{.pod_name}}"
+      namespace: "{{.namespace}}"
+      out: pod.log
+    - id: delete_pod
+      action: kubectl_delete
+      kind: pod
+      name: "{{.pod_name}}"
+      namespace: "{{.namespace}}"
+    - id: delete_pvc
+      action: kubectl_delete
+      kind: pvc
+      name: "{{.pvc_name}}"
+      namespace: "{{.namespace}}"
+    - id: assert_gc_blockvolume
+      action: wait_until
+      check:
+        action: kubectl_get_json
+        kind: deployment
+        label: app=sw-blockvolume
+        namespace: "{{.blockvolume_namespace}}"
+        json_path: ".items | length"
+      expect: 0
+      timeout: 60s
+    - id: assert_no_iscsi
+      action: assert_no_active_iscsi_sessions
+      node: "{{.env.node_name}}"
+  outputs:
+    - { name: pod_log, from: phases.collect_pod_log.outputs.path }

@@ -1,0 +1,53 @@
+name: TestOps
+
+on:
+  pull_request:
+    paths:
+      - "testops/**"
+      - ".github/workflows/testops.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "testops/**"
+      - ".github/workflows/testops.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go test + docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: testops/go.mod
+          cache-dependency-path: testops/go.sum
+
+      - name: Test
+        working-directory: testops
+        run: go test ./...
+
+      - name: Vet
+        working-directory: testops
+        run: go vet ./...
+
+      - name: Validate RDMA gate scenario
+        working-directory: testops
+        run: |
+          go run ./cmd/sweedrdma validate scenarios/rdma-unified-lab-gate.yaml
+          go run ./cmd/sweedrdma validate scenarios/nixl-provider-cpu-gate.yaml
+
+      - name: Build docs
+        working-directory: testops
+        run: |
+          python -m pip install -r requirements-docs.txt
+          python -m mkdocs build --strict
