@@ -424,3 +424,131 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" --json assets --jq '.assets[].name' > release-assets.txt
           python3 .github/scripts/check-kvcache-release-docs.py assets "$TAG" release-assets.txt
+
+  # swctl installs from a release directory bound by manifest.json (swctl.release-manifest/v1). Build it from this
+  # release's own verified assets and source commit, check it with swctl itself, and publish it.
+  build-swctl-kv-release-linux-amd64:
+    needs: [verify-version, build-rust-rdma-enterprise-linux-amd64, build-kv-native-preview-linux-amd64]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag_name || github.ref_name }}
+      SOURCE_SHA: ${{ needs.build-rust-rdma-enterprise-linux-amd64.outputs.mono_sha }}
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Clone enterprise source and verify this checkout
+        env:
+          MONO_TOKEN: ${{ secrets.MONO_TOKEN }}
+        run: |
+          test -n "$SOURCE_SHA"
+          .github/scripts/git-retry.sh clone --no-checkout -b main https://x-access-token:${MONO_TOKEN}@github.com/seaweedfs/seaweed-mono.git seaweedfs-enterprise-source
+          git -C seaweedfs-enterprise-source checkout --detach "$SOURCE_SHA"
+          test "$(git -C seaweedfs-enterprise-source rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 .github/scripts/verify-enterprise-checkout.py "$TAG" seaweedfs-enterprise-source
+          echo "VERSION=$(python3 .github/scripts/kv-native-wheel-version.py "$TAG" seaweedfs-enterprise-source)" >> "$GITHUB_ENV"
+          echo "LMCACHE_COMMIT=$(jq -er .lmcache_commit .github/kv-native-preview-pins.json)" >> "$GITHUB_ENV"
+          echo "NATIVE_LIB=$(jq -er .native_lib .github/swctl-kv-release.json)" >> "$GITHUB_ENV"
+
+      - name: Install the source's Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: seaweedfs-enterprise-source/enterprise/go.mod
+          cache: false
+
+      # weed: the same flags as release.yml's large-disk weed (the RDMA volume is large disk), at this source commit.
+      - name: Build weed and the checking swctl
+        run: |
+          set -euo pipefail
+          mkdir swctl-kv-release
+          cd seaweedfs-enterprise-source/enterprise
+          CGO_ENABLED=0 GODEBUG=http2client=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -tags 5BytesOffset \
+            -ldflags "-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=${SOURCE_SHA:0:8}" \
+            -o ../../swctl-kv-release/weed ./weed
+          CGO_ENABLED=0 go build -buildvcs=false -o ../../swctl-check ./cmd/swctl
+          echo "GO_VERSION=$(go env GOVERSION)" >> "$GITHUB_ENV"
+
+      - name: Collect this release's weed-volume, native wheel and native library
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          wheel="seaweedkv_native-${VERSION}-cp312-cp312-linux_x86_64.whl"
+          gh release download "$TAG" --pattern weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz \
+            --pattern sw-rdma-object-service-enterprise_linux_amd64.tar.gz \
+            --pattern seaweedkv-lmcache-native-preview_cp312_linux_amd64.tar.gz \
+            --pattern seaweedkv-preview-pair.json --pattern "${wheel}" --pattern "${wheel}.sha256"
+          python3 .github/scripts/kv-native-preview-pair.py verify . seaweedkv-preview-pair.json --wheel
+          paired=$(jq -er .mono_commit seaweedkv-preview-pair.json)
+          if [ "$paired" != "$SOURCE_SHA" ]; then
+            echo "::error::KV_RELEASE_INPUT: published assets are from mono ${paired}, this run is ${SOURCE_SHA}"
+            exit 1
+          fi
+          tar -xzf weed-volume-enterprise_rdma_large_disk_linux_amd64.tar.gz -C swctl-kv-release ./weed-volume
+          cp "${wheel}" swctl-kv-release/
+          python3 .github/scripts/kv-release-manifest.py extract-lib "${wheel}" "${NATIVE_LIB}" "swctl-kv-release/${NATIVE_LIB}"
+
+      - name: Fetch the pinned LMCache wheel
+        run: |
+          set -euo pipefail
+          pin=.github/swctl-kv-release.json
+          printf 'lmcache==%s --hash=sha256:%s\n' "$(jq -er .lmcache_wheel.version $pin)" "$(jq -er .lmcache_wheel.sha256 $pin)" > lmcache-requirement.txt
+          python3 -m pip download --no-deps --require-hashes --only-binary=:all: --implementation cp --python-version 3.12 \
+            --abi cp312 --platform manylinux_2_28_x86_64 -r lmcache-requirement.txt -d swctl-kv-release
+          test -f "swctl-kv-release/$(jq -er .lmcache_wheel.name $pin)"
+
+      - name: Write the manifest and check the directory
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/kv-release-manifest.py create swctl-kv-release "$TAG" "$VERSION" "$SOURCE_SHA" \
+            "$GO_VERSION" "$LMCACHE_COMMIT" .github/swctl-kv-release.json
+          ls -l swctl-kv-release
+
+      # The real reader: swctl from this source commit must accept the manifest through the published cluster template.
+      - name: Check the manifest with swctl itself
+        run: |
+          set -euo pipefail
+          template=seaweedfs-enterprise-source/docs/skills/seaweedfs-kvcache/cluster.yaml
+          if [ ! -s "$template" ]; then
+            echo "::error::KV_RELEASE_INPUT: ${template} is absent at mono ${SOURCE_SHA}"
+            exit 1
+          fi
+          check=$(mktemp -d)
+          ssh-keygen -q -t ed25519 -N '' -f "$check/key"
+          python3 .github/scripts/kv-release-manifest.py check-cluster "$template" "$PWD/swctl-kv-release" "$check" > "$check/cluster.yaml"
+          ./swctl-check plan install --cluster "$check/cluster.yaml" --json > swctl-plan-check.json
+          jq -e '.status == "PASS" and .mutating == false' swctl-plan-check.json
+
+      - name: Package the release directory
+        run: |
+          set -euo pipefail
+          epoch=$(git -C seaweedfs-enterprise-source show -s --format=%ct HEAD)
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${epoch}" -cf - swctl-kv-release \
+            | gzip -n > swctl-kv-release_linux_amd64.tar.gz
+          cp swctl-kv-release/manifest.json swctl-kv-release_linux_amd64.manifest.json
+          for f in swctl-kv-release_linux_amd64.tar.gz swctl-kv-release_linux_amd64.manifest.json; do sha256sum "$f" > "$f.sha256"; done
+
+      - name: Upload the swctl KV release directory
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            swctl-kv-release_linux_amd64.tar.gz
+            swctl-kv-release_linux_amd64.tar.gz.sha256
+            swctl-kv-release_linux_amd64.manifest.json
+            swctl-kv-release_linux_amd64.manifest.json.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the release carries it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets --jq '.assets[].name' > release-assets.txt
+          python3 .github/scripts/kv-release-manifest.py assets "$TAG" release-assets.txt
