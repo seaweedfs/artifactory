@@ -1,0 +1,15 @@
+{
+  "schema": "seaweedfs-swctl-kv-release/v1",
+  "bundle_prefix": "kv-",
+  "ga_criteria_revision": "SeaweedFS KV: positioning and release criteria, rev 8 (2026-11-06)",
+  "upgrade_edges_ref": "docs/KVCACHE-UPGRADE-MATRIX.yaml",
+  "supported_os": [{"ID": "ubuntu", "VERSION_ID": "24.04", "kernel": {"min": "6.8", "max_exclusive": "7.0"}}],
+  "weed_build_tags": ["5BytesOffset"],
+  "weed_volume_features": ["rdma", "rdma-dc", "kvcache"],
+  "native_lib": "libseaweedfs_sw_rdma_nixl.so",
+  "lmcache_wheel": {
+    "version": "0.5.6",
+    "name": "lmcache-0.5.6-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "c7892944ca91ec965c3448b2e30e0869f86a2499bdd01b70eb988e3436d71e4e"
+  }
+}
