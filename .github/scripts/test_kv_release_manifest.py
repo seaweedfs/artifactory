@@ -63,6 +63,35 @@ class Assets(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class KernelWindow(unittest.TestCase):
+    """The supported kernel window: Ubuntu 24.04 with 6.8 <= kernel < 7.1 (7.0.x supported)."""
+    VECTORS = {"7.0.0-1017-azure": True, "6.8.0-1064-nvidia": True, "6.8": True, "7.0.9": True,
+               "7.1.0": False, "7.1.0-1001-azure": False, "6.7.12-generic": False, "": False, "garbage": False}
+
+    def test_release_constants_window(self):
+        (os_entry,) = CONSTANTS["supported_os"]
+        self.assertEqual((os_entry["ID"], os_entry["VERSION_ID"]), ("ubuntu", "24.04"))
+        self.assertEqual(os_entry["kernel"], {"min": "6.8", "max_exclusive": "7.1"})
+
+    def test_vectors_against_the_release_window(self):
+        w = CONSTANTS["supported_os"][0]["kernel"]
+        for release, want in self.VECTORS.items():
+            self.assertEqual(rel.kernel_in_window(release, w), want, release)
+
+    def test_red_the_old_7_0_window_refused_the_azure_kernel(self):
+        self.assertFalse(rel.kernel_in_window("7.0.0-1017-azure", {"min": "6.8", "max_exclusive": "7.0"}))
+
+    def test_malformed_windows_are_refused_by_verify(self):
+        for window in ({"min": "7.1", "max_exclusive": "6.8"}, {"min": "7.0", "max_exclusive": "7.0"},
+                       {"min": "x", "max_exclusive": "7.1"}):
+            with tempfile.TemporaryDirectory() as d:
+                root = pathlib.Path(d)
+                m = build(root)
+                self.assertEqual(rel.verify(root, json.dumps(m).encode()), [])   # the real window passes
+                m["supported_os"] = [dict(m["supported_os"][0], kernel=window)]  # a copy: CONSTANTS stays untouched
+                self.assertTrue(any("kernel" in p for p in rel.verify(root, json.dumps(m).encode())), window)
+
+
 class Manifest(unittest.TestCase):
     def test_red_placeholder_manifest_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
