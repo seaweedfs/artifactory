@@ -100,15 +100,24 @@ def create(directory, tag, version, source_sha, go_version, lmcache_commit, cons
 
 
 def _kernel_tuple(release):
-    """'7.0.0-1017-azure' -> (7, 0, 0); '6.8' -> (6, 8). The numeric dotted prefix only; None if there is none."""
-    m = re.match(r"^([0-9]+(?:\.[0-9]+)*)", str(release))
+    """A running kernel (uname -r): '7.0.0-1017-azure' -> (7, 0, 0). The numeric dotted prefix; None if none."""
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)*)", release) if isinstance(release, str) else None
     return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def _bound_tuple(bound):
+    """A manifest bound: the WHOLE string must be dotted numeric ('6.8', '7.1'); '6..8', '6.8-rc1', ' 6.8' -> None."""
+    ok = isinstance(bound, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", bound)
+    return tuple(int(x) for x in bound.split(".")) if ok else None
 
 
 def kernel_in_window(release, window):
     """True if a running kernel release (uname -r) lies in a supported_os kernel window {min, max_exclusive}.
-    Versions compare numerically by component (7.0.0-1017-azure >= 6.8 and < 7.1); a missing component is 0."""
-    k, lo, hi = _kernel_tuple(release), _kernel_tuple(window.get("min")), _kernel_tuple(window.get("max_exclusive"))
+    Versions compare numerically by component (7.0.0-1017-azure >= 6.8 and < 7.1; 6.10 > 6.8); a missing component
+    is 0. A window that is not a dict, or a bound that is not a full dotted-numeric string, is never satisfied."""
+    if not isinstance(window, dict):
+        return False
+    k, lo, hi = _kernel_tuple(release), _bound_tuple(window.get("min")), _bound_tuple(window.get("max_exclusive"))
     if None in (k, lo, hi):
         return False
     width = max(len(k), len(lo), len(hi))
@@ -132,9 +141,13 @@ def verify(directory, raw=None):
                 "upgrade_edges_ref", "note"):
         if not manifest.get(key):
             found.append(f"manifest.json lacks {key}")
-    for w in [(o or {}).get("kernel") or {} for o in manifest.get("supported_os") or []]:
-        if not kernel_in_window(w.get("min"), w):   # unparsable, or min not below max_exclusive
-            found.append(f"supported_os kernel window {w} is malformed: min must parse and be below max_exclusive")
+    oses = manifest.get("supported_os")
+    if not isinstance(oses, list) or not all(isinstance(o, dict) and isinstance(o.get("kernel"), dict) for o in oses):
+        found.append("supported_os must be a list of objects, each with a kernel {min, max_exclusive} object")
+    else:
+        for w in (o["kernel"] for o in oses):   # bounds: full dotted-numeric strings, min below max_exclusive
+            if not kernel_in_window(w.get("min"), w):
+                found.append(f"supported_os kernel window {w} is malformed: min must parse and be below max_exclusive")
     if manifest.get("schema") != "swctl.release-manifest/v1" or manifest.get("profile") != "kv":
         found.append("manifest.json is not a swctl.release-manifest/v1 kv manifest")
     arts = manifest.get("artifacts") or []

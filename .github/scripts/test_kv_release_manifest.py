@@ -81,9 +81,30 @@ class KernelWindow(unittest.TestCase):
     def test_red_the_old_7_0_window_refused_the_azure_kernel(self):
         self.assertFalse(rel.kernel_in_window("7.0.0-1017-azure", {"min": "6.8", "max_exclusive": "7.0"}))
 
+    def test_numeric_ordering_6_10_is_above_6_8(self):
+        self.assertTrue(rel.kernel_in_window("6.10.0-1-generic", {"min": "6.8", "max_exclusive": "7.1"}))
+        self.assertFalse(rel.kernel_in_window("6.8.0-1064-nvidia", {"min": "6.10", "max_exclusive": "7.1"}))
+
+    def test_bounds_are_strict_but_uname_keeps_its_suffix(self):
+        self.assertTrue(rel.kernel_in_window("7.0.0-1017-azure", {"min": "6.8", "max_exclusive": "7.1"}))
+        for bad in ("6..8", "6.8.", " 6.8", "6.8-rc1", "", 6.8, None):
+            self.assertFalse(rel.kernel_in_window("7.0.0", {"min": bad, "max_exclusive": "7.1"}), repr(bad))
+        self.assertFalse(rel.kernel_in_window("7.0.0", ["6.8", "7.1"]))
+
+    def test_wrong_supported_os_types_are_refused_cleanly(self):
+        for supported in ("ubuntu", [["ubuntu"]], [{"ID": "ubuntu", "kernel": ["6.8", "7.1"]}], [{"ID": "ubuntu"}]):
+            with tempfile.TemporaryDirectory() as d:
+                root = pathlib.Path(d)
+                m = build(root)
+                m["supported_os"] = supported
+                problems = rel.verify(root, json.dumps(m).encode())   # no traceback: a clean refusal
+                self.assertTrue(any("supported_os" in p for p in problems), supported)
+
     def test_malformed_windows_are_refused_by_verify(self):
         for window in ({"min": "7.1", "max_exclusive": "6.8"}, {"min": "7.0", "max_exclusive": "7.0"},
-                       {"min": "x", "max_exclusive": "7.1"}):
+                       {"min": "x", "max_exclusive": "7.1"}, {"min": "6..8", "max_exclusive": "7.1"},
+                       {"min": "6.8", "max_exclusive": "7.1-rc1"}, {"min": 6.8, "max_exclusive": "7.1"},
+                       {"max_exclusive": "7.1"}):
             with tempfile.TemporaryDirectory() as d:
                 root = pathlib.Path(d)
                 m = build(root)
