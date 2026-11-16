@@ -3,7 +3,7 @@ name: "seaweed-vfs (seaweed-mono)"
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
 # mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}${{ (inputs.measurement || inputs.only_job) && format(' · measure{0}', inputs.only_job && format(' only:{0}', inputs.only_job) || '') || '' }}
 
 on:
   # Triggered by seaweed-mono push (repository_dispatch)
@@ -36,6 +36,10 @@ on:
         required: false
         type: boolean
         default: false
+      only_job:
+        description: 'Run only this job id (measurement runs); empty runs every job'
+        required: false
+        default: ''
 
   # Nightly against main — catches distro kernel bumps that break the shipped
   # module source even when nothing in seaweed-mono changed (the reported issue:
@@ -47,15 +51,32 @@ on:
 concurrency:
   # head_ref is empty for repository_dispatch/workflow_dispatch, so key on the
   # dispatched mono ref (or the manual branch input) to actually dedupe runs.
-  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/seaweed-vfs
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ (inputs.measurement || inputs.only_job) && '/measure' || '' }}/seaweed-vfs
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  only-job-check:
+    # A measurement run that names a job id this workflow does not have would
+    # otherwise skip every job and finish green with zero work.
+    if: ${{ inputs.only_job }}
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 2
+    steps:
+      - name: only_job must name a job of this workflow
+        env:
+          ONLY_JOB: ${{ inputs.only_job }}
+        run: |
+          case "$ONLY_JOB" in
+            rust|kernel|dkms-package|fuse-smoke|pjdfstest) echo "only_job=$ONLY_JOB: runs alone, measurement concurrency group" ;;
+            *) echo "::error::only_job=$ONLY_JOB is not a job of this workflow (rust kernel dkms-package fuse-smoke pjdfstest)"; exit 1 ;;
+          esac
+
   # Build the Rust workspace (sw-client, sw-fuse, sw-kd) and run unit tests.
   rust:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'rust' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -119,6 +140,7 @@ jobs:
         with:
           mode: release
   kernel:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'kernel' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -178,6 +200,7 @@ jobs:
         with:
           mode: release
   dkms-package:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'dkms-package' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -267,6 +290,7 @@ jobs:
         with:
           mode: release
   fuse-smoke:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'fuse-smoke' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
@@ -439,6 +463,7 @@ jobs:
         with:
           mode: release
   pjdfstest:
+    if: ${{ (inputs.only_job || '') == '' || inputs.only_job == 'pjdfstest' }}
     # Fixed host ports (9333 / 8888 / 8333 / 8000 / 5432) can be bound by only
     # one job at a time on a shared host, so on tp01 every port-binding job
     # across every suite waits on one host flock (tp01-host-lock action; a GitHub
