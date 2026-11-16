@@ -1,0 +1,92 @@
+# V3 iSCSI OS-initiator fio smoke (Test 2 of iscsi-p2-p3-lab-validation.md).
+#
+# v0 scenario: uses ONLY actions registered in the framework today.
+# Per-iteration loop is expressed via Phase.Repeat=1 (single iteration);
+# multi-iteration is the v1 use case, currently scripted by run-iscsi-os-smoke.sh.
+#
+# This scenario assumes pre-built blockmaster + blockvolume binaries on
+# the target node, started outside the scenario (e.g. by a sibling
+# `setup` scenario or by the run-iscsi-os-smoke.sh harness). Replacing
+# the bash setup phase requires the v1 build primitives (go_build).
+
+name: v3-iscsi-os-fio
+timeout: 5m
+
+env:
+  iqn:           "iqn.2026-05.io.seaweedfs:os-smoke-v1"
+  fio_runtime:   "60"
+
+topology:
+  nodes:
+    target_node:
+      host: 192.168.1.184
+      user: testdev
+      key:  /c/work/dev_server/testdev_key
+
+targets:
+  primary:
+    node: target_node
+    iscsi_port: 3267
+    iqn_suffix: os-smoke-v1
+    vol_size: 256M
+
+phases:
+  - name: discover_login
+    actions:
+      - action: iscsi_discover
+        target: primary
+        node: target_node
+      - action: iscsi_login
+        target: primary
+        node: target_node
+        save_as: dev
+
+  - name: prepare_fs
+    actions:
+      - action: mkfs
+        node: target_node
+        device: "{{.params.dev}}"
+        fs: ext4
+      - action: mount
+        node: target_node
+        device: "{{.params.dev}}"
+        mountpoint: /mnt/sw-block-iter
+
+  - name: fio_randrw
+    actions:
+      - action: fio
+        node: target_node
+        device: "{{.params.dev}}"
+        rw: randrw
+        bs: 4k
+        size: 32m
+        runtime: "{{.env.fio_runtime}}"
+        out: fio.iter1.log
+
+  - name: assert_no_session_errors
+    actions:
+      - action: grep_log
+        node: target_node
+        # Pre-v1: assert "expected Data-Out" does not appear.
+        # v1 will replace with assert_grep_count expect=0.
+        path: "{{.params.blockvolume_log}}"
+        pattern: "expected Data-Out"
+        expect_match: "false"
+
+  - name: teardown
+    always: true
+    actions:
+      - action: umount
+        node: target_node
+        mountpoint: /mnt/sw-block-iter
+      - action: iscsi_logout
+        target: primary
+        node: target_node
+      - action: iscsi_cleanup
+        node: target_node
+
+# Open question for v1:
+#   - this scenario does not start blockmaster/blockvolume itself.
+#     v1's go_build + an exec-based spawn helper would let one scenario
+#     own setup → test → teardown. Currently the bash harness owns
+#     setup; the v0 scenario covers only the iSCSI client-side cycle.

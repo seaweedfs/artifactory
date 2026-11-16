@@ -1,0 +1,22 @@
+apiVersion: testrunner.io/v1
+kind: Template
+metadata:
+  name: blockmaster-spawn
+  parameters:
+    bin:           { type: string, required: true }
+    listen:        { type: string, default: "127.0.0.1:19333" }
+    artifact_dir:  { type: string, required: true }
+spec:
+  action: spawn
+  command: "{{.bin}}"
+  args:
+    - "--listen={{.listen}}"
+  log_path: "{{.artifact_dir}}/blockmaster.log"
+  ready:
+    type: tcp_port
+    port: "{{splitHost .listen | last}}"
+    timeout: 10s
+  outputs:
+    - { name: pid,    from: pid }
+    - { name: log,    from: log_path }
+    - { name: listen, value: "{{.listen}}" }

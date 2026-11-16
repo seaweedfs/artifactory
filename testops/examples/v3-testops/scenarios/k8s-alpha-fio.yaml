@@ -1,0 +1,155 @@
+# V3 K8s alpha fio smoke (Test 3 of iscsi-p2-p3-lab-validation.md).
+#
+# v0 scenario: uses ONLY actions registered today. The image-build and
+# k3s-import steps are still done by scripts/build-alpha-images.sh
+# externally; this scenario starts after images exist on the host.
+#
+# Replacing the build step requires v1 primitives (docker_build,
+# ctr_load); see scenario-spec-v1-roadmap.md.
+
+name: v3-k8s-alpha-fio
+timeout: 10m
+
+env:
+  product_root: "/tmp/seaweed-block-iscsi-fe"
+  namespace:    "default"
+
+topology:
+  nodes:
+    m02:
+      host: 192.168.1.184
+      user: testdev
+      key:  /c/work/dev_server/testdev_key
+
+phases:
+  - name: pre_clean
+    actions:
+      - action: pre_run_cleanup
+        node: m02
+
+  - name: apply_stack
+    actions:
+      - action: kubectl_apply
+        node: m02
+        file: "{{.env.product_root}}/deploy/k8s/alpha/block-stack.yaml"
+      - action: kubectl_wait_condition
+        node: m02
+        kind: deployment
+        name: sw-blockmaster
+        namespace: kube-system
+        condition: available
+        timeout: 60s
+
+  - name: apply_csi
+    actions:
+      - action: kubectl_apply
+        node: m02
+        file: "{{.env.product_root}}/deploy/k8s/alpha/rbac.yaml"
+      - action: kubectl_apply
+        node: m02
+        file: "{{.env.product_root}}/deploy/k8s/alpha/csidriver.yaml"
+      - action: kubectl_apply
+        node: m02
+        file: "{{.env.product_root}}/deploy/k8s/alpha/csi-controller.yaml"
+      - action: kubectl_apply
+        node: m02
+        file: "{{.env.product_root}}/deploy/k8s/alpha/csi-node.yaml"
+      - action: kubectl_wait_condition
+        node: m02
+        kind: deployment
+        name: sw-block-csi-controller
+        namespace: kube-system
+        condition: available
+        timeout: 90s
+      - action: kubectl_rollout_status
+        node: m02
+        kind: daemonset
+        name: sw-block-csi-node
+        namespace: kube-system
+        timeout: 60s
+
+  - name: dynamic_pvc
+    actions:
+      - action: kubectl_apply
+        node: m02
+        file: "{{.env.product_root}}/deploy/k8s/alpha/demo-dynamic-pvc-fio-pod.yaml"
+      - action: kubectl_wait_condition
+        node: m02
+        kind: pod
+        name: sw-block-dynamic-smoke
+        namespace: "{{.env.namespace}}"
+        condition: succeeded
+        timeout: 240s
+      - action: kubectl_logs
+        node: m02
+        kind: pod
+        name: sw-block-dynamic-smoke
+        namespace: "{{.env.namespace}}"
+        save_as: pod_log
+
+  - name: assert_pod_log_has_fio
+    actions:
+      - action: assert_contains
+        value: "{{.params.pod_log}}"
+        substr: "Run status group"
+
+  - name: tear_down_pvc
+    actions:
+      - action: kubectl_delete_pod
+        node: m02
+        name: sw-block-dynamic-smoke
+        namespace: "{{.env.namespace}}"
+      - action: kubectl_delete
+        node: m02
+        kind: pvc
+        name: sw-block-dynamic-v1
+        namespace: "{{.env.namespace}}"
+
+  - name: assert_no_residue
+    actions:
+      - action: kubectl_assert_not_exists
+        node: m02
+        kind: pvc
+        name: sw-block-dynamic-v1
+        namespace: "{{.env.namespace}}"
+      # Pre-v1: shell out to iscsiadm. v1 replaces with assert_no_active_iscsi_sessions.
+      - action: exec
+        node: m02
+        cmd: "sudo iscsiadm -m session 2>&1 | grep -q 'No active sessions'"
+
+  - name: teardown
+    always: true
+    actions:
+      - action: kubectl_delete
+        node: m02
+        kind: deployment
+        name: sw-block-csi-controller
+        namespace: kube-system
+        ignore_error: "true"
+      - action: kubectl_delete
+        node: m02
+        kind: daemonset
+        name: sw-block-csi-node
+        namespace: kube-system
+        ignore_error: "true"
+      - action: kubectl_delete
+        node: m02
+        kind: deployment
+        name: sw-blockmaster
+        namespace: kube-system
+        ignore_error: "true"
+      - action: collect_artifacts
+        node: m02
+        on_failure: "true"
+
+# Open questions for v1:
+#   - this scenario reapplies the upstream YAMLs literally; the
+#     install-k8s-alpha.sh in-place sed substitutions
+#     (NODE_NAME, image tags, --launcher-pvc-owner-ref injection)
+#     are not yet expressible in v0. Two paths in v1 priority order:
+#       (a) ship the manifest pre-rendered (e.g. by a build step) so
+#           kubectl_apply takes the rendered file;
+#       (b) add a render_manifest action — pre-flight before alpha-fio
+#           and friends become testrunner-native.
+#   - assert_no_active_iscsi_sessions in v1 replaces the inline `exec`
+#     hack above.

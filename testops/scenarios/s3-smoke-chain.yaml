@@ -1,0 +1,102 @@
+# S3 smoke — the reference scenario proving the S3 product pack end-to-end.
+#
+# Shape is the cross-product standard: build -> seed -> test -> cleanup,
+# self-contained, zero-residue. See docs/cross-product-testops-standard.md (§3).
+#
+# Run (from the runner repo, controller = Windows or a Linux box that can SSH m02):
+#   sweeds3 validate scenarios/s3-smoke-chain.yaml
+#   sweeds3 run scenarios/s3-smoke-chain.yaml
+#
+# The build phase installs an upstream `weed` (single Go binary) only to prove the
+# pack/engine path. For real S3 validation, point `weed_bin` at the enterprise
+# `weed` built from the mono repo (`cd enterprise && make install`) and layer the
+# Go S3 suites / ceph s3-tests / warp on top with `exec`.
+
+name: s3-smoke-chain
+timeout: 10m
+
+env:
+  ssh_key: "C:\\work\\dev_server\\testdev_key"
+  # SeaweedFS go.mod uses replace directives, so `go install ...@latest` is
+  # unsupported — weed must be built from a cloned source. For real S3 validation
+  # swap this for the enterprise weed (`cd enterprise && make install`).
+  weed_repo: "https://github.com/seaweedfs/seaweedfs"
+  weed_ref: "master"
+  root: "/tmp/sw-s3-smoke"
+  weed_bin: "/tmp/sw-s3-smoke/bin/weed"
+  data_dir: "/tmp/sw-s3-smoke/data"
+  s3_port: "8333"
+  bucket: "sw-smoke"
+  key: "smoke.dat"
+
+topology:
+  nodes:
+    m02:
+      host: 192.168.1.184
+      user: testdev
+      key: "{{ ssh_key }}"
+
+phases:
+  - name: pre_clean
+    actions:
+      - action: exec
+        node: m02
+        cmd: "pkill -f '[w]eed server .*-s3' || true; rm -rf {{ root }}; mkdir -p {{ root }}/bin {{ data_dir }}"
+      - action: exec
+        node: m02
+        cmd: "test $(pgrep -f '[w]eed server .*-s3' | wc -l) -eq 0"   # zero-residue: no weed S3 left
+
+  - name: build
+    actions:
+      - action: exec
+        node: m02
+        timeout: 12m
+        cmd: "mkdir -p {{ root }}/bin && cd {{ root }} && git clone --depth 1 {{ weed_repo }} src 2>&1 | tail -1 && cd src/weed && go build -o {{ weed_bin }} . && {{ weed_bin }} version | head -1"
+      - action: exec
+        node: m02
+        cmd: "git -C {{ root }}/src rev-parse --short HEAD"
+        save_as: weed_sha   # the tested commit — stamped by the build (NOT runner-cwd git)
+
+  - name: seed
+    actions:
+      - action: s3_start_stack
+        node: m02
+        weed: "{{ weed_bin }}"
+        data_dir: "{{ data_dir }}"
+        s3_port: "{{ s3_port }}"
+      - action: s3_make_bucket
+        node: m02
+        bucket: "{{ bucket }}"
+
+  - name: test
+    actions:
+      - action: s3_verify_roundtrip
+        node: m02
+        bucket: "{{ bucket }}"
+        key: "{{ key }}"
+        size: "4M"
+      - action: s3_list
+        node: m02
+        bucket: "{{ bucket }}"
+        save_as: obj_count
+      - action: assert_greater
+        actual: "{{ obj_count }}"
+        threshold: "0"
+      # Emit the common control-plane envelope so one qa-assert validates this
+      # bundle (docs/control-plane-product-contract.md §1). Reached only on pass.
+      - action: emit_provenance
+        product: s3
+        tested_ref: "{{ weed_ref }}"
+        tested_sha: "{{ weed_sha }}"
+        __s3_object_count: "{{ obj_count }}"
+        __s3_roundtrip_sha_match: "1"
+
+  - name: cleanup
+    always: true
+    actions:
+      - action: s3_stop_stack
+        node: m02
+        data_dir: "{{ data_dir }}"
+      - action: exec
+        node: m02
+        cmd: "test $(pgrep -f '[w]eed server .*-s3' | wc -l) -eq 0"   # zero-residue: no weed S3 left
