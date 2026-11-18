@@ -71,6 +71,16 @@ handled() {
   return 1
 }
 
+# The paginated listing above can take seconds, and a run started meanwhile
+# (mono's own notify) is missing from it, so re-read the newest page right
+# before dispatching. Returns 0 when a run for the SHA exists, 2 on error.
+started_since_listing() {
+  local titles
+  titles=$(art_api -X GET "repos/${ART_REPO}/actions/runs" \
+    -f event=repository_dispatch -f per_page=100 --jq '.workflow_runs[].display_title') || return 2
+  grep -qF -- "mono:$1" <<<"$titles"
+}
+
 # Prints "enterprise vfs" flags for the changes base...head; fails open.
 scope() {
   local base=$1 head=$2 files enterprise vfs
@@ -119,6 +129,15 @@ consider() {
   fi
   if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
     echo "defer ${kind} ${ref}@${sha:0:12}: per-run cap ${MAX_DISPATCH} reached"
+    return
+  fi
+  rc=0; started_since_listing "$sha" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "cannot re-list ${ART_REPO} dispatch runs; refusing to dispatch without dedupe" >&2
+    exit 1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    echo "skip ${kind} ${ref}@${sha:0:12}: already handled (run started during listing)"
     return
   fi
   if [ "$kind" = pr ]; then push_ev=mono-merge-request; vfs_ev=mono-vfs-merge-request
