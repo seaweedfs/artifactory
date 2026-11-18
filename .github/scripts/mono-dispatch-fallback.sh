@@ -43,12 +43,13 @@ art_api()  { GH_TOKEN="$DISPATCH_TOKEN" gh api -H "X-GitHub-Api-Version: 2022-11
 
 # SHAs that already have an artifactory dispatch run (any state). A failed
 # listing fails the run: without it this dedupe layer would silently vanish.
-if ! run_titles=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
-    -f event=repository_dispatch -f per_page=100 --jq '.workflow_runs[].display_title'); then
+if ! run_rows=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
+    -f event=repository_dispatch -f per_page=100 \
+    --jq '.workflow_runs[] | [.display_title, .status, (.conclusion // ""), .html_url, .actor.login] | @tsv'); then
   echo "cannot list ${ART_REPO} dispatch runs; refusing to dispatch without dedupe" >&2
   exit 1
 fi
-seen_runs=$(printf '%s\n' "$run_titles" | { grep -oE 'mono:[0-9a-f]{40}' || true; } | cut -d: -f2 | sort -u)
+seen_runs=$(printf '%s\n' "$run_rows" | { grep -oE 'mono:[0-9a-f]{40}' || true; } | cut -d: -f2 | sort -u)
 
 # Returns 0 handled (prints why), 1 not handled, 2 when the statuses cannot be
 # read. Callers treat 2 as fatal: an unreadable status must never look unhandled.
@@ -179,5 +180,33 @@ while IFS=$'\t' read -r number ref sha base; do
   [ -n "$number" ] || continue
   consider pr "$ref" "$sha" "$base" "$number"
 done <<<"$prs"
+
+# Runs this poller dispatched were started with GITHUB_TOKEN, and their
+# completion fires no workflow_run, so report-pr-status.yml never mirrors
+# them. Post their results here with the same context and description.
+declare -A mono_contexts=()
+while IFS=$'\t' read -r title status conclusion url actor; do
+  [ "$actor" = "github-actions[bot]" ] && [ "$status" = completed ] || continue
+  [[ $title =~ mono:([0-9a-f]{40}) ]] || continue
+  sha=${BASH_REMATCH[1]}
+  case "$conclusion" in
+    success)          state=success; desc=passed;;
+    cancelled|skipped) continue;;
+    *)                state=failure; desc="${conclusion:-failed}";;
+  esac
+  if [ -z "${mono_contexts[$sha]+set}" ]; then
+    if ! mono_contexts[$sha]=$(mono_api "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
+        --jq '.[] | select(.state != "pending") | .context'); then
+      echo "cannot read ${MONO_REPO} statuses for ${sha}; not mirroring it" >&2
+      continue
+    fi
+  fi
+  grep -qxF -- "artifactory / ${title}" <<<"${mono_contexts[$sha]}" && continue
+  echo "mirror ${state} onto ${sha:0:12}: ${title}"
+  [ "$DRY_RUN" = "true" ] && continue
+  mono_api -X POST "repos/${MONO_REPO}/statuses/${sha}" -f state="$state" \
+    -f context="artifactory / ${title}" -f target_url="$url" -f description="$desc" >/dev/null ||
+    echo "  mirror failed for ${title}" >&2
+done <<<"$run_rows"
 
 echo "done (dry_run=${DRY_RUN})"
