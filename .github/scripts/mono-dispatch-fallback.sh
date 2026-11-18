@@ -43,6 +43,7 @@ art_api()  { GH_TOKEN="$DISPATCH_TOKEN" gh api -H "X-GitHub-Api-Version: 2022-11
 
 # SHAs that already have an artifactory dispatch run (any state). A failed
 # listing fails the run: without it this dedupe layer would silently vanish.
+listing_started=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%SZ)
 if ! run_rows=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
     -f event=repository_dispatch -f per_page=100 \
     --jq '.workflow_runs[] | [.display_title, .status, (.conclusion // ""), .html_url, .actor.login] | @tsv'); then
@@ -73,12 +74,13 @@ handled() {
 }
 
 # The paginated listing above can take seconds, and a run started meanwhile
-# (mono's own notify) is missing from it, so re-read the newest page right
-# before dispatching. Returns 0 when a run for the SHA exists, 2 on error.
+# (mono's own notify) is missing from it, so re-read the runs created since it
+# began right before dispatching. Returns 0 when a run for the SHA exists, 2 on error.
 started_since_listing() {
   local titles
-  titles=$(art_api -X GET "repos/${ART_REPO}/actions/runs" \
-    -f event=repository_dispatch -f per_page=100 --jq '.workflow_runs[].display_title') || return 2
+  titles=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
+    -f event=repository_dispatch -f created=">=${listing_started}" -f per_page=100 \
+    --jq '.workflow_runs[].display_title') || return 2
   grep -qF -- "mono:$1" <<<"$titles"
 }
 
