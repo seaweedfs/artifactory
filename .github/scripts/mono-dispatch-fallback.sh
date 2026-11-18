@@ -186,24 +186,30 @@ done <<<"$prs"
 # Runs this poller dispatched were started with GITHUB_TOKEN, and their
 # completion fires no workflow_run, so report-pr-status.yml never mirrors
 # them. Post their results here with the same context and description.
-declare -A mono_contexts=()
+declare -A mono_states=() considered=()
 while IFS=$'\t' read -r title status conclusion url actor; do
-  [ "$actor" = "github-actions[bot]" ] && [ "$status" = completed ] || continue
   [[ $title =~ mono:([0-9a-f]{40}) ]] || continue
   sha=${BASH_REMATCH[1]}
+  # Rows are newest first: only the newest run of each title decides.
+  [ -z "${considered[$title]+set}" ] || continue
+  considered[$title]=1
+  [ "$actor" = "github-actions[bot]" ] && [ "$status" = completed ] || continue
   case "$conclusion" in
     success)          state=success; desc=passed;;
     cancelled|skipped) continue;;
     *)                state=failure; desc="${conclusion:-failed}";;
   esac
-  if [ -z "${mono_contexts[$sha]+set}" ]; then
-    if ! mono_contexts[$sha]=$(mono_api "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
-        --jq '.[] | select(.state != "pending") | .context'); then
+  if [ -z "${mono_states[$sha]+set}" ]; then
+    if ! states=$(mono_api --paginate "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
+        --jq '.[] | select(.state != "pending") | [.state, .context] | @tsv'); then
       echo "cannot read ${MONO_REPO} statuses for ${sha}; not mirroring it" >&2
       continue
     fi
+    mono_states[$sha]=$states
   fi
-  grep -qxF -- "artifactory / ${title}" <<<"${mono_contexts[$sha]}" && continue
+  # A rerun keeps the title, so compare with the latest posted verdict.
+  latest=$(awk -F'\t' -v c="artifactory / ${title}" '$2 == c { print $1; exit }' <<<"${mono_states[$sha]}")
+  [ "$latest" = "$state" ] && continue
   echo "mirror ${state} onto ${sha:0:12}: ${title}"
   [ "$DRY_RUN" = "true" ] && continue
   mono_api -X POST "repos/${MONO_REPO}/statuses/${sha}" -f state="$state" \
