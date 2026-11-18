@@ -13,7 +13,8 @@ name: "Mono dispatch fallback"
 # Secrets: MONO_TOKEN must allow reading seaweed-mono contents and pull requests
 # and writing commit statuses (the last is already required by
 # report-pr-status.yml). The dispatch uses this workflow's own GITHUB_TOKEN;
-# repository_dispatch events created with it do start workflow runs.
+# repository_dispatch events created with it do start workflow runs, but their
+# completion fires no workflow_run, so the script mirrors their results itself.
 #
 # Remove this workflow once seaweed-mono's notify workflow runs again; until
 # then it also tolerates both running (a SHA with an artifactory run is skipped).

@@ -43,12 +43,14 @@ art_api()  { GH_TOKEN="$DISPATCH_TOKEN" gh api -H "X-GitHub-Api-Version: 2022-11
 
 # SHAs that already have an artifactory dispatch run (any state). A failed
 # listing fails the run: without it this dedupe layer would silently vanish.
-if ! run_titles=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
-    -f event=repository_dispatch -f per_page=100 --jq '.workflow_runs[].display_title'); then
+listing_started=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%SZ)
+if ! run_rows=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
+    -f event=repository_dispatch -f per_page=100 \
+    --jq '.workflow_runs[] | [.display_title, .status, (.conclusion // ""), .html_url, .actor.login] | @tsv'); then
   echo "cannot list ${ART_REPO} dispatch runs; refusing to dispatch without dedupe" >&2
   exit 1
 fi
-seen_runs=$(printf '%s\n' "$run_titles" | { grep -oE 'mono:[0-9a-f]{40}' || true; } | cut -d: -f2 | sort -u)
+seen_runs=$(printf '%s\n' "$run_rows" | { grep -oE 'mono:[0-9a-f]{40}' || true; } | cut -d: -f2 | sort -u)
 
 # Returns 0 handled (prints why), 1 not handled, 2 when the statuses cannot be
 # read. Callers treat 2 as fatal: an unreadable status must never look unhandled.
@@ -69,6 +71,17 @@ handled() {
     echo "status"; return 0
   fi
   return 1
+}
+
+# The paginated listing above can take seconds, and a run started meanwhile
+# (mono's own notify) is missing from it, so re-read the runs created since it
+# began right before dispatching. Returns 0 when a run for the SHA exists, 2 on error.
+started_since_listing() {
+  local titles
+  titles=$(art_api --paginate -X GET "repos/${ART_REPO}/actions/runs" \
+    -f event=repository_dispatch -f created=">=${listing_started}" -f per_page=100 \
+    --jq '.workflow_runs[].display_title') || return 2
+  grep -qF -- "mono:$1" <<<"$titles"
 }
 
 # Prints "enterprise vfs" flags for the changes base...head; fails open.
@@ -121,6 +134,15 @@ consider() {
     echo "defer ${kind} ${ref}@${sha:0:12}: per-run cap ${MAX_DISPATCH} reached"
     return
   fi
+  rc=0; started_since_listing "$sha" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "cannot re-list ${ART_REPO} dispatch runs; refusing to dispatch without dedupe" >&2
+    exit 1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    echo "skip ${kind} ${ref}@${sha:0:12}: already handled (run started during listing)"
+    return
+  fi
   if [ "$kind" = pr ]; then push_ev=mono-merge-request; vfs_ev=mono-vfs-merge-request
   else push_ev=mono-push; vfs_ev=mono-vfs-push; fi
   echo "dispatch ${kind} ${ref}@${sha:0:12} enterprise=${enterprise} vfs=${vfs}"
@@ -160,5 +182,39 @@ while IFS=$'\t' read -r number ref sha base; do
   [ -n "$number" ] || continue
   consider pr "$ref" "$sha" "$base" "$number"
 done <<<"$prs"
+
+# Runs this poller dispatched were started with GITHUB_TOKEN, and their
+# completion fires no workflow_run, so report-pr-status.yml never mirrors
+# them. Post their results here with the same context and description.
+declare -A mono_states=() considered=()
+while IFS=$'\t' read -r title status conclusion url actor; do
+  [[ $title =~ mono:([0-9a-f]{40}) ]] || continue
+  sha=${BASH_REMATCH[1]}
+  # Rows are newest first: only the newest run of each title decides.
+  [ -z "${considered[$title]+set}" ] || continue
+  considered[$title]=1
+  [ "$actor" = "github-actions[bot]" ] && [ "$status" = completed ] || continue
+  case "$conclusion" in
+    success)          state=success; desc=passed;;
+    cancelled|skipped) continue;;
+    *)                state=failure; desc="${conclusion:-failed}";;
+  esac
+  if [ -z "${mono_states[$sha]+set}" ]; then
+    if ! states=$(mono_api --paginate "repos/${MONO_REPO}/commits/${sha}/statuses?per_page=100" \
+        --jq '.[] | select(.state != "pending") | [.state, .context] | @tsv'); then
+      echo "cannot read ${MONO_REPO} statuses for ${sha}; not mirroring it" >&2
+      continue
+    fi
+    mono_states[$sha]=$states
+  fi
+  # A rerun keeps the title, so compare with the latest posted verdict.
+  latest=$(awk -F'\t' -v c="artifactory / ${title}" '$2 == c { print $1; exit }' <<<"${mono_states[$sha]}")
+  [ "$latest" = "$state" ] && continue
+  echo "mirror ${state} onto ${sha:0:12}: ${title}"
+  [ "$DRY_RUN" = "true" ] && continue
+  mono_api -X POST "repos/${MONO_REPO}/statuses/${sha}" -f state="$state" \
+    -f context="artifactory / ${title}" -f target_url="$url" -f description="$desc" >/dev/null ||
+    echo "  mirror failed for ${title}" >&2
+done <<<"$run_rows"
 
 echo "done (dry_run=${DRY_RUN})"
