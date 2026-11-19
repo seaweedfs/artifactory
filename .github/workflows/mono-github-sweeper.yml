@@ -178,10 +178,10 @@ jobs:
             [ -f ".github/workflows/${n%.yml}.yaml" ] && continue
             new="$new $n"
           done < /tmp/foreign_names.txt
-          [ -z "$new" ] && { echo "no unported suites"; exit 0; }
+          [ -n "$new" ] || echo "no unported suites"
 
           # keep earlier candidates: build on the branch's remote tip when it
-          # exists so a re-run appends instead of rewriting the open PR. Fall
+          # exists so a re-run appends instead of rewriting the branch. Fall
           # back to the local checkout ONLY when the remote branch provably
           # does not exist (ls-remote exits 2) — a failed fetch must not turn
           # into a force-push that drops earlier candidates.
@@ -195,6 +195,7 @@ jobs:
             git checkout -B sweeper/new-suites
           fi
           mkdir -p .github/suite-candidates
+          staged=""
           for n in $new; do
             [ -f ".github/suite-candidates/$n" ] && continue
             # pull the suite definition from upstream master; the mono copy may
@@ -202,13 +203,14 @@ jobs:
             if gh api "repos/seaweedfs/seaweedfs/contents/.github/workflows/$n" \
                  --jq '.content' 2>/dev/null | base64 -d > ".github/suite-candidates/$n"; then
               echo "staged $n"
+              staged="$staged $n"
             else
               rm -f ".github/suite-candidates/$n"
               echo "skipped $n (not on upstream master)"
             fi
           done
-          git status --porcelain .github/suite-candidates | grep -q . || { echo "nothing new to file"; exit 0; }
-          cat > .github/suite-candidates/README.md <<'EOF'
+          if [ -n "$staged" ]; then
+            cat > .github/suite-candidates/README.md <<'EOF'
           Foreign workflow files swept from seaweedfs/seaweed-mono, kept here
           for porting. They DO NOT RUN from this directory. To port one, move
           it into .github/workflows/ and rewire it to the repo's dispatch
@@ -218,20 +220,29 @@ jobs:
           clone-mono-source action, and the tp01/hosted runner inputs. Suites
           nobody ports should be deleted rather than parked forever.
           EOF
-          git add .github/suite-candidates
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qm "ci: stage foreign mono workflows for porting ($new)"
-          git push -qf origin sweeper/new-suites
+            git add .github/suite-candidates
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -qm "ci: stage foreign mono workflows for porting ($staged)"
+            git push -qf origin sweeper/new-suites
+          fi
+          # Candidates an earlier run staged but could not file are filed once;
+          # a closed issue is not reopened until something new is staged.
           title="ci: port candidates — foreign workflows swept from seaweed-mono"
           compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...sweeper/new-suites?expand=1"
-          issue="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-            --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number" | sed -n 1p)"
-          if [ -z "$issue" ]; then
+          filed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" \
+            --jq ".[] | select(.pull_request == null and .title == \"$title\") | \"\(.state) \(.number)\"")"
+          issue="$(printf '%s\n' "$filed" | sed -n 's/^open //p' | sed -n 1p)"
+          all="$(git ls-tree --name-only HEAD .github/suite-candidates/ | sed 's|.*/||' \
+            | grep -vxF README.md || test "$?" -eq 1)"
+          if [ -n "$issue" ]; then
+            [ -n "$staged" ] || { echo "candidates already filed in #$issue"; exit 0; }
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$issue/comments" \
+              -f body="Newly staged on \`sweeper/new-suites\`:$staged ($compare)" \
+              --jq '.html_url' | sed 's/^/commented /'
+          elif [ -n "$staged" ] || { [ -z "$filed" ] && [ -n "$all" ]; }; then
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$title" \
-              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches are staged on \`sweeper/new-suites\` under \`.github/suite-candidates/\`, so nothing runs. Open a PR from $compare, port the ones worth keeping onto this repo's \`repository_dispatch\` pattern, and delete the rest. Candidates:$new" \
+              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches are staged on \`sweeper/new-suites\` under \`.github/suite-candidates/\`, so nothing runs. Open a PR from $compare, port the ones worth keeping onto this repo's \`repository_dispatch\` pattern, and delete the rest. Candidates: ${all//$'\n'/ }" \
               --jq '.html_url' | sed 's/^/filed /'
           else
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$issue/comments" \
-              -f body="Newly staged on \`sweeper/new-suites\`:$new ($compare)" \
-              --jq '.html_url' | sed 's/^/commented /'
+            echo "nothing new to file"
           fi
