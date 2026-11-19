@@ -19,17 +19,18 @@ name: "mono .github sweeper"
 #      -> <branch>) deleting its foreign workflow files — never a wholesale
 #      .github restore from main, so a contaminated main is fixed the same
 #      way and cannot feed foreign files into other PRs;
-#   2. foreign workflow names not already ported here are collected into one
-#      rolling PR on this repo under .github/suite-candidates/ — an inert
-#      directory, so nothing runs until a human ports it onto the
-#      repository_dispatch pattern;
+#   2. foreign workflow names not already ported here are staged on this
+#      repo's sweeper/new-suites branch under .github/suite-candidates/ — an
+#      inert directory, so nothing runs until a human ports it onto the
+#      repository_dispatch pattern — and filed in one tracking issue;
 #   3. any mono workflow registered outside the pair is disabled outright.
 #
 # Requires secret MONO_TOKEN: a PAT with repo + workflow scope on
 # seaweedfs/seaweed-mono — the fix PRs delete .github/workflows files and the
 # disable step calls the actions API; plain contents write is not enough for
-# either. It also opens the suite-candidates PR here, since this repo forbids
-# GITHUB_TOKEN-created PRs (can_approve_pull_request_reviews=false).
+# either. MONO_TOKEN cannot open PRs on this repo, and this repo forbids
+# GITHUB_TOKEN-created PRs (can_approve_pull_request_reviews=false), so the
+# candidates are filed as an issue linking the compare view instead.
 
 on:
   # Best-effort like every schedule on GitHub, but the exposure that matters
@@ -41,7 +42,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+  issues: write
 
 concurrency:
   group: mono-github-sweeper
@@ -156,13 +157,10 @@ jobs:
                 && echo "disabled $path"
             done
 
-      - name: Open suite-candidates PR on this repo for unported names
+      - name: File suite candidates for unported names
         if: ${{ always() }}
         env:
-          # MONO_TOKEN everywhere in this step: this repo has
-          # can_approve_pull_request_reviews=false, so GITHUB_TOKEN cannot
-          # open the candidates PR.
-          GH_TOKEN: ${{ secrets.MONO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -224,13 +222,16 @@ jobs:
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -qm "ci: stage foreign mono workflows for porting ($new)"
           git push -qf origin sweeper/new-suites
-          open="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:sweeper/new-suites" --jq length)"
-          if [ "$open" -eq 0 ]; then
-            gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" \
-              -f title="ci: port candidates — foreign workflows swept from seaweed-mono" \
-              -f head="sweeper/new-suites" -f base="main" \
-              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches. They live under \`.github/suite-candidates/\`, so nothing runs. Port the ones worth keeping onto this repo's \`repository_dispatch\` pattern and delete the rest. Untouched candidates:$new" \
-              --jq '.html_url' | sed 's/^/opened /'
+          title="ci: port candidates — foreign workflows swept from seaweed-mono"
+          compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...sweeper/new-suites?expand=1"
+          issue="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number" | sed -n 1p)"
+          if [ -z "$issue" ]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$title" \
+              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches are staged on \`sweeper/new-suites\` under \`.github/suite-candidates/\`, so nothing runs. Open a PR from $compare, port the ones worth keeping onto this repo's \`repository_dispatch\` pattern, and delete the rest. Candidates:$new" \
+              --jq '.html_url' | sed 's/^/filed /'
           else
-            echo "sweeper/new-suites PR already open; candidates added"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$issue/comments" \
+              -f body="Newly staged on \`sweeper/new-suites\`:$new ($compare)" \
+              --jq '.html_url' | sed 's/^/commented /'
           fi
