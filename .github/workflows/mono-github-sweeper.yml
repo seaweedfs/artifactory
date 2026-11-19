@@ -225,24 +225,31 @@ jobs:
               commit -qm "ci: stage foreign mono workflows for porting ($staged)"
             git push -qf origin sweeper/new-suites
           fi
-          # Candidates an earlier run staged but could not file are filed once;
-          # a closed issue is not reopened until something new is staged.
+          # The tracking issues record what was filed: a candidate none of them
+          # names is filed now, so a failed API call is retried by the next
+          # run, and a closed issue keeps covering the candidates it named.
           title="ci: port candidates — foreign workflows swept from seaweed-mono"
           compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...sweeper/new-suites?expand=1"
-          filed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" \
-            --jq ".[] | select(.pull_request == null and .title == \"$title\") | \"\(.state) \(.number)\"")"
-          issue="$(printf '%s\n' "$filed" | sed -n 's/^open //p' | sed -n 1p)"
-          all="$(git ls-tree --name-only HEAD .github/suite-candidates/ | sed 's|.*/||' \
-            | grep -vxF README.md || test "$?" -eq 1)"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" \
+            --jq ".[] | select(.pull_request == null and .title == \"$title\") | {number, state, body} | @json" \
+            > /tmp/filed.jsonl
+          issue="$(jq -r 'select(.state == "open") | .number' /tmp/filed.jsonl | sed -n 1p)"
+          {
+            jq -r '.body // ""' /tmp/filed.jsonl
+            [ -z "$issue" ] || gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$issue/comments" --jq '.[].body'
+          } > /tmp/filed.txt
+          unfiled=""
+          for n in $(git ls-tree --name-only HEAD .github/suite-candidates/ | sed 's|.*/||'); do
+            [ "$n" = README.md ] && continue
+            grep -qF "\`$n\`" /tmp/filed.txt || unfiled="$unfiled \`$n\`"
+          done
+          [ -n "$unfiled" ] || { echo "nothing new to file"; exit 0; }
           if [ -n "$issue" ]; then
-            [ -n "$staged" ] || { echo "candidates already filed in #$issue"; exit 0; }
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$issue/comments" \
-              -f body="Newly staged on \`sweeper/new-suites\`:$staged ($compare)" \
+              -f body="Newly staged on \`sweeper/new-suites\`:$unfiled ($compare)" \
               --jq '.html_url' | sed 's/^/commented /'
-          elif [ -n "$staged" ] || { [ -z "$filed" ] && [ -n "$all" ]; }; then
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$title" \
-              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches are staged on \`sweeper/new-suites\` under \`.github/suite-candidates/\`, so nothing runs. Open a PR from $compare, port the ones worth keeping onto this repo's \`repository_dispatch\` pattern, and delete the rest. Candidates: ${all//$'\n'/ }" \
-              --jq '.html_url' | sed 's/^/filed /'
           else
-            echo "nothing new to file"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$title" \
+              -f body="Foreign workflow files the mono .github sweeper found on seaweed-mono branches are staged on \`sweeper/new-suites\` under \`.github/suite-candidates/\`, so nothing runs. Open a PR from $compare, port the ones worth keeping onto this repo's \`repository_dispatch\` pattern, and delete the rest. Candidates:$unfiled" \
+              --jq '.html_url' | sed 's/^/filed /'
           fi
