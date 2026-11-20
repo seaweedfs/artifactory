@@ -87,6 +87,7 @@ jobs:
         postgres-tests.yml
         rust-volume-server-tests.yml
         s3-go-tests.yml
+        s3-tigris-compat-tests.yml
         s3tests.yml
         seaweed-vfs.yml
         volume-server-integration-tests.yml

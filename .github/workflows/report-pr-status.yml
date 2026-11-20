@@ -27,6 +27,7 @@ on:
       - "PostgreSQL Gateway Tests (seaweed-mono)"
       - "Rust Volume Server Tests (seaweed-mono)"
       - "S3 Go Tests (seaweed-mono)"
+      - "S3 Tigris Compatibility Tests (seaweed-mono)"
       - "Ceph S3 tests (seaweed-mono)"
       - "seaweed-vfs (seaweed-mono)"
       - "Volume Server Integration Tests (seaweed-mono)"
