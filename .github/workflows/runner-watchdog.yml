@@ -206,11 +206,12 @@ jobs:
               mono=$(echo "$title" | grep -oE 'mono:[0-9a-f]+' | cut -d: -f2 || true)
               tag=$(echo "$title" | grep -oE 'tag:[^ ]+' | cut -d: -f2 || true)
               gitlab_branch=$(echo "$title" | grep -oE 'branch:[^ ]+' | cut -d: -f2- || true)
-              echo "run $id: queued ${age}m on [$labels] - RESCUING (branch=$branch mono=${mono:-default} tag=${tag:-default} gitlab_branch=${gitlab_branch:-default})"
+              measurement=$(echo "$title" | grep -oE 'measurement:true' | cut -d: -f2 || true)
+              echo "run $id: queued ${age}m on [$labels] - RESCUING (branch=$branch mono=${mono:-default} tag=${tag:-default} gitlab_branch=${gitlab_branch:-default} measurement=${measurement:-false})"
               # A dispatch naming an input the target workflow does not declare
               # is rejected outright ("Unexpected inputs provided"), and the
               # watched workflows declare different sets: mono_sha/release_tag
-              # belong to kvcache-preview, gitlab_branch to the test suites. So
+              # belong to kvcache-preview, gitlab_branch and measurement to the test suites. So
               # read the workflow file and pass only what it accepts. The `if`
               # form matters too: a bare `[ -n "$x" ] && args+=(...)` is the last
               # command of an && list, so under `set -e` an empty field would
@@ -221,10 +222,11 @@ jobs:
               if [ -n "$mono" ] && grep -qE '^ +mono_sha:' <<<"$declared"; then args+=(-f "mono_sha=$mono"); fi
               if [ -n "$tag" ] && grep -qE '^ +release_tag:' <<<"$declared"; then args+=(-f "release_tag=$tag"); fi
               if [ -n "$gitlab_branch" ] && grep -qE '^ +gitlab_branch:' <<<"$declared"; then args+=(-f "gitlab_branch=$gitlab_branch"); fi
+              if [ -n "$measurement" ] && grep -qE '^ +measurement:' <<<"$declared"; then args+=(-f "measurement=true"); fi
               gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$branch" "${args[@]}"
               {
                 echo "### Rescued run $id ($wf)"
-                echo "Queued ${age} min on \`$labels\` - the self-hosted runner is down. Cancelled and re-dispatched on hosted: branch \`$branch\`, mono \`${mono:-default}\`, tag \`${tag:-default}\`, gitlab_branch \`${gitlab_branch:-default}\`."
+                echo "Queued ${age} min on \`$labels\` - the self-hosted runner is down. Cancelled and re-dispatched on hosted: branch \`$branch\`, mono \`${mono:-default}\`, tag \`${tag:-default}\`, gitlab_branch \`${gitlab_branch:-default}\`, measurement \`${measurement:-false}\`."
               } >> "$GITHUB_STEP_SUMMARY"
             done
           done

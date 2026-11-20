@@ -2,8 +2,8 @@ name: "S3 Tigris Compatibility Tests (seaweed-mono)"
 # The dispatch inputs ride in the run name so the runner watchdog
 # (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
 # re-dispatch it on hosted with the same inputs. Keep the fields parseable:
-# mono:<sha> branch:<ref> runner:<tp01|hosted>.
-run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}
+# mono:<sha> branch:<ref> runner:<tp01|hosted> [measurement:true].
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}${{ inputs.measurement && ' · measurement:true' || '' }}
 
 on:
   repository_dispatch:
