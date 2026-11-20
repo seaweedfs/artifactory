@@ -3,7 +3,8 @@ description: >
   Clone seaweedfs/seaweed-mono at the dispatched change. Dispatched runs fetch
   the exact commit from client_payload.sha — PR branches are deleted on merge,
   so a run that queues past the merge can no longer clone by branch name — and
-  fall back to the branch if the commit is not fetchable. Manual
+  fall back to the branch if the commit is not fetchable, failing unless the
+  branch head is that same commit. Manual
   (workflow_dispatch) runs clone the given branch. Exports COMMIT_SHA (short)
   and BRANCH_NAME to the job env. The clone's remote URL never carries the
   token: the workspace can be bind-mounted into build containers.
@@ -23,8 +24,7 @@ inputs:
       rescues one off an offline self-hosted runner: without it the rescued run
       would clone the branch head, which is a different commit. Ignored on
       repository_dispatch, where client_payload.sha already carries it. Falls
-      back to the branch, same as a dispatched commit that is no longer
-      fetchable.
+      back to the branch the same way as a dispatched commit.
     required: false
     default: ''
   path:
@@ -120,6 +120,13 @@ runs:
           else
             echo "Dispatched commit not fetchable; cloning branch: $BRANCH"
             clone_branch
+            # The run title and report-pr-status name the requested commit, so
+            # testing a different branch head would report it as $SHA.
+            HEAD_SHA=$(git -C "$CLONE_PATH" rev-parse HEAD)
+            if [ "$HEAD_SHA" != "$SHA" ]; then
+              echo "::error::Requested commit $SHA is not fetchable and branch $BRANCH is at $HEAD_SHA; refusing to test a different commit" >&2
+              exit 1
+            fi
           fi
         else
           echo "Cloning branch: $BRANCH"
