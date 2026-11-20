@@ -86,6 +86,10 @@ runs:
         # fallback: by then the branch is usually deleted and there is nothing
         # left to clone. Retry every network step before giving up on it.
         RETRY="$GITHUB_ACTION_PATH/../../scripts/git-retry.sh"
+        # Drop the embedded token from .git/config on every exit, failures
+        # included: the workspace can be bind-mounted into build containers,
+        # so the remote URL must not carry the secret.
+        trap '[ ! -d "$CLONE_PATH/.git" ] || git -C "$CLONE_PATH" remote set-url origin https://github.com/seaweedfs/seaweed-mono.git 2>/dev/null || true' EXIT
 
         # A local bare mirror on the self-hosted runner turns a full clone into a
         # delta fetch. It is strictly an optimisation: --reference-if-able ignores
@@ -155,10 +159,6 @@ runs:
           ) || echo "Mirror refresh failed; continuing (it is only a cache)"
         fi
 
-        # Drop the embedded token from .git/config: the workspace can be
-        # bind-mounted into build containers, so the remote URL must not
-        # carry the secret.
-        git -C "$CLONE_PATH" remote set-url origin https://github.com/seaweedfs/seaweed-mono.git
         echo "Cloned commit: $(git -C "$CLONE_PATH" rev-parse HEAD)"
         echo "COMMIT_SHA=$(git -C "$CLONE_PATH" rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
         echo "BRANCH_NAME=$BRANCH" >> "$GITHUB_ENV"
