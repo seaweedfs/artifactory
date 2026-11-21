@@ -475,7 +475,7 @@ while true; do
     SUCCEEDED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success_count', 0))")
     ERRORS=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error_count', 0))")
 
-    if [ "$DETECTED" -lt 1 ] || [ "$EXECUTED" -gt 0 ] || [ "$SECONDS" -ge "$RUN_DEADLINE" ]; then
+    if [ "$DETECTED" -lt 1 ] || [ "$EXECUTED" -gt 0 ] || [ $((SECONDS + 10)) -gt "$RUN_DEADLINE" ]; then
         break
     fi
     info "ec_repair detected $DETECTED task(s) but executed none (deferred); retrying in 10s"
