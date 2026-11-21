@@ -461,14 +461,26 @@ pass "Shard loss simulated on vol${VICTIM_IDX}"
 
 info "Triggering ec_repair detection + execution via admin API"
 
-RUN_RESULT=$(curl -sf -X POST "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/ec_repair/run" \
-    -H "Content-Type: application/json" \
-    -d '{"max_results": 100, "timeout_seconds": 300}')
+# The admin scheduler takes no new job on a volume for a quiet period after
+# one ran on it (the encode above), and drops a proposal it defers there, so
+# run detection again until the repair is executed.
+RUN_DEADLINE=$((SECONDS + 300))
+while true; do
+    RUN_RESULT=$(curl -sf -X POST "http://${MASTER_IP}:${ADMIN_PORT}/api/plugin/job-types/ec_repair/run" \
+        -H "Content-Type: application/json" \
+        -d '{"max_results": 100, "timeout_seconds": 300}')
 
-DETECTED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('detected_count', 0))")
-EXECUTED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executed_count', 0))")
-SUCCEEDED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success_count', 0))")
-ERRORS=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error_count', 0))")
+    DETECTED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('detected_count', 0))")
+    EXECUTED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executed_count', 0))")
+    SUCCEEDED=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success_count', 0))")
+    ERRORS=$(echo "$RUN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error_count', 0))")
+
+    if [ "$DETECTED" -lt 1 ] || [ "$EXECUTED" -gt 0 ] || [ "$SECONDS" -ge "$RUN_DEADLINE" ]; then
+        break
+    fi
+    info "ec_repair detected $DETECTED task(s) but executed none (deferred); retrying in 10s"
+    sleep 10
+done
 
 if [ "$DETECTED" -lt 1 ]; then
     fail "Detection found 0 repair tasks (expected >= 1)"
