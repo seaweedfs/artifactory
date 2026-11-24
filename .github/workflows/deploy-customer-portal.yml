@@ -1,0 +1,84 @@
+name: Deploy Customer Portal
+
+on:
+  workflow_dispatch:
+    inputs:
+      mono_commit:
+        description: 'Full seaweed-mono commit SHA to deploy'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle1-customer-portal
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Validate source revision
+        env:
+          MONO_COMMIT: ${{ inputs.mono_commit }}
+        run: |
+          [[ "$MONO_COMMIT" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "::error::mono_commit must be a full lowercase Git commit SHA"
+            exit 1
+          }
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: seaweedfs/seaweed-mono
+          ref: ${{ inputs.mono_commit }}
+          token: ${{ secrets.MONO_TOKEN }}
+          persist-credentials: false
+          path: seaweed-mono
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: seaweed-mono/enterprise/go.mod
+          cache: false
+
+      - name: Test and build the customer portal
+        working-directory: seaweed-mono/enterprise
+        env:
+          MONO_COMMIT: ${{ inputs.mono_commit }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$MONO_COMMIT"
+          go test -mod=readonly ./customer-portal
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -o "$RUNNER_TEMP/customer-portal" ./customer-portal
+
+      # The portal shares oracle1 and its opc deploy key with enterprise telemetry.
+      - name: Deploy to production on oracle1
+        env:
+          MONO_COMMIT: ${{ inputs.mono_commit }}
+          ORACLE_HOST: ${{ secrets.TELEMETRY_SSH_HOST }}
+          ORACLE_KEY: ${{ secrets.TELEMETRY_SSH_PRIVATE_KEY }}
+        run: |
+          [[ "$ORACLE_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && -n "$ORACLE_KEY" ]] || {
+            echo "::error::Configure TELEMETRY_SSH_HOST and TELEMETRY_SSH_PRIVATE_KEY"
+            exit 1
+          }
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          printf '%s\n' "$ORACLE_KEY" > "$ssh_dir/key"
+          # Pin oracle1's Ed25519 key, verified through an existing trusted SSH connection.
+          printf '%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPEo2PVrZDrgc+OWIwzW5KxYnEA2th5Ls4IOYCx08Hdj\n' "$ORACLE_HOST" > "$ssh_dir/known_hosts"
+          ssh_options=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$ssh_dir/known_hosts")
+          target="opc@$ORACLE_HOST"
+          upload="$(ssh "${ssh_options[@]}" "$target" 'umask 077; mktemp -d /home/opc/portal-upload.XXXXXXXX')"
+          [[ "$upload" =~ ^/home/opc/portal-upload\.[A-Za-z0-9]+$ ]]
+          tar -cf - -C "$RUNNER_TEMP" customer-portal -C "$GITHUB_WORKSPACE/.github/scripts" \
+            deploy-customer-portal.sh |
+            ssh "${ssh_options[@]}" "$target" "tar -xf - -C '$upload'"
+          ssh "${ssh_options[@]}" "$target" "bash '$upload/deploy-customer-portal.sh' '$upload' '$MONO_COMMIT'"
