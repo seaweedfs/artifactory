@@ -1,0 +1,80 @@
+name: Deploy Enterprise Telemetry
+
+on:
+  workflow_dispatch:
+    inputs:
+      mono_commit:
+        description: 'Full seaweed-mono commit SHA to deploy'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle1-enterprise-telemetry
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Validate source revision
+        env:
+          MONO_COMMIT: ${{ inputs.mono_commit }}
+        run: |
+          [[ "$MONO_COMMIT" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "::error::mono_commit must be a full lowercase Git commit SHA"
+            exit 1
+          }
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: seaweedfs/seaweed-mono
+          ref: ${{ inputs.mono_commit }}
+          token: ${{ secrets.MONO_TOKEN }}
+          persist-credentials: false
+          path: seaweed-mono
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: seaweed-mono/enterprise/telemetry/server/go.mod
+          cache: false
+
+      - name: Test and build telemetry
+        working-directory: seaweed-mono/enterprise/telemetry/server
+        env:
+          MONO_COMMIT: ${{ inputs.mono_commit }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$MONO_COMMIT"
+          go test -mod=readonly ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -o "$RUNNER_TEMP/telemetry-server" .
+
+      - name: Deploy on oracle1 and compare with port 8353
+        env:
+          MONO_COMMIT: ${{ inputs.mono_commit }}
+          ORACLE_HOST: ${{ secrets.TELEMETRY_SSH_HOST || secrets.DEPLOY_HOST }}
+          ORACLE_KEY: ${{ secrets.TELEMETRY_SSH_PRIVATE_KEY || secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          [[ "$ORACLE_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && -n "$ORACLE_KEY" ]] || {
+            echo "::error::Configure the Oracle1 SSH host and deployment key"
+            exit 1
+          }
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          printf '%s\n' "$ORACLE_KEY" > "$ssh_dir/key"
+          # Pin oracle1's Ed25519 key, verified through an existing trusted SSH connection.
+          printf '%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPEo2PVrZDrgc+OWIwzW5KxYnEA2th5Ls4IOYCx08Hdj\n' "$ORACLE_HOST" > "$ssh_dir/known_hosts"
+          ssh_options=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$ssh_dir/known_hosts")
+          target="opc@$ORACLE_HOST"
+          upload="$(ssh "${ssh_options[@]}" "$target" 'umask 077; mktemp /home/opc/telemetry-upload.XXXXXXXX')"
+          [[ "$upload" =~ ^/home/opc/telemetry-upload\.[A-Za-z0-9]+$ ]]
+          ssh "${ssh_options[@]}" "$target" "cat > '$upload'" < "$RUNNER_TEMP/telemetry-server"
+          ssh "${ssh_options[@]}" "$target" "bash -s -- '$upload' '$MONO_COMMIT'" < .github/scripts/deploy-enterprise-telemetry.sh
