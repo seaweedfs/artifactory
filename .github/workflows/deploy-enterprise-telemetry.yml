@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -55,17 +56,14 @@ jobs:
           go test -mod=readonly ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -o "$RUNNER_TEMP/telemetry-server" .
 
-      - name: Test the comparison checks
-        run: python3 .github/scripts/compare-enterprise-telemetry.py --self-test
-
-      - name: Deploy on oracle1 and compare with port 8353
+      - name: Deploy to production on oracle1
         env:
           MONO_COMMIT: ${{ inputs.mono_commit }}
-          ORACLE_HOST: ${{ secrets.TELEMETRY_SSH_HOST || secrets.DEPLOY_HOST }}
-          ORACLE_KEY: ${{ secrets.TELEMETRY_SSH_PRIVATE_KEY || secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          ORACLE_HOST: ${{ secrets.TELEMETRY_SSH_HOST }}
+          ORACLE_KEY: ${{ secrets.TELEMETRY_SSH_PRIVATE_KEY }}
         run: |
           [[ "$ORACLE_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && -n "$ORACLE_KEY" ]] || {
-            echo "::error::Configure the Oracle1 SSH host and deployment key"
+            echo "::error::Configure TELEMETRY_SSH_HOST and TELEMETRY_SSH_PRIVATE_KEY"
             exit 1
           }
           umask 077
@@ -80,6 +78,6 @@ jobs:
           upload="$(ssh "${ssh_options[@]}" "$target" 'umask 077; mktemp -d /home/opc/telemetry-upload.XXXXXXXX')"
           [[ "$upload" =~ ^/home/opc/telemetry-upload\.[A-Za-z0-9]+$ ]]
           tar -cf - -C "$RUNNER_TEMP" telemetry-server -C "$GITHUB_WORKSPACE/.github/scripts" \
-            deploy-enterprise-telemetry.sh compare-enterprise-telemetry.py |
+            deploy-enterprise-telemetry.sh |
             ssh "${ssh_options[@]}" "$target" "tar -xf - -C '$upload'"
           ssh "${ssh_options[@]}" "$target" "bash '$upload/deploy-enterprise-telemetry.sh' '$upload' '$MONO_COMMIT'"
