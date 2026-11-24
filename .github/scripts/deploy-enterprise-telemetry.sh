@@ -7,39 +7,44 @@ revision="$2"
 [[ "$upload" =~ ^/home/opc/telemetry-upload\.[A-Za-z0-9]+$ && "$revision" =~ ^[a-f0-9]{40}$ ]]
 umask 077
 
-legacy="$HOME/seaweedfs-telemetry/data/telemetry-state.json"
 root="$HOME/seaweedfs-telemetry/enterprise"
 service=telemetry-enterprise.service
-unit="/etc/systemd/system/$service"
 current="$root/current"
-mkdir -p "$root/releases"
-unit_temp="$(mktemp "$root/unit.XXXXXXXX")"
-
-switch_release() {
-    local target="$1" pending="$current.pending.$$"
-    ln -s "$target" "$pending" && mv -Tf "$pending" "$current"
-}
-
+database="$root/data/telemetry-state.sqlite"
+origin=telemetry.seaweedfs.com
 previous=""
 switched=false
 accepted=false
+
+switch_release() {
+    local temporary="$current.pending.$$"
+    ln -s "$1" "$temporary" && mv -Tf "$temporary" "$current"
+}
+
+wait_for_health() {
+    local attempt
+    for ((attempt = 0; attempt < 30; attempt++)); do
+        if systemctl is-active --quiet "$service" &&
+            curl -fs --max-time 3 http://127.0.0.1:8354/health >/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 cleanup() {
-    status=$?
+    local status=$?
     trap - EXIT
     set +e
     if [[ "$switched" == true && "$accepted" != true ]]; then
-        if [[ -n "$previous" ]]; then
-            if ! switch_release "$previous" || ! sudo -n systemctl restart "$service"; then
-                echo "Failed to restore the previous staging release" >&2
-            fi
+        if switch_release "$previous" && sudo -n systemctl restart "$service" && wait_for_health; then
+            echo "Restored the previous telemetry release" >&2
         else
-            sudo -n systemctl stop "$service"
-            sudo -n systemctl disable "$service"
-            rm -f -- "$current"
+            echo "Failed to restore the previous telemetry release" >&2
         fi
     fi
-    rm -f -- "$unit_temp" "$upload/telemetry-server" "$upload/deploy-enterprise-telemetry.sh" \
-        "$upload/compare-enterprise-telemetry.py"
+    rm -f -- "$current.pending.$$" "$upload/telemetry-server" "$upload/deploy-enterprise-telemetry.sh"
     rmdir "$upload"
     exit "$status"
 }
@@ -47,76 +52,53 @@ trap cleanup EXIT
 
 exec 9>"$root/deploy.lock"
 flock -n 9
-previous="$(readlink "$current" || true)"
-if ! grep -Eq '^[[:space:]]*proxy_pass http://(localhost|127\.0\.0\.1):8353;' /etc/nginx/conf.d/telemetry.conf; then
-    echo "This workflow stages releases only while nginx points to port 8353"
+if ! grep -Eq '^[[:space:]]*proxy_pass http://127\.0\.0\.1:8354;' /etc/nginx/conf.d/telemetry.conf; then
+    echo "Production nginx must point at 127.0.0.1:8354" >&2
     exit 1
 fi
-if [[ ! -s "$legacy" ]]; then
-    echo "Legacy telemetry snapshot is missing"
+if ! previous="$(readlink -e "$current")" ||
+    [[ "$previous" != "$root"/releases/* || ! -x "$previous/start.sh" ]]; then
+    echo "No previous telemetry release is available" >&2
     exit 1
 fi
-if [[ -e "$current" && -z "$previous" ]]; then
-    echo "Unexpected staging release path"
+
+# Adopt the live database from the cutover release in place. Its directory must
+# be retained while it is the target of this link, including its SQLite WAL.
+mkdir -p "$root/data"
+if [[ ! -e "$database" && ! -L "$database" ]]; then
+    if [[ ! -f "$previous/telemetry-state.sqlite" || ! -s "$previous/telemetry-state.sqlite" ]]; then
+        echo "No existing telemetry database to adopt" >&2
+        exit 1
+    fi
+    ln -s "$previous/telemetry-state.sqlite" "$database"
+fi
+if [[ ! -f "$database" || ! -s "$database" ]]; then
+    echo "Production telemetry database is missing or empty" >&2
     exit 1
 fi
 
 candidate="$(mktemp -d "$root/releases/$revision.XXXXXXXX")"
 install -m 0755 "$upload/telemetry-server" "$candidate/telemetry-server"
-cp -- "$legacy" "$candidate/telemetry-state.json"
 cat > "$candidate/start.sh" <<'START'
 #!/usr/bin/env bash
 set -euo pipefail
 release="$(dirname "$(readlink -f "$0")")"
-exec "$release/telemetry-server" -listen-host=127.0.0.1 -port=8354 \
-    -db-file="$release/telemetry-state.sqlite" -state-file="$release/telemetry-state.json"
+database="$(readlink -e "$release/../../data/telemetry-state.sqlite")"
+[[ -f "$database" && -s "$database" ]]
+exec "$release/telemetry-server" -listen-host=127.0.0.1 -port=8354 -db-file="$database" -state-file=
 START
 chmod 0700 "$candidate/start.sh"
-
-cat > "$unit_temp" <<UNIT
-[Unit]
-Description=SeaweedFS Enterprise Telemetry Server
-After=network.target
-
-[Service]
-Type=simple
-User=opc
-WorkingDirectory=$root
-ExecStart=$current/start.sh
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-if [[ -e "$unit" ]]; then
-    cmp -s "$unit" "$unit_temp" || { echo "Unexpected existing staging unit"; exit 1; }
-else
-    sudo -n install -m 0644 "$unit_temp" "$unit"
-fi
-sudo -n systemctl daemon-reload
 
 switch_release "$candidate"
 switched=true
 sudo -n systemctl restart "$service"
-
-ready=false
-for ((attempt = 0; attempt < 45; attempt++)); do
-    if sudo -n systemctl is-active --quiet "$service" &&
-        curl -fs --max-time 3 http://127.0.0.1:8354/health >/dev/null; then
-        ready=true
-        break
-    fi
-    sleep 2
-done
-if [[ "$ready" != true ]]; then
-    echo "Enterprise telemetry failed its health check"
+if ! wait_for_health; then
+    echo "Enterprise telemetry failed its health check" >&2
     exit 1
 fi
+curl -fsS --max-time 15 \
+    --cacert /etc/nginx/certs/telemetry.crt \
+    --resolve "$origin:443:127.0.0.1" "https://$origin/health" >/dev/null
 
-# Compare on oracle1 and emit only aggregate results to the public job log.
-python3 "$upload/compare-enterprise-telemetry.py"
-sudo -n systemctl enable "$service"
 accepted=true
-printf 'Staged SQLite database: %s bytes\n' "$(stat -c %s "$candidate/telemetry-state.sqlite")"
+printf 'Deployed enterprise telemetry %s to port 8354 using the existing SQLite database\n' "$revision"
