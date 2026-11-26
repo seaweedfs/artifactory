@@ -1,20 +1,21 @@
 name: "mono .github sweeper"
 
 # seaweed-mono is private: every hosted job there bills minutes, so its
-# .github must stay exactly two files — notify-artifactory.yml (dispatches the
+# .github must stay exactly one file — notify-artifactory.yml (dispatches the
 # mono-push / mono-merge-request / mono-vfs-* events this repo's suites listen
-# on) and deploy-customer-portal.yml. Foreign workflows arrive via merges:
-# upstream seaweedfs syncs carry upstream's .github, and the rdma-era branches
-# carried this repo's own .github. 2026-10-12: one sync landed 74 upstream
-# workflows, stacked PRs fanned out ~15 hosted suites each, and the month's
-# quota (~2.4k minutes) drained overnight.
+# on); the customer portal deploys from this repo. Foreign workflows arrive
+# via merges: upstream seaweedfs syncs carry upstream's .github, and the
+# rdma-era branches carried this repo's own .github. 2026-10-12: one sync
+# landed 74 upstream workflows, stacked PRs fanned out ~15 hosted suites each,
+# and the month's quota (~2.4k minutes) drained overnight.
 #
 # Disabling cannot cover a NEWLY-NAMED upstream workflow — a workflow has to
 # register before it can be disabled — so this sweeper watches the file SET,
 # not names: only .github/workflows/* entries can trigger billed runs, so a
-# branch is contaminated exactly when that directory holds anything but the
-# pair. A stale CONTENT of the pair is not contamination — it still just
-# dispatches — and a branch with no .github at all is inert, not dirty.
+# branch is contaminated exactly when that directory holds anything but
+# notify-artifactory.yml. A stale CONTENT of that file is not contamination —
+# it still just dispatches — and a branch with no .github at all is inert,
+# not dirty.
 #   1. every contaminated mono branch gets a fix PR (sweeper/gha-<branch>
 #      -> <branch>) deleting its foreign workflow files — never a wholesale
 #      .github restore from main, so a contaminated main is fixed the same
@@ -23,7 +24,7 @@ name: "mono .github sweeper"
 #      repo's sweeper/new-suites branch under .github/suite-candidates/ — an
 #      inert directory, so nothing runs until a human ports it onto the
 #      repository_dispatch pattern — and filed in one tracking issue;
-#   3. any mono workflow registered outside the pair is disabled outright.
+#   3. any other registered mono workflow is disabled outright.
 #
 # Requires secret MONO_TOKEN: a PAT with repo + workflow scope on
 # seaweedfs/seaweed-mono — the fix PRs delete .github/workflows files and the
@@ -54,10 +55,9 @@ jobs:
     timeout-minutes: 15
     env:
       MONO: seaweedfs/seaweed-mono
-      PAIR: .github/workflows/deploy-customer-portal.yml .github/workflows/notify-artifactory.yml
-      # Pinned commit whose .github/workflows pair is known good — used to
-      # restore the pair on branches missing it, so a contaminated main can
-      # never be the restore source.
+      # Pinned commit whose notify-artifactory.yml is known good — used to
+      # restore it on branches missing it, so a contaminated main can never
+      # be the restore source.
       PAIR_REF: e15afcd0bfa887f7e60155a3254ca0918484bb26
     steps:
       - uses: actions/checkout@v6
@@ -93,7 +93,6 @@ jobs:
             }
             foreign="$(printf '%s' "$tree" \
               | grep -vxF -e .github/workflows/notify-artifactory.yml \
-                         -e .github/workflows/deploy-customer-portal.yml \
               || test "$?" -eq 1)"
             [ -z "$foreign" ] && continue
             printf '%s\n' "$foreign" | sed 's|.*/||' >> /tmp/foreign_names.txt
@@ -108,14 +107,12 @@ jobs:
             # contaminated — and would leave main looking clean.
             printf '%s\n' "$foreign" \
               | while IFS= read -r p; do git rm -q --ignore-unmatch -- "$p"; done
-            # The branch still needs the pair for its dispatch to work; when
-            # either file is absent, restore it from a pinned known-good commit
-            # (bump PAIR_REF if the pair changes on main) rather than whatever
+            # The branch still needs notify-artifactory.yml for its dispatch to
+            # work; when it is absent, restore it from a pinned known-good
+            # commit (bump PAIR_REF if it changes on main) rather than whatever
             # origin/main happens to hold.
-            for f in notify-artifactory.yml deploy-customer-portal.yml; do
-              git cat-file -e "HEAD:.github/workflows/$f" 2>/dev/null \
-                || git checkout "$PAIR_REF" -- ".github/workflows/$f"
-            done
+            git cat-file -e HEAD:.github/workflows/notify-artifactory.yml 2>/dev/null \
+              || git checkout "$PAIR_REF" -- .github/workflows/notify-artifactory.yml
             git checkout -B "$sweep"
             removed="$(printf '%s\n' "$foreign" | tr '\n' ' ')"
             git diff --cached --quiet && { echo "$b clean; skipping"; continue; }
@@ -123,12 +120,11 @@ jobs:
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -qm "ci: remove foreign workflows from .github/workflows"
             git push -qf origin "HEAD:refs/heads/$sweep"
-            body="This branch's \`.github/workflows/\` holds files outside \
-            mono's own pair (see \`AGENTS.md\`): hosted jobs here bill minutes, \
-            and foreign workflows fanning out on PR events drained the monthly \
-            quota on 2026-10-12. This PR removes the foreign files and restores \
-            \`notify-artifactory.yml\` / \`deploy-customer-portal.yml\` if \
-            missing.
+            body="This branch's \`.github/workflows/\` holds files besides \
+            mono's own \`notify-artifactory.yml\` (see \`AGENTS.md\`): hosted \
+            jobs here bill minutes, and foreign workflows fanning out on PR \
+            events drained the monthly quota on 2026-10-12. This PR removes the \
+            foreign files and restores \`notify-artifactory.yml\` if missing.
             Removed: $removed"
             gh api -X POST "repos/$MONO/pulls" \
               -f title="ci: remove foreign workflows from .github/workflows" \
@@ -149,7 +145,6 @@ jobs:
             | while IFS=$'\t' read -r id path; do
               case "$path" in
                 .github/workflows/notify-artifactory.yml) continue ;;
-                .github/workflows/deploy-customer-portal.yml) continue ;;
                 .github/workflows/*) ;;
                 *) continue ;;   # e.g. dynamic/agents/* (Copilot) — not ours to police
               esac
