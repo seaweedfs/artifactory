@@ -143,6 +143,11 @@ jobs:
       - name: Clone s3-tests
         run: |
           .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
+          # A job-local venv: on tp01 the setup-python interpreter is shared
+          # with later jobs.
+          python3 -m venv "$RUNNER_TEMP/s3-tests-venv"
+          echo "$RUNNER_TEMP/s3-tests-venv/bin" >> "$GITHUB_PATH"
+          . "$RUNNER_TEMP/s3-tests-venv/bin/activate"
           cd s3-tests
           pip install -r requirements.txt
           pip install tox
