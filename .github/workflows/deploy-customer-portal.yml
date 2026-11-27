@@ -54,7 +54,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$MONO_COMMIT"
           go test -mod=readonly ./customer-portal
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -o "$RUNNER_TEMP/customer-portal" ./customer-portal
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -ldflags "-X main.buildCommit=$MONO_COMMIT" -o "$RUNNER_TEMP/customer-portal" ./customer-portal
 
       # The portal shares oracle1 and its opc deploy key with enterprise telemetry.
       - name: Deploy to production on oracle1
