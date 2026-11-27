@@ -159,6 +159,7 @@ jobs:
           mode: acquire
 
       - name: Start the cluster
+        id: cluster
         env:
           DIGEST_MODE: ${{ matrix.digest }}
           VOLUME_SERVER: ${{ matrix.volume }}
@@ -178,7 +179,10 @@ jobs:
           # shellcheck disable=SC2086 # the deselect list is separate arguments
           tox -- "${tests[@]}" ${{ matrix.ceph_deselect }}
 
+      # The Go suites give the cell its own digest verdict, so a ceph failure
+      # does not skip them.
       - name: Run the etag and checksum Go suites
+        if: ${{ !cancelled() && steps.cluster.outcome == 'success' }}
         working-directory: seaweedfs-source/enterprise
         env:
           S3_ENDPOINT: http://127.0.0.1:8000
