@@ -48,82 +48,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build weed (GOFIPS140) and weed-volume
-    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 45 || 30 }}
-    outputs:
-      sha: ${{ steps.mono.outputs.sha }}
-
-    steps:
-      - name: Checkout artifactory repo
-        uses: actions/checkout@v6
-
-      - name: Runner housekeeping (self-hosted only)
-        uses: ./.github/actions/runner-housekeeping
-
-      - name: Link to seaweed-mono source
-        if: github.event_name == 'repository_dispatch'
-        uses: ./.github/actions/mono-source-link
-
-      - name: Clone seaweed-mono (enterprise) source
-        uses: ./.github/actions/clone-mono-source
-        with:
-          token: ${{ secrets.MONO_TOKEN }}
-          branch: ${{ github.event.inputs.gitlab_branch }}
-          sha: ${{ inputs.mono_sha }}
-
-      # The suites clone this same commit, so their test trees match the
-      # binaries even when a manual run names only a branch.
-      - name: Record the cloned commit
-        id: mono
-        run: echo "sha=$(git -C seaweedfs-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: 'seaweedfs-source/enterprise/go.mod'
-          cache: ${{ runner.environment == 'github-hosted' }}
-          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and target
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            seaweedfs-source/enterprise/seaweed-volume/target
-          key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
-          restore-keys: |
-            rust-
-
-      # GOFIPS140=v1.0.0 links the frozen Go Cryptographic Module, which the
-      # fips140only cells need; the other cells set GODEBUG to off or on.
-      - name: Build weed
-        working-directory: seaweedfs-source/enterprise/weed
-        run: |
-          CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -tags s3tests -buildvcs=false -o weed .
-          go version -m weed | grep GOFIPS140
-
-      - name: Build weed-volume
-        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
-
-      - name: Package binaries
-        run: tar cf digest-matrix-binaries.tar -C seaweedfs-source/enterprise weed/weed seaweed-volume/target/release/weed-volume
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digest-matrix-binaries
-          if-no-files-found: error
-          retention-days: 1
-          path: digest-matrix-binaries.tar
-
   suites:
     name: S3 suites (${{ matrix.digest }}, ${{ matrix.volume }} volume server)
-    needs: build
     # Each cell's cluster binds fixed ports (9333 / 8888 / 8000 / 8080 and
     # their gRPC ports), so on tp01 it waits on the shared host-port flock. A
     # hosted runner is a fresh VM per job and gets a unique group key.
@@ -131,7 +57,7 @@ jobs:
       group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-digest-matrix', strategy.job-index) }}
       cancel-in-progress: false
     runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 125 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -162,18 +88,16 @@ jobs:
       - name: Runner housekeeping (self-hosted only)
         uses: ./.github/actions/runner-housekeeping
 
-      - name: Wait for the tp01 host-port lock (self-hosted only)
-        if: (inputs.runner || 'hosted') == 'tp01'
-        uses: ./.github/actions/tp01-host-lock
-        with:
-          mode: acquire
+      - name: Link to seaweed-mono source
+        if: github.event_name == 'repository_dispatch'
+        uses: ./.github/actions/mono-source-link
 
       - name: Clone seaweed-mono (enterprise) source
         uses: ./.github/actions/clone-mono-source
         with:
           token: ${{ secrets.MONO_TOKEN }}
           branch: ${{ github.event.inputs.gitlab_branch }}
-          sha: ${{ needs.build.outputs.sha }}
+          sha: ${{ inputs.mono_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -181,6 +105,34 @@ jobs:
           go-version-file: 'seaweedfs-source/enterprise/go.mod'
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+      # GOFIPS140=v1.0.0 links the frozen Go Cryptographic Module, which the
+      # fips140only cells need; the other cells set GODEBUG to off or on.
+      - name: Build weed
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -tags s3tests -buildvcs=false -o weed .
+          go version -m weed | grep GOFIPS140
+
+      - name: Install Rust toolchain
+        if: matrix.volume == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        if: matrix.volume == 'rust'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-
+
+      - name: Build weed-volume
+        if: matrix.volume == 'rust'
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -200,14 +152,11 @@ jobs:
           sed -i "s/assert prefixes == \['foo%2B1\/', 'foo\/', 'quux%20ab\/'\]/assert prefixes == \['foo\/', 'foo%2B1\/', 'quux%20ab\/'\]/" s3-tests/s3tests/functional/test_s3.py
           sed -i "/# request PartNumber out of range/,+4{s/assert status == 400/assert status == 416/; s/assert error_code == 'InvalidPart'/assert error_code == 'InvalidPartNumber'/}" s3-tests/s3tests/functional/test_s3.py
 
-      - uses: actions/download-artifact@v4
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
         with:
-          name: digest-matrix-binaries
-
-      - name: Restore binaries
-        run: |
-          tar xf digest-matrix-binaries.tar -C seaweedfs-source/enterprise
-          chmod +x seaweedfs-source/enterprise/weed/weed seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+          mode: acquire
 
       - name: Start the cluster
         env:
