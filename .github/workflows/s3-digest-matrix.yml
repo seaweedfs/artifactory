@@ -1,0 +1,260 @@
+name: "S3 digest and FIPS matrix (seaweed-mono)"
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted> [measurement:true].
+#
+# Runs the S3 suites in every digest mode with both volume servers and JWT
+# signing on, so the sha256 digest and GODEBUG=fips140=only stay working:
+#   md5          GODEBUG=fips140=off, the default digest
+#   sha256       GODEBUG=fips140=on with the filer's -digest=sha256
+#   fips140only  GODEBUG=fips140=only, built with GOFIPS140=v1.0.0
+# enterprise/test/s3/digest_matrix/start_cluster.sh starts each cell's cluster.
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}${{ inputs.measurement && ' · measurement:true' || '' }}
+
+on:
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/s3-digest-matrix
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build weed (GOFIPS140) and weed-volume
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 45 || 30 }}
+    outputs:
+      sha: ${{ steps.mono.outputs.sha }}
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
+      - name: Link to seaweed-mono source
+        if: github.event_name == 'repository_dispatch'
+        uses: ./.github/actions/mono-source-link
+
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+
+      # The suites clone this same commit, so their test trees match the
+      # binaries even when a manual run names only a branch.
+      - name: Record the cloned commit
+        id: mono
+        run: echo "sha=$(git -C seaweedfs-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            seaweedfs-source/enterprise/seaweed-volume/target
+          key: rust-${{ hashFiles('seaweedfs-source/enterprise/seaweed-volume/Cargo.lock') }}
+          restore-keys: |
+            rust-
+
+      # GOFIPS140=v1.0.0 links the frozen Go Cryptographic Module, which the
+      # fips140only cells need; the other cells set GODEBUG to off or on.
+      - name: Build weed
+        working-directory: seaweedfs-source/enterprise/weed
+        run: |
+          CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -tags s3tests -buildvcs=false -o weed .
+          go version -m weed | grep GOFIPS140
+
+      - name: Build weed-volume
+        run: cd seaweedfs-source/enterprise/seaweed-volume && cargo build --release
+
+      - name: Package binaries
+        run: tar cf digest-matrix-binaries.tar -C seaweedfs-source/enterprise weed/weed seaweed-volume/target/release/weed-volume
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-matrix-binaries
+          if-no-files-found: error
+          retention-days: 1
+          path: digest-matrix-binaries.tar
+
+  suites:
+    name: S3 suites (${{ matrix.digest }}, ${{ matrix.volume }} volume server)
+    needs: build
+    # Each cell's cluster binds fixed ports (9333 / 8888 / 8000 / 8080 and
+    # their gRPC ports), so on tp01 it waits on the shared host-port flock. A
+    # hosted runner is a fresh VM per job and gets a unique group key.
+    concurrency:
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-digest-matrix', strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 110 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        digest: [ md5, sha256, fips140only ]
+        volume: [ go, rust ]
+        # s3_digest names the ETag digest for the Go suites. ceph_deselect
+        # drops ceph tests whose answer the mode changes on purpose:
+        # test_object_write_check_etag expects MD5("bar") as the ETag, and
+        # under fips140=only SSE-C is refused with 501 before its headers are
+        # compared, so the SSE-C conflict tests get 501 where they expect 400.
+        include:
+          - digest: md5
+            s3_digest: md5
+          - digest: sha256
+            s3_digest: sha256
+            ceph_deselect: --deselect s3tests/functional/test_s3.py::test_object_write_check_etag
+          - digest: fips140only
+            s3_digest: sha256
+            ceph_deselect: >-
+              --deselect s3tests/functional/test_s3.py::test_object_write_check_etag
+              --deselect s3tests/functional/test_s3.py::test_put_obj_enc_conflict_c_s3
+              --deselect s3tests/functional/test_s3.py::test_put_obj_enc_conflict_c_kms
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
+
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ needs.build.outputs.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      # The same s3-tests checkout and fixes as the "Ceph S3 tests" workflow.
+      - name: Clone s3-tests
+        run: |
+          .github/scripts/git-retry.sh clone https://github.com/ceph/s3-tests.git
+          cd s3-tests
+          pip install -r requirements.txt
+          pip install tox
+          pip install -e .
+          cd ..
+          S3_TESTS_PATH=s3-tests python3 seaweedfs-source/enterprise/test/s3/compatibility/fix_s3_tests_bucket_conflicts.py
+          sed -i "s/assert prefixes == \['foo%2B1\/', 'foo\/', 'quux%20ab\/'\]/assert prefixes == \['foo\/', 'foo%2B1\/', 'quux%20ab\/'\]/" s3-tests/s3tests/functional/test_s3.py
+          sed -i "/# request PartNumber out of range/,+4{s/assert status == 400/assert status == 416/; s/assert error_code == 'InvalidPart'/assert error_code == 'InvalidPartNumber'/}" s3-tests/s3tests/functional/test_s3.py
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: digest-matrix-binaries
+
+      - name: Restore binaries
+        run: |
+          tar xf digest-matrix-binaries.tar -C seaweedfs-source/enterprise
+          chmod +x seaweedfs-source/enterprise/weed/weed seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+
+      - name: Start the cluster
+        env:
+          DIGEST_MODE: ${{ matrix.digest }}
+          VOLUME_SERVER: ${{ matrix.volume }}
+          WEED: ${{ github.workspace }}/seaweedfs-source/enterprise/weed/weed
+          WEED_VOLUME: ${{ github.workspace }}/seaweedfs-source/enterprise/seaweed-volume/target/release/weed-volume
+          WORK_DIR: ${{ runner.temp }}/digest-matrix
+          S3_CONFIG: ${{ github.workspace }}/seaweedfs-source/enterprise/docker/compose/s3.json
+        run: bash seaweedfs-source/enterprise/test/s3/digest_matrix/start_cluster.sh
+
+      - name: Run the basic ceph s3-tests
+        timeout-minutes: 15
+        working-directory: s3-tests
+        env:
+          S3TEST_CONF: ${{ github.workspace }}/seaweedfs-source/enterprise/docker/compose/s3tests.conf
+        run: |
+          mapfile -t tests < <(grep -v '^[[:space:]]*#' "$GITHUB_WORKSPACE/seaweedfs-source/enterprise/test/s3/compatibility/s3tests_basic.txt")
+          # shellcheck disable=SC2086 # the deselect list is separate arguments
+          tox -- "${tests[@]}" ${{ matrix.ceph_deselect }}
+
+      - name: Run the etag and checksum Go suites
+        working-directory: seaweedfs-source/enterprise
+        env:
+          S3_ENDPOINT: http://127.0.0.1:8000
+          S3_DIGEST: ${{ matrix.s3_digest }}
+          S3_FIPS140_ONLY: ${{ matrix.digest == 'fips140only' && '1' || '0' }}
+          S3_ACCESS_KEY: some_access_key1
+          S3_SECRET_KEY: some_secret_key1
+        run: go test -count=1 -timeout 10m ./test/s3/etag/ ./test/s3/checksum/
+
+      - name: Stop the cluster
+        if: always()
+        env:
+          WORK_DIR: ${{ runner.temp }}/digest-matrix
+        run: xargs kill < "$WORK_DIR/pids" 2>/dev/null || true
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-matrix-logs-${{ matrix.digest }}-${{ matrix.volume }}
+          path: ${{ runner.temp }}/digest-matrix/*.log
+          retention-days: 3
+
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
