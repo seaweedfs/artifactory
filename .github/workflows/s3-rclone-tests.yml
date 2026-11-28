@@ -1,0 +1,113 @@
+name: "S3 rclone fstests (seaweed-mono)"
+# The dispatch inputs ride in the run name so the runner watchdog
+# (runner-watchdog.yml) can cancel a run stuck on an offline tp01 and
+# re-dispatch it on hosted with the same inputs. Keep the fields parseable:
+# mono:<sha> branch:<ref> runner:<tp01|hosted> [measurement:true].
+run-name: ${{ github.workflow }}${{ (github.event.client_payload.sha || inputs.mono_sha) && format(' · mono:{0}', github.event.client_payload.sha || inputs.mono_sha) || '' }} · branch:${{ github.event.client_payload.ref || inputs.gitlab_branch || 'main' }} · runner:${{ inputs.runner || 'hosted' }}${{ inputs.measurement && ' · measurement:true' || '' }}
+
+on:
+  repository_dispatch:
+    types:
+      - mono-push
+      - mono-merge-request
+
+  workflow_dispatch:
+    inputs:
+      gitlab_branch:
+        description: 'seaweed-mono branch to test'
+        required: false
+        default: 'main'
+      mono_sha:
+        description: 'Exact seaweed-mono commit to test; defaults to the head of the branch above'
+        required: false
+        default: ''
+      runner:
+        description: 'Where to run: tp01 (self-hosted, no queue) or hosted (fallback when tp01 is down)'
+        required: false
+        type: choice
+        default: hosted
+        options: [tp01, hosted]
+      measurement:
+        description: 'Isolate this run from production: use a separate concurrency group so a real dispatch cannot cancel it'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.event.client_payload.ref || github.event.inputs.gitlab_branch || 'main' }}${{ inputs.measurement && '/measure' || '' }}/s3-rclone-tests
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s3-rclone-fstests:
+    name: rclone fstests (S3 backend)
+    # The suite's weed mini binds fixed ports (8338 / 9338 / 8088 / 8891 /
+    # 7338 / 23649), so on tp01 it waits on the shared host-port flock. A
+    # hosted runner is a fresh VM per job and gets a unique group key.
+    concurrency:
+      group: ${{ format('hosted-{0}-{1}-{2}', github.run_id, 's3-rclone-fstests', strategy.job-index) }}
+      cancel-in-progress: false
+    runs-on: ${{ (inputs.runner || 'hosted') == 'tp01' && fromJSON('["self-hosted","tp01"]') || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: ${{ (inputs.runner || 'hosted') == 'tp01' && 120 || 40 }}
+
+    steps:
+      - name: Checkout artifactory repo
+        uses: actions/checkout@v6
+
+      - name: Runner housekeeping (self-hosted only)
+        uses: ./.github/actions/runner-housekeeping
+
+      - name: Wait for the tp01 host-port lock (self-hosted only)
+        if: (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: acquire
+
+      - name: Link to seaweed-mono source
+        if: github.event_name == 'repository_dispatch'
+        uses: ./.github/actions/mono-source-link
+
+      - name: Clone seaweed-mono (enterprise) source
+        uses: ./.github/actions/clone-mono-source
+        with:
+          token: ${{ secrets.MONO_TOKEN }}
+          branch: ${{ github.event.inputs.gitlab_branch }}
+          sha: ${{ inputs.mono_sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'seaweedfs-source/enterprise/go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: 'seaweedfs-source/enterprise/go.sum'
+
+      - name: Test the result checker
+        working-directory: seaweedfs-source/enterprise/test/s3/rclone_fstests
+        run: python3 -m unittest -v test_check_results
+
+      - name: Run rclone fstests
+        timeout-minutes: 35
+        working-directory: seaweedfs-source/enterprise/test/s3/rclone_fstests
+        run: make test
+
+      - name: Show server log on failure
+        if: failure()
+        working-directory: seaweedfs-source/enterprise/test/s3/rclone_fstests
+        run: tail -200 weed-test.log || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-rclone-fstests-results
+          path: seaweedfs-source/enterprise/test/s3/rclone_fstests/results.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Release the tp01 host-port lock (self-hosted only)
+        if: always() && (inputs.runner || 'hosted') == 'tp01'
+        uses: ./.github/actions/tp01-host-lock
+        with:
+          mode: release
